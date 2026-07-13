@@ -4,6 +4,7 @@
 
 [nas]
 url = "https://nas.example.com"     # your Synology, any reachable scheme://host[:port]
+# web_url = "https://nas.example.com" # base for review-UI deep links; defaults to `url`
 verify_tls = true
 account = ""                        # recommend a dedicated NAS user with Photos access
 # password: set via SYNOPTICON_NAS__PASSWORD

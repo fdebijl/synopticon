@@ -24,6 +24,10 @@ Space = Literal["personal", "shared"]
 
 class NasConfig(BaseModel):
     url: str = ""
+    # Base URL for Synology Photos web-UI deep links in the review UI. The API
+    # host/port (`url`) is often not where the web UI lives, so allow an
+    # override; falls back to `url` when unset.
+    web_url: str = ""
     verify_tls: bool = True
     account: str = ""
     password: SecretStr = SecretStr("")

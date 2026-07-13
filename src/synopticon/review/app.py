@@ -45,6 +45,29 @@ def _crop_url(crop_path: str | None, crops_dir: Path) -> str | None:
     return "/crops/" + rel.replace(os.sep, "/")
 
 
+def _syno_web_base(settings: Settings) -> str | None:
+    """Base for Synology Photos web-UI deep links, or None if unconfigured."""
+    base = (settings.nas.web_url or settings.nas.url).strip()
+    return base.rstrip("/") or None
+
+
+def _person_url(base: str | None, space: str | None, person_id: Any) -> str | None:
+    """Synology Photos link to a person's page."""
+    if not base or not space or person_id is None:
+        return None
+    return f"{base}/?launchApp=SYNO.Foto.AppInstance#/person/{space}_space/{person_id}"
+
+
+def _item_url(base: str | None, space: str | None, photo_id: Any) -> str | None:
+    """Synology Photos link to a single photo (timeline item)."""
+    if not base or not space or photo_id is None:
+        return None
+    return (
+        f"{base}/?launchApp=SYNO.Foto.AppInstance"
+        f"#/{space}_space/timeline/item/{photo_id}"
+    )
+
+
 def create_app(db_path: Path | str, settings: Settings):
     """Build the FastAPI app. Requires the [review] extra."""
     _require_fastapi()
@@ -56,6 +79,7 @@ def create_app(db_path: Path | str, settings: Settings):
     db_path = Path(db_path)
     crops_dir = Path(settings.storage.crops_dir)
     crops_dir.mkdir(parents=True, exist_ok=True)
+    web_base = _syno_web_base(settings)
 
     env = Environment(
         loader=FileSystemLoader(str(_TEMPLATE_DIR)),
@@ -112,6 +136,8 @@ def create_app(db_path: Path | str, settings: Settings):
             for r in rows:
                 payload = json.loads(r["payload_json"])
                 exemplars = (payload.get("evidence") or {}).get("exemplars", {})
+                person_a = payload.get("person_a") or {}
+                person_b = payload.get("person_b") or {}
                 items.append(
                     {
                         "item_id": r["item_id"],
@@ -122,6 +148,15 @@ def create_app(db_path: Path | str, settings: Settings):
                         "crop": crops.get(int(payload["face_id"]))
                         if payload.get("face_id") is not None
                         else None,
+                        "item_url": _item_url(
+                            web_base, payload.get("space"), payload.get("photo_id")
+                        ),
+                        "person_a_url": _person_url(
+                            web_base, person_a.get("space"), person_a.get("person_id")
+                        ),
+                        "person_b_url": _person_url(
+                            web_base, person_b.get("space"), person_b.get("person_id")
+                        ),
                         "new_person_crops": [
                             crops.get(int(f)) for f in payload.get("face_ids", [])
                         ],

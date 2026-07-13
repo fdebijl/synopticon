@@ -56,7 +56,10 @@
 <div class="grid" id="grid">
 {% for it in items %}
   <div class="card" data-id="{{ it.item_id }}" tabindex="0">
-    {% if it.crop %}<img src="{{ it.crop }}" alt="">{% endif %}
+    {% if it.crop %}
+      {% if it.item_url %}<a href="{{ it.item_url }}" target="_blank" rel="noopener" title="open photo in Synology Photos"><img src="{{ it.crop }}" alt=""></a>
+      {% else %}<img src="{{ it.crop }}" alt="">{% endif %}
+    {% endif %}
     {% if it.kind == 'new_person' %}
       <div class="thumbs">{% for c in it.new_person_crops %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
       <input placeholder="suggested name" value="{{ it.payload.suggested_name or '' }}"
@@ -64,12 +67,18 @@
     {% elif it.kind == 'merge' %}
       <div class="merge">
         <div class="merge-side">
-          <div><strong>{{ it.payload.person_a.name or it.payload.person_a.person_id }}</strong></div>
+          <div><strong>
+            {% if it.person_a_url %}<a href="{{ it.person_a_url }}" target="_blank" rel="noopener">{{ it.payload.person_a.name or it.payload.person_a.person_id }}</a>
+            {% else %}{{ it.payload.person_a.name or it.payload.person_a.person_id }}{% endif %}
+          </strong></div>
           <div class="thumbs">{% for c in it.merge_crops_a %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
         </div>
         <div class="merge-arrow">&harr;</div>
         <div class="merge-side">
-          <div><strong>{{ it.payload.person_b.name or it.payload.person_b.person_id }}</strong></div>
+          <div><strong>
+            {% if it.person_b_url %}<a href="{{ it.person_b_url }}" target="_blank" rel="noopener">{{ it.payload.person_b.name or it.payload.person_b.person_id }}</a>
+            {% else %}{{ it.payload.person_b.name or it.payload.person_b.person_id }}{% endif %}
+          </strong></div>
           <div class="thumbs">{% for c in it.merge_crops_b %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
         </div>
       </div>
