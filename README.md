@@ -89,6 +89,17 @@ Re-run clustering from the cached embeddings with parameter overrides. Never hit
 |---|---|---|
 | `--set SECTION.KEY=VALUE` | none | Override a config value, e.g. `--set clustering.edge_threshold=0.47`. Repeatable. |
 
+### `reset`
+Clear locally-computed data (faces, embeddings, clusters, and the review queue) plus their crop images, so the pipeline can rebuild from scratch. Useful after tweaking detection/clustering settings: the review UI pools items from every run, so stale suggestions would otherwise linger. Synced NAS metadata is kept unless `--all` is given. **Never touches the NAS.**
+
+| Option | Default | Description |
+|---|---|---|
+| `--all` | off | Also drop synced NAS metadata (photos, persons, ground truth); forces a full re-sync. |
+| `--keep-crops` | off | Leave crop images on disk instead of deleting them with the faces. |
+| `--yes` / `-y` | off | Skip the confirmation prompt. |
+
+Typical use after changing `[detection]` scores: `synopticon reset` then `synopticon extract && synopticon cluster`.
+
 ### `report`
 Generate the static HTML review report.
 
