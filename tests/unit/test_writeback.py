@@ -180,6 +180,48 @@ def test_apply_reviewed_idempotent_skip_no_write(respx_mock, client, nas_conn):
     assert row["status"] == "applied"
 
 
+def test_apply_reviewed_merge_idempotent_when_person_a_is_merged_side(
+    respx_mock, client, nas_conn
+):
+    """Re-apply detection must probe the side _merge_order deletes, not always
+    person_b. Here person_a is unnamed so it becomes the merged (deleted) side;
+    on re-apply it's gone while the named person_b survives -> skip, no re-merge.
+    """
+    _bootstrap(respx_mock)
+
+    def _dispatch(request):
+        form = _form(request)
+        method = form.get("method")
+        if method == "get":
+            # person_a (10) was merged away -> absent; person_b (20) survives.
+            gone = "10" in (form.get("id") or "")
+            data = [] if gone else [
+                {"id": 20, "name": "Bob", "item_count": 1, "show": True, "cover": 1}
+            ]
+            return httpx.Response(200, json={"success": True, "data": {"list": data}})
+        raise AssertionError(f"merge must not re-fire on re-apply: method={method!r}")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(
+        nas_conn,
+        "merge",
+        {
+            "person_a": {"space": "personal", "person_id": 10, "name": None},
+            "person_b": {"space": "personal", "person_id": 20, "name": "Bob"},
+            "evidence": {},
+        },
+    )
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["merge"], apply_merges=True)
+    assert stats.considered == 1
+    assert stats.applied == 1
+    assert stats.failed == 0
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'merge'").fetchone()
+    assert row["status"] == "applied"
+
+
 def test_apply_reviewed_circuit_breaker_stops_early(respx_mock, client, nas_conn):
     _bootstrap(respx_mock)
 

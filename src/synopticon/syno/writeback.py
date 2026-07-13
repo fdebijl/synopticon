@@ -308,9 +308,11 @@ def apply_reviewed(
                     faces = foto.list_item_faces(client, space, payload["photo_id"])
                     applied_already = any(f.person_id == payload["person_id"] for f in faces)
                 elif kind == "merge":
-                    person_b = payload["person_b"]
+                    # The merged-away side is chosen by _merge_order, not always
+                    # person_b — probe that side for absence to detect re-applies.
+                    _, merged = _merge_order(conn, payload["person_a"], payload["person_b"])
                     try:
-                        foto.get_person(client, person_b["space"], person_b["person_id"])
+                        foto.get_person(client, merged["space"], merged["person_id"])
                     except (SynoApiError, LookupError):
                         applied_already = True
             except SynoApiError:
