@@ -62,6 +62,7 @@ class StorageConfig(BaseModel):
 
 class InferenceConfig(BaseModel):
     device: Literal["auto", "cpu", "cuda"] = "auto"
+    device_id: int = 0  # CUDA device ordinal (multi-GPU); ignored on CPU
     batch_size: int = 16
     intra_op_threads: int | None = None  # None = physical cores
 

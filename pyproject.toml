@@ -14,7 +14,6 @@ dependencies = [
     "numpy>=1.26,<2",
     "opencv-python-headless>=4.9",
     "pillow>=10",
-    "onnxruntime>=1.17",
     "scikit-learn>=1.4",
     "scikit-image>=0.22",
     "scipy>=1.12",
@@ -24,6 +23,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# ONNX Runtime ships as two mutually-exclusive PyPI packages sharing the same
+# import namespace. Pick exactly one: `cpu` (default) or `gpu` (CUDA). They are
+# declared conflicting under [tool.uv] so `uv sync --extra gpu` resolves cleanly.
+cpu = ["onnxruntime>=1.17"]
+# The [cuda,cudnn] extra pulls NVIDIA's CUDA + cuDNN runtime wheels from PyPI, so
+# a GPU install needs only the NVIDIA driver -- no system CUDA toolkit. Pinned to
+# the CUDA 12 line (<1.27): 1.27 switched to CUDA 13, whose nvidia-*-cu13 wheels
+# are still pre-releases uv won't resolve by default. create_session() calls
+# preload_dlls() so onnxruntime finds the wheel-provided libs.
+gpu = ["onnxruntime-gpu[cuda,cudnn]==1.26.0"]
 # Restoration is isolated behind pins: basicsr imports
 # torchvision.transforms.functional_tensor, removed in torchvision >= 0.17.
 restore = [
@@ -48,6 +57,17 @@ synopticon = "synopticon.cli:app"
 dev = [
     "pytest>=8",
     "respx>=0.21",
+]
+
+[tool.uv]
+# onnxruntime (cpu) and onnxruntime-gpu share one import namespace and can't
+# coexist. The gpu build also needs nvidia-cudnn-cu12>=9, while the pinned
+# torch==2.1.2 in restore/export requires cuDNN 8.9 -- so gpu is mutually
+# exclusive with those too. (CPU inference + restore/export compose fine.)
+conflicts = [
+    [{ extra = "cpu" }, { extra = "gpu" }],
+    [{ extra = "gpu" }, { extra = "restore" }],
+    [{ extra = "gpu" }, { extra = "export" }],
 ]
 
 [build-system]

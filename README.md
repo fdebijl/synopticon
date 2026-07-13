@@ -2,7 +2,7 @@
 
 A standalone, quality-first face-recognition supplement for **Synology Photos**. Synology's built-in face detection misses faces and sometimes links photos to the wrong person; Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
 
-It runs anywhere Docker or Python runs (a homelab box, not the NAS itself), is CPU-only by design, and treats runtime as a non-issue: batch runs of hours or days are expected and fully resumable.
+It runs anywhere Docker or Python runs (a homelab box, not the NAS itself), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available, and treats runtime as a non-issue: batch runs of hours or days are expected and fully resumable.
 
 ## How it works
 
@@ -37,7 +37,7 @@ export SYNOPTICON_NAS__PASSWORD=...
 docker compose build
 docker compose run synopticon models download
 docker compose run synopticon sync
-docker compose run synopticon extract          # hours-to-days on CPU; resumable, re-runnable
+docker compose run synopticon extract          # the long pass; resumable, re-runnable (see GPU acceleration below)
 docker compose run synopticon cluster
 docker compose run synopticon report           # static HTML in ./data/report/<run>/
 docker compose run --service-ports synopticon review   # http://127.0.0.1:8686
@@ -46,7 +46,7 @@ docker compose run synopticon apply            # dry-run; add --apply to write
 
 **Where state lives:** everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
 
-Without Docker: `uv sync`, then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12).
+Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12).
 
 ## CLI reference
 
@@ -148,7 +148,27 @@ Everything lives in `config.toml` (see `config.example.toml`) and can be overrid
 - `nas.spaces` — `["personal"]` and/or `["shared"]` (Personal vs Shared Space libraries).
 - `nas.requests_per_second` — default 4; the NAS also serves your family, be gentle. Writes are throttled separately (1/s).
 - `storage.keep_originals` / `storage.originals_cache_gb` — by default originals are evicted after processing under a 50 GB LRU budget; only ~10–30 KB of crops per face are kept. Set `keep_originals = true` (needs roughly your library's size in free disk) to make future detector re-runs NAS-traffic-free.
+- `inference.device` — `auto` (default), `cpu`, or `cuda`; see [GPU acceleration](#gpu-acceleration). `inference.device_id` selects the CUDA GPU on multi-GPU hosts.
 - `[clustering]` / `[crossref]` — the tuning surface; change and re-run `synopticon recluster --set clustering.edge_threshold=0.47` cheaply.
+
+### GPU acceleration
+
+Extraction (detection + embedding) is the long pass and runs on CPU by default. It will use an NVIDIA GPU via CUDA when two things are true: a CUDA-capable `onnxruntime-gpu` is installed, and `inference.device` is `auto` (the default) or `cuda`. Run `synopticon hwinfo` to see what's detected — it flags the common case of a GPU being present while only the CPU-only `onnxruntime` is installed.
+
+**Requirements:** just a reasonably recent NVIDIA driver — no system CUDA toolkit. The `gpu` extra is `onnxruntime-gpu[cuda,cudnn]` (CUDA 12 line), whose `[cuda,cudnn]` part pulls NVIDIA's CUDA + cuDNN runtime libraries straight from PyPI as wheels; Synopticon calls `onnxruntime.preload_dlls()` so ONNX Runtime finds them. For Docker you additionally need the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host to expose the driver to the container.
+
+**Bare-metal:** `uv sync --extra gpu` instead of `--extra cpu`. The two extras are mutually exclusive (`onnxruntime` and `onnxruntime-gpu` share one import namespace), so uv installs exactly one. The `gpu` extra is also incompatible with `restore`/`export` — those pin `torch==2.1.2`, which requires an older cuDNN than the GPU runtime does.
+
+**Docker:**
+
+```bash
+docker compose --profile gpu build
+docker compose --profile gpu run synopticon-gpu extract
+```
+
+`device = "auto"` is safe everywhere: if no usable CUDA provider is found — or a CUDA session fails to initialize (missing libraries, GPU out of memory) — Synopticon logs a warning and falls back to CPU rather than aborting the run. Setting `device = "cuda"` does not change this fallback; it only makes the "no GPU" case log a warning.
+
+> **Throughput note:** this release makes the GPU *usable and robust*, not maximally fast. Detection isn't batched and embedding batches only within a single photo, so GPU utilization is modest; cross-photo batching and CPU/GPU overlap are a planned follow-up.
 
 ### Two-factor authentication
 
@@ -182,9 +202,11 @@ Works against any NAS running Synology Photos (DSM 7.x). API versions are discov
 ## Development
 
 ```bash
-uv sync --all-extras --no-extra restore --no-extra export
+uv sync --extra cpu --extra review --extra faiss   # or --extra gpu instead of cpu
 uv run pytest            # unit tests; fully mocked, never touch a NAS
 ```
+
+(`--all-extras` no longer works: the `cpu`/`gpu` extras are mutually exclusive, so pick one explicitly.)
 
 Layout: `syno/` (API client + write-back) · `sync/` (extraction/caching) · `pipeline/` (detect/align/embed) · `cluster/` (graph, Chinese Whispers, cross-reference) · `eval/` (hold-out tuning) · `review/` (report + UI). The `cluster/` package deliberately imports nothing from `syno/`/`pipeline/` — reclustering can never touch the network.
 

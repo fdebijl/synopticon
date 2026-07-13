@@ -121,22 +121,36 @@ def _nvidia_gpus() -> list[str]:
 
 def _onnx_section(settings: Settings) -> Section:
     rows: list[tuple[str, str]] = []
+    gpus = _nvidia_gpus()
+    cuda = False
+    ort_ok = False
     try:
         import onnxruntime as ort
 
+        ort_ok = True
         providers = ort.get_available_providers()
+        cuda = "CUDAExecutionProvider" in providers
         rows.append(("onnxruntime", ort.__version__))
         rows.append(("Execution providers", ", ".join(providers)))
-        cuda = "CUDAExecutionProvider" in providers
-        rows.append(("GPU acceleration", "available (CUDA)" if cuda else "not available (CPU only)"))
     except Exception as exc:  # noqa: BLE001 - diagnostics must not crash
         rows.append(("onnxruntime", f"import failed: {exc}"))
 
-    gpus = _nvidia_gpus()
+    if not ort_ok:
+        gpu_status = "unknown — onnxruntime failed to import (see the row above)"
+    elif cuda:
+        gpu_status = "available (CUDA)"
+    elif gpus:
+        # The single most common surprise: healthy GPU, but the CPU-only wheel.
+        gpu_status = ("not available — GPU detected but CPU-only onnxruntime is installed; "
+                      "reinstall with the gpu extra (see README: GPU acceleration)")
+    else:
+        gpu_status = "not available (CPU only)"
+    rows.append(("GPU acceleration", gpu_status))
     rows.append(("NVIDIA GPU(s)", "; ".join(gpus) if gpus else "none detected (nvidia-smi absent or no GPU)"))
 
     inf = settings.inference
     rows.append(("Configured device", inf.device))
+    rows.append(("device_id", str(inf.device_id)))
     rows.append(("intra_op_threads", str(inf.intra_op_threads) if inf.intra_op_threads else f"{physical_cores()} (physical cores)"))
     rows.append(("batch_size", str(inf.batch_size)))
     thread_env = [f"{k}={os.environ[k]}" for k in

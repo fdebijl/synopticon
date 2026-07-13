@@ -22,3 +22,35 @@ services:
     #   docker compose run synopticon sync
     #   docker compose run synopticon extract
     #   docker compose run synopticon cluster && docker compose run synopticon report
+
+  # GPU variant (opt-in). Requires an NVIDIA GPU + the NVIDIA Container Toolkit.
+  # Build + run with the profile, e.g.:
+  #   docker compose --profile gpu build
+  #   docker compose --profile gpu run synopticon-gpu extract
+  synopticon-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: gpu
+      args:
+        ORT_EXTRA: gpu
+    image: synopticon:gpu
+    environment:
+      SYNOPTICON_NAS__URL: ${SYNOPTICON_NAS__URL:?set your NAS url, e.g. https://nas.example.com}
+      SYNOPTICON_NAS__ACCOUNT: ${SYNOPTICON_NAS__ACCOUNT:?set the NAS account}
+      SYNOPTICON_NAS__PASSWORD: ${SYNOPTICON_NAS__PASSWORD:?set the NAS password}
+      SYNOPTICON_NAS__OTP_CODE: ${SYNOPTICON_NAS__OTP_CODE:?set the NAS OTP code}
+      SYNOPTICON_CONFIG: /data/config.toml
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    ports:
+      - "127.0.0.1:8686:8686"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

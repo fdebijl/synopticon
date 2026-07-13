@@ -22,7 +22,10 @@ keep_originals = false              # true = keep every downloaded original (nee
 originals_cache_gb = 50.0           # LRU eviction budget when keep_originals = false
 
 [inference]
-device = "auto"                     # auto | cpu | cuda
+device = "auto"                     # auto | cpu | cuda; "auto"/"cuda" use the GPU
+                                    # only if onnxruntime-gpu is installed (see
+                                    # README "GPU acceleration"), else fall back to CPU
+device_id = 0                       # CUDA device ordinal for multi-GPU hosts
 batch_size = 16
 
 [detection]
