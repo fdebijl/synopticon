@@ -36,8 +36,10 @@ class NasConfig(BaseModel):
 
 
 class StorageConfig(BaseModel):
-    data_dir: Path = Path("/data")
-    models_dir: Path = Path("/models")
+    # Repo-root-relative defaults for bare-metal runs; the Docker image
+    # overrides both via env to its /data and /models volume mounts.
+    data_dir: Path = Path("./data")
+    models_dir: Path = Path("./models")
     keep_originals: bool = False
     originals_cache_gb: float = 50.0
 
@@ -107,6 +109,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SYNOPTICON_",
         env_nested_delimiter="__",
+        env_file=".env",
         extra="ignore",
     )
 
@@ -127,10 +130,11 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # Earlier sources win: init > env > toml.
+        # Earlier sources win: init > env > .env file > toml.
         return (
             init_settings,
             env_settings,
+            dotenv_settings,
             TomlConfigSettingsSource(settings_cls, toml_file=_config_file()),
         )
 
@@ -139,7 +143,11 @@ def _config_file() -> Path | None:
     explicit = os.environ.get("SYNOPTICON_CONFIG")
     if explicit:
         return Path(explicit)
-    for candidate in (Path("config.toml"), Path("/data/config.toml")):
+    for candidate in (
+        Path("config.toml"),
+        Path("data/config.toml"),  # the compose-mounted location, bare-metal view
+        Path("/data/config.toml"),  # same location, in-container view
+    ):
         if candidate.is_file():
             return candidate
     return None

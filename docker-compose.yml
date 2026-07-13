@@ -1,7 +1,7 @@
 services:
   synopticon:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
       target: cpu
     image: synopticon:latest
@@ -9,6 +9,7 @@ services:
       SYNOPTICON_NAS__URL: ${SYNOPTICON_NAS__URL:?set your NAS url, e.g. https://nas.example.com}
       SYNOPTICON_NAS__ACCOUNT: ${SYNOPTICON_NAS__ACCOUNT:?set the NAS account}
       SYNOPTICON_NAS__PASSWORD: ${SYNOPTICON_NAS__PASSWORD:?set the NAS password}
+      SYNOPTICON_NAS__OTP_CODE: ${SYNOPTICON_NAS__OTP_CODE:?set the NAS OTP code}
       SYNOPTICON_CONFIG: /data/config.toml
     volumes:
       - ./data:/data

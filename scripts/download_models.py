@@ -10,9 +10,9 @@ What it does per model key:
 * Detectors/embedders bundled in insightface's ``antelopev2.zip``
   (``scrfd_10g_bnkps`` + ``glintr100``) are downloaded once (the zip is cached in
   models_dir) and the required members extracted.
-* ``yolov8l-face`` has no dependable direct-ONNX release asset (AGPL-3.0) and is
-  treated as OPTIONAL: instructions for a manual ``yolo export`` are printed; if
-  the .onnx already exists it is registered.
+* ``yolov8l-face`` is fetched from lindevs/yolov8-face's versioned release
+  (AGPL-3.0, sha256-pinned). It stays OPTIONAL: a dead link prints manual
+  instructions instead of aborting the run.
 * ``adaface_ir101_webface12m`` / ``magface_iresnet100`` are produced locally by
   ``scripts/export_*_onnx.py``; they are registered iff the .onnx already exists,
   else an instruction is printed.
@@ -64,13 +64,15 @@ KNOWN_MODELS: dict[str, dict] = {
     },
     "yolov8l-face": {
         "file": "yolov8l-face.onnx",
-        "sha256": None,
-        "source_url": "https://github.com/derronqi/yolov8-face",
-        "license": "AGPL-3.0 (derronqi/yolov8-face)",
+        "sha256": "52dc39e46a7316398c95d30dd669a641382c9fdd8b675ad32aa65585bf820ea0",
+        # Versioned tag, NOT releases/latest — a re-export upstream would
+        # silently change the artifact and break the pinned hash.
+        "source_url": "https://github.com/lindevs/yolov8-face/releases/download/1.0.1/yolov8l-face-lindevs.onnx",
+        "license": "AGPL-3.0 (lindevs/yolov8-face, trained on WIDER FACE)",
         "optional": True,
         "export_hint": (
-            "No dependable direct ONNX asset. Obtain yolov8l-face.pt from "
-            "https://github.com/derronqi/yolov8-face and export:\n"
+            "Direct download failed. Fetch it manually from "
+            "https://github.com/lindevs/yolov8-face/releases, or export your own:\n"
             "    yolo export model=yolov8l-face.pt format=onnx opset=12\n"
             "then place yolov8l-face.onnx in --models-dir and re-run with "
             "--allow-record-hash."
@@ -179,6 +181,14 @@ def _handle(models_dir: Path, key: str, spec: dict, allow_record_hash: bool) -> 
         return
 
     if spec.get("optional") and not spec.get("archive"):
+        if not dest.is_file() and spec["source_url"].endswith(".onnx"):
+            print(f"  downloading {spec['file']} ...")
+            try:
+                _download(spec["source_url"], dest)
+            except Exception as exc:  # optional: a dead link must not abort the run
+                dest.unlink(missing_ok=True)
+                print(f"  download failed ({exc}). {spec['export_hint']}")
+                return
         if dest.is_file():
             _register(models_dir, key, spec, allow_record_hash)
         else:

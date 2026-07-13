@@ -6,6 +6,17 @@ It runs anywhere Docker or Python runs (a homelab box, not the NAS itself), is C
 
 ## How it works
 
+The pipeline runs in a fixed order, each stage consuming the previous stage's output from the local SQLite cache:
+
+```
+sync  →  extract  →  cluster  →  report  →  review  →  apply
+(NAS→db) (faces+     (graph +    (static    (approve/  (write
+          embeddings) crossref)  HTML)      reject UI) back to NAS)
+└──────── read-only ────────────────────────┘          └─ gated write ─┘
+```
+
+`recluster` and `eval` are side-loops off `cluster` — they re-run clustering from the cached embeddings with different parameters and never touch the NAS.
+
 1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels become ground truth.
 2. **`extract`** — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into a local SQLite cache. Interrupt any time; it resumes.
 3. **`cluster`** — builds an exact k-NN similarity graph over all faces, clusters (Chinese Whispers by default), and maps clusters onto Synology persons by majority vote. Produces proposals: *new face assignments*, *merge candidates*, and *new people*.
@@ -16,9 +27,9 @@ It runs anywhere Docker or Python runs (a homelab box, not the NAS itself), is C
 ## Quickstart (Docker)
 
 ```bash
-git clone https://github.com/fdebijl/synopticon && cd synopticon/docker
+git clone https://github.com/fdebijl/synopticon && cd synopticon
 mkdir -p data models
-cp ../config.example.toml data/config.toml   # edit: set [nas] url
+cp config.example.toml data/config.toml      # edit: set [nas] url
 export SYNOPTICON_NAS__URL=https://your-nas.example.com
 export SYNOPTICON_NAS__ACCOUNT=photos-bot     # a dedicated NAS user is recommended
 export SYNOPTICON_NAS__PASSWORD=...
@@ -33,7 +44,102 @@ docker compose run --service-ports synopticon review   # http://127.0.0.1:8686
 docker compose run synopticon apply            # dry-run; add --apply to write
 ```
 
-Without Docker: `uv sync`, then `uv run synopticon <command>` (Python 3.11/3.12).
+**Where state lives:** everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
+
+Without Docker: `uv sync`, then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12).
+
+## CLI reference
+
+All commands are subcommands of `synopticon` (Docker: `docker compose run synopticon <command>`). Every command reads `config.toml`; `--space` defaults to all spaces listed in `nas.spaces`. Phases 1–3 are read-only toward the NAS.
+
+### `check`
+Verify NAS connectivity and credentials (read-only, fast). No options.
+
+### `hwinfo`
+Print hardware/environment stats relevant to face extraction and clustering — CPU model and core count, RAM, ONNX Runtime version and available execution providers (i.e. whether a GPU is usable), detected NVIDIA GPUs, key library versions, which model weights are present, and disk space. Touches nothing and reaches no network; **include its output when filing a bug report.** No options.
+
+### `sync`
+Pull photos, persons, and ground-truth labels from the NAS. Prints live progress per phase (an in-place line on a terminal, periodic lines when piped/in Docker logs).
+
+| Option | Default | Description |
+|---|---|---|
+| `--space TEXT` | all configured | Limit to one space. |
+| `--skip-faces` | off | Skip the per-photo face-level ground-truth pass. |
+| `--all-faces` | off | Fetch `list_face` for ALL photos, not just those already tagged. |
+| `--resume` / `--no-resume` | `--resume` | Resume the faces pass from its saved cursor; `--no-resume` forces a full re-scan. |
+
+The faces pass is checkpointed per-photo, so it resumes cleanly after an interruption. The items and persons passes are idempotent but restart from the top.
+
+### `extract`
+Detect faces and compute ensemble embeddings (resumable; interrupt any time). Evicts cached originals afterward unless `storage.keep_originals` is set.
+
+| Option | Default | Description |
+|---|---|---|
+| `--limit INTEGER` | none | Process at most N photos. |
+| `--photo-id INTEGER` | none | Process a single photo id. |
+| `--space TEXT` | all configured | Limit to one space. |
+
+### `cluster`
+Cluster all embeddings and cross-reference against Synology persons. Writes a new cluster run. No options.
+
+### `recluster`
+Re-run clustering from the cached embeddings with parameter overrides. Never hits the NAS.
+
+| Option | Default | Description |
+|---|---|---|
+| `--set SECTION.KEY=VALUE` | none | Override a config value, e.g. `--set clustering.edge_threshold=0.47`. Repeatable. |
+
+### `report`
+Generate the static HTML review report.
+
+| Option | Default | Description |
+|---|---|---|
+| `--run-id INTEGER` | latest | Cluster run to report on. |
+
+### `review`
+Serve the interactive review UI (approve/reject queue items). Under Docker, add `--service-ports`.
+
+| Option | Default | Description |
+|---|---|---|
+| `--host TEXT` | `127.0.0.1` | Bind address. |
+| `--port INTEGER` | `8686` | Bind port. |
+
+### `apply`
+Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
+
+| Option | Default | Description |
+|---|---|---|
+| `--kinds TEXT` | `assign` | Comma-separated kinds to apply: `assign`, `merge`, `new_person`. |
+| `--person-id INTEGER` | none | Scope to a single person id. |
+| `--apply` | off (dry-run) | Actually write to the NAS. |
+| `--apply-merges` | off | Extra gate required before any merge is written. |
+| `--space TEXT` | `personal` | Space to write to. |
+| `--report` | off | Print the audit trail afterward. |
+
+### `models download`
+Download and verify model weights into `storage.models_dir`.
+
+| Option | Default | Description |
+|---|---|---|
+| `--only TEXT` | all | Subset of model keys to fetch. Repeatable. |
+| `--allow-record-hash` | off | Record the sha256 of not-yet-pinned (locally exported) models. |
+
+### `eval holdout`
+Mask a fraction of known labels, recluster, and measure recovery.
+
+| Option | Default | Description |
+|---|---|---|
+| `--mask-fraction FLOAT` | `0.2` | Fraction of known labels to mask. |
+| `--seed INTEGER` | `42` | Random seed. |
+
+### `eval grid`
+Grid-search tunables; writes `eval_grid.csv` under `storage.data_dir`.
+
+| Argument / Option | Default | Description |
+|---|---|---|
+| `GRID_JSON` (argument) | required | JSON of param→values, e.g. `'{"edge_threshold": [0.45, 0.5, 0.55]}'`. |
+| `--mask-fraction FLOAT` | `0.2` | Fraction of known labels to mask. |
+| `--seed INTEGER` | `42` | Random seed. |
 
 ### Configuration
 
@@ -56,7 +162,7 @@ Weights are **not** bundled (mixed licenses; some upstream terms are research-on
 |---|---|---|---|
 | SCRFD-10G-KPS | primary detector | insightface `antelopev2` | auto-download |
 | ArcFace R100 (Glint360K) | embedder | insightface `antelopev2` | auto-download |
-| YOLOv8-l-face | secondary detector | derronqi/yolov8-face (**AGPL-3.0**) | optional, manual export |
+| YOLOv8-l-face | secondary detector | lindevs/yolov8-face (**AGPL-3.0**) | auto-download |
 | AdaFace IR-101 (WebFace12M) | embedder | official checkpoint → `scripts/export_adaface_onnx.py` | optional, manual export |
 | MagFace iResNet100 | embedder + quality signal | official checkpoint → `scripts/export_magface_onnx.py` | optional, manual export |
 

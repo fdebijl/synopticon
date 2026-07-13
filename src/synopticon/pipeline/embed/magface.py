@@ -1,9 +1,11 @@
 """MagFace iResNet100 embedder.
 
 MagFace's official inference (IrvingMeng/MagFace ``inference/gen_feat.py``) reads
-images with OpenCV (**BGR**) and normalizes with torchvision
-``transforms.Normalize(mean=[0.5]*3, std=[0.5]*3)`` after ToTensor, i.e.
-``(x/255 - 0.5)/0.5 == (x - 127.5)/127.5`` on BGR channels (no swapRB).
+images with OpenCV (**BGR**) and applies only ``ToTensor()``, i.e. plain
+``x / 255`` on BGR channels — no mean subtraction, no swapRB. Verified
+empirically against the exported ONNX: x/255 gives same-identity cosine 0.70 /
+inter-person max 0.22 on real faces, while (x-127.5)/127.5 collapses the
+embedding space (same-identity 0.33 < inter-person 0.46).
 
 MagFace is trained so that the L2 magnitude of the *pre-normalization* embedding
 correlates with face quality/recognizability. :meth:`embed_with_norm` exposes
@@ -26,9 +28,9 @@ NAME = "magface_r100"
 DIM = 512
 MANIFEST_KEY = "magface_iresnet100"
 
-# BGR, (x/255 - 0.5)/0.5 == (x - 127.5)/127.5  ->  scale 1/127.5, mean 127.5, no swap.
-_SCALE = 1.0 / 127.5
-_MEAN = 127.5
+# BGR, x/255  ->  scale 1/255, no mean subtraction, no swap.
+_SCALE = 1.0 / 255.0
+_MEAN = 0.0
 _SWAP_RB = False
 
 

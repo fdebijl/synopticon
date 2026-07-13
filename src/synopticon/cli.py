@@ -70,10 +70,67 @@ def models_download(
 
 
 @app.command()
+def check():
+    """Verify NAS connectivity and credentials (read-only, fast)."""
+    from synopticon.syno.client import SynoClient, SynoError
+
+    settings = _settings()
+    conn = _conn(settings)
+    typer.echo(f"NAS url:  {settings.nas.url or '<not set>'}")
+    typer.echo(f"account:  {settings.nas.account or '<not set>'}")
+    try:
+        with SynoClient(settings, conn) as client:
+            info = client.api_info
+            typer.echo(f"reachable: yes ({len(info)} APIs discovered)")
+            client._ensure_auth()
+            session = client.session
+            typer.echo(f"login:     OK (synotoken={'yes' if session.synotoken else 'no'}, "
+                       f"2FA device token {'stored' if session.device_id else 'not needed/absent'})")
+            person_api = client.api_name("personal", "Browse.Person")
+            v = client.version_for(person_api, 3)
+            typer.echo(f"photos:    {person_api} available at v{v}")
+    except SynoError as exc:
+        typer.echo(f"\nFAILED: {exc}", err=True)
+        raise typer.Exit(1)
+    typer.echo("all good — you can run: synopticon sync")
+
+
+def _progress(space: str, label: str):
+    """Render a sync progress callback: a live line on a tty, periodic lines otherwise."""
+    is_tty = sys.stdout.isatty()
+
+    def cb(done: int, total: int | None):
+        suffix = f"{done}/{total}" if total is not None else str(done)
+        if is_tty:
+            typer.echo(f"\r[{space}] {label}: {suffix}", nl=False)
+        else:
+            typer.echo(f"[{space}] {label}: {suffix}")
+
+    return cb
+
+
+def _finish_line():
+    """Terminate the in-place progress line so the summary lands on its own line."""
+    if sys.stdout.isatty():
+        typer.echo("")
+
+
+@app.command()
+def hwinfo():
+    """Print hardware/environment stats relevant to extraction & clustering (for bug reports)."""
+    from synopticon import diagnostics
+
+    typer.echo(diagnostics.render(_settings()), nl=False)
+
+
+@app.command()
 def sync(
     space: str = typer.Option(None, help="Limit to one space (default: all configured)."),
     skip_faces: bool = typer.Option(False, help="Skip the per-photo face-level ground-truth pass."),
     all_faces: bool = typer.Option(False, help="Fetch list_face for ALL photos, not just tagged ones."),
+    resume: bool = typer.Option(
+        True, "--resume/--no-resume", help="Resume the faces pass from its saved cursor (default: resume)."
+    ),
 ):
     """Pull photos, persons, and ground-truth labels from the NAS (read-only)."""
     from synopticon.sync import items, persons
@@ -83,12 +140,18 @@ def sync(
     conn = _conn(settings)
     with SynoClient(settings, conn) as client:
         for sp in _spaces(settings, space):
-            stats = items.sync_items(conn, client, sp)
+            stats = items.sync_items(conn, client, sp, progress=_progress(sp, "items"))
+            _finish_line()
             typer.echo(f"[{sp}] items: {stats}")
-            stats = persons.sync_persons(conn, client, sp)
+            stats = persons.sync_persons(conn, client, sp, progress=_progress(sp, "persons"))
+            _finish_line()
             typer.echo(f"[{sp}] persons: {stats}")
             if not skip_faces:
-                stats = persons.sync_faces(conn, client, sp, only_tagged=not all_faces)
+                stats = persons.sync_faces(
+                    conn, client, sp, only_tagged=not all_faces, resume=resume,
+                    progress=_progress(sp, "faces"),
+                )
+                _finish_line()
                 typer.echo(f"[{sp}] faces: {stats}")
 
 

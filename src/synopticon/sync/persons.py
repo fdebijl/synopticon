@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 
 from synopticon.config import Space
 from synopticon.db import store
@@ -10,9 +11,17 @@ from synopticon.syno import foto
 from synopticon.syno.client import SynoClient
 
 _CHUNK = 500
+_PROGRESS_EVERY = 50
+
+Progress = Callable[[int, int | None], None]
 
 
-def sync_persons(conn: sqlite3.Connection, client: SynoClient, space: Space) -> dict:
+def sync_persons(
+    conn: sqlite3.Connection,
+    client: SynoClient,
+    space: Space,
+    progress: Progress | None = None,
+) -> dict:
     seen: set[int] = set()
     upserted = 0
     now = store.now()
@@ -32,7 +41,11 @@ def sync_persons(conn: sqlite3.Connection, client: SynoClient, space: Space) -> 
             ),
         )
         upserted += 1
+        if progress and upserted % _PROGRESS_EVERY == 0:
+            progress(upserted, None)
     conn.commit()
+    if progress:
+        progress(upserted, None)
 
     existing_ids = [
         int(row["id"])
@@ -65,6 +78,7 @@ def sync_faces(
     space: Space,
     only_tagged: bool = True,
     resume: bool = True,
+    progress: Progress | None = None,
 ) -> dict:
     """Per-photo `Browse.Item.list_face` -> `syno_faces` upsert, resumable via `sync_state`.
 
@@ -91,6 +105,7 @@ def sync_faces(
 
     photos_processed = 0
     faces_upserted = 0
+    total = len(candidate_ids)
     now = store.now()
 
     for photo_id in candidate_ids:
@@ -111,6 +126,11 @@ def sync_faces(
         photos_processed += 1
         store.set_state(conn, cursor_key, photo_id)
         conn.commit()
+        if progress and photos_processed % _PROGRESS_EVERY == 0:
+            progress(photos_processed, total)
+
+    if progress:
+        progress(photos_processed, total)
 
     store.set_state(conn, cursor_key, None)
     conn.commit()

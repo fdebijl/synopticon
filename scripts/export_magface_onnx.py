@@ -118,12 +118,21 @@ def _load_state_dict(torch, net, checkpoint: Path):
     ckpt = torch.load(str(checkpoint), map_location="cpu")
     state = ckpt.get("state_dict", ckpt.get("model", ckpt)) if isinstance(ckpt, dict) else ckpt
     cleaned = {}
-    for k, v in state.items():
-        nk = k
-        for prefix in ("module.", "features.module.", "backbone.", "model."):
-            if nk.startswith(prefix):
-                nk = nk[len(prefix):]
-        cleaned[nk] = v
+    if any(k.startswith("features.module.") for k in state):
+        # Official MagFace DDP checkpoint: backbone lives under features.module.*;
+        # everything else (e.g. the sharded MagLinear head's fc.weight) is the
+        # training head and must be dropped, not prefix-stripped — a stripped
+        # head fc.weight would collide with the backbone's embedding fc.
+        for k, v in state.items():
+            if k.startswith("features.module."):
+                cleaned[k[len("features.module."):]] = v
+    else:
+        for k, v in state.items():
+            nk = k
+            for prefix in ("module.", "backbone.", "model."):
+                if nk.startswith(prefix):
+                    nk = nk[len(prefix):]
+            cleaned[nk] = v
     missing, unexpected = net.load_state_dict(cleaned, strict=False)
     if missing:
         print(f"  WARNING: {len(missing)} missing keys (first few): {missing[:5]}")

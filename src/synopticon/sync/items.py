@@ -9,6 +9,7 @@ un-marked automatically by the per-item upsert.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
 
 from synopticon.config import Space
 from synopticon.db import store
@@ -16,9 +17,17 @@ from synopticon.syno import foto
 from synopticon.syno.client import SynoClient
 
 _CHUNK = 500
+_PROGRESS_EVERY = 50
+
+Progress = Callable[[int, int | None], None]
 
 
-def sync_items(conn: sqlite3.Connection, client: SynoClient, space: Space) -> dict:
+def sync_items(
+    conn: sqlite3.Connection,
+    client: SynoClient,
+    space: Space,
+    progress: Progress | None = None,
+) -> dict:
     seen: set[int] = set()
     upserted = 0
     now = store.now()
@@ -52,6 +61,11 @@ def sync_items(conn: sqlite3.Connection, client: SynoClient, space: Space) -> di
                 (space, pid, item.id, now),
             )
         conn.commit()
+        if progress and upserted % _PROGRESS_EVERY == 0:
+            progress(upserted, None)
+
+    if progress:
+        progress(upserted, None)
 
     existing_ids = [
         int(row["id"])

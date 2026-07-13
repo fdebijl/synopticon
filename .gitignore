@@ -1,8 +1,10 @@
 __pycache__/
 *.pyc
 .venv/
-/data/
-/models/
+docker/data/
+docker/models/
+data/
+models/
 *.db
 *.db-wal
 *.db-shm
@@ -10,3 +12,4 @@ dist/
 .pytest_cache/
 config.toml
 *.har
+.env

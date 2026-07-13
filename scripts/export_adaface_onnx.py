@@ -40,9 +40,11 @@ def _build_net_module():
                     nn.Conv2d(in_channel, depth, (1, 1), stride, bias=False),
                     nn.BatchNorm2d(depth),
                 )
+            # Official AdaFace BasicBlockIR layout (net.py): BN, Conv, BN, PReLU, Conv, BN.
             self.res_layer = nn.Sequential(
                 nn.BatchNorm2d(in_channel),
                 nn.Conv2d(in_channel, depth, (3, 3), (1, 1), 1, bias=False),
+                nn.BatchNorm2d(depth),
                 nn.PReLU(depth),
                 nn.Conv2d(depth, depth, (3, 3), stride, 1, bias=False),
                 nn.BatchNorm2d(depth),
@@ -76,7 +78,9 @@ def _build_net_module():
                 nn.Dropout(0.4),
                 Flatten(),
                 nn.Linear(512 * out_hw * out_hw, num_features),
-                nn.BatchNorm1d(num_features),
+                # affine=False per official net.py — the checkpoint has no
+                # weight/bias here; affine=True would leave them random.
+                nn.BatchNorm1d(num_features, affine=False),
             )
             modules = []
             for block in blocks:

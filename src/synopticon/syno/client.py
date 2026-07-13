@@ -181,8 +181,23 @@ class SynoClient:
         payload = encode_params(
             {"api": "SYNO.API.Info", "version": 1, "method": "query", "query": "all"}
         )
-        resp = self._send("POST", "/webapi/query.cgi", data=payload)
-        envelope = resp.json()
+        try:
+            resp = self._send("POST", "/webapi/query.cgi", data=payload)
+        except httpx.TransportError as exc:
+            nas = self._settings.nas
+            raise SynoError(
+                f"Cannot reach the NAS at {nas.url!r} ({type(exc).__name__}: {exc}). "
+                "Check nas.url (scheme://host[:port]; DSM defaults are :5000 http / :5001 https), "
+                "and for a self-signed certificate set nas.verify_tls = false."
+            ) from exc
+        try:
+            envelope = resp.json()
+        except ValueError as exc:
+            raise SynoError(
+                f"The server at {self._settings.nas.url!r} did not return a Synology API "
+                f"response (HTTP {resp.status_code}). Is this really DSM / Synology Photos? "
+                "A reverse proxy in front of DSM must forward /webapi/*."
+            ) from exc
         if not envelope.get("success", False):
             code = (envelope.get("error") or {}).get("code")
             raise SynoApiError(code, "SYNO.API.Info", "query")
@@ -215,10 +230,20 @@ class SynoClient:
     # -- auth ----------------------------------------------------------------
 
     def _ensure_auth(self) -> None:
-        if self._session is None and self._settings.nas.account:
-            from synopticon.syno import auth
+        if self._session is not None:
+            return
+        nas = self._settings.nas
+        if not nas.account or not nas.password.get_secret_value():
+            missing = "account" if not nas.account else "password"
+            raise SynoError(
+                f"No NAS {missing} configured — cannot authenticate against {nas.url or '<no url set>'}. "
+                "Set nas.account/nas.password in config.toml, or the env vars "
+                "SYNOPTICON_NAS__ACCOUNT / SYNOPTICON_NAS__PASSWORD (a .env file "
+                "in the working directory is also read)."
+            )
+        from synopticon.syno import auth
 
-            self._session = auth.login(self, self._settings, self._conn)
+        self._session = auth.login(self, self._settings, self._conn)
 
     def invalidate_session(self) -> None:
         self._session = None
