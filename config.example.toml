@@ -28,13 +28,26 @@ device = "auto"                     # auto | cpu | cuda; "auto"/"cuda" use the G
 device_id = 0                       # CUDA device ordinal for multi-GPU hosts
 batch_size = 16
 
+# The defaults below are recall-first: they favour catching every real face at
+# the cost of some false positives (leaves, fabric, hair textures detected as
+# faces). If your review queue fills with non-faces, tighten precision here —
+# biggest lever first. Any change to this section bumps the pipeline version, so
+# already-processed photos are automatically re-extracted on the next run.
 [detection]
-scales = [1.0, 2.0]                 # multi-scale detection passes
-scrfd_score = 0.30                  # recall-first thresholds; precision comes later
-yolo_score = 0.35
+scales = [1.0, 2.0]                 # multi-scale detection passes. The 2.0 upscale
+                                    # pass boosts recall on small/distant faces but
+                                    # is a common false-positive source (cubic
+                                    # upscaling turns texture into face-like blobs).
+                                    # Set to [1.0] to cut false positives.
+scrfd_score = 0.30                  # SCRFD confidence floor. Lower = more recall,
+yolo_score = 0.35                   # more false positives. Raise both toward ~0.50
+                                    # (the usual operating point) to reject textures
+                                    # that only weakly resemble faces — the single
+                                    # most effective knob for precision.
 nms_iou = 0.45
 cross_iou = 0.50                    # cross-detector union dedup
-min_face_px = 20
+min_face_px = 20                    # drop faces smaller than this (min side, px).
+                                    # Raise to 32-40 to remove tiny texture crops.
 
 [restoration]
 enabled = false                     # requires the [restore] extra (pinned torch)
