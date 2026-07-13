@@ -1,0 +1,69 @@
+"""Thin SQLite wrapper: connection setup, migrations, blob codecs, sync_state.
+
+Modules own their SQL; this module owns the connection contract:
+WAL, foreign keys, Row factory, and schema versioning via PRAGMA user_version.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+_SCHEMA_DIR = Path(__file__).parent
+_MIGRATIONS = [
+    _SCHEMA_DIR / "schema.sql",  # version 1
+    _SCHEMA_DIR / "migrations" / "0002_extract_state.sql",  # version 2
+    # Future migrations: append db/migrations/000N_*.sql paths here.
+]
+
+
+def connect(db_path: Path | str) -> sqlite3.Connection:
+    db_path = Path(db_path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=60)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    _migrate(conn)
+    return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    for i, migration in enumerate(_MIGRATIONS, start=1):
+        if i > version:
+            conn.executescript(migration.read_text())
+            conn.execute(f"PRAGMA user_version = {i}")
+    conn.commit()
+
+
+def now() -> int:
+    return int(time.time())
+
+
+def vec_to_blob(vec: np.ndarray) -> bytes:
+    return np.ascontiguousarray(vec, dtype=np.float32).tobytes()
+
+
+def blob_to_vec(blob: bytes) -> np.ndarray:
+    return np.frombuffer(blob, dtype=np.float32)
+
+
+def get_state(conn: sqlite3.Connection, key: str, default: Any = None) -> Any:
+    row = conn.execute("SELECT value_json FROM sync_state WHERE key = ?", (key,)).fetchone()
+    return json.loads(row["value_json"]) if row else default
+
+
+def set_state(conn: sqlite3.Connection, key: str, value: Any) -> None:
+    conn.execute(
+        "INSERT INTO sync_state (key, value_json) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+        (key, json.dumps(value)),
+    )
+    conn.commit()

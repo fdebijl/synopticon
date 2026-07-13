@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synopticon review report — run {{ run_id }}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem;
+         background: #fafafa; color: #1a1a1a; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181c; color: #e6e6e6; }
+    .card { background: #22252b !important; border-color: #333 !important; }
+    .stat { background: #22252b !important; }
+  }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #ccc;
+       padding-bottom: .3rem; }
+  .stats { display: flex; flex-wrap: wrap; gap: .75rem; margin: 1rem 0; }
+  .stat { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+          padding: .6rem 1rem; min-width: 90px; }
+  .stat .n { font-size: 1.5rem; font-weight: 700; display: block; }
+  .stat .l { font-size: .75rem; opacity: .7; text-transform: uppercase; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px,1fr));
+          gap: .75rem; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+          padding: .6rem; font-size: .85rem; }
+  .card img { width: 96px; height: 96px; object-fit: cover; border-radius: 6px;
+              background: #ddd; }
+  .thumbs { display: flex; flex-wrap: wrap; gap: 4px; }
+  .thumbs img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; }
+  .conf { font-variant-numeric: tabular-nums; }
+  .muted { opacity: .6; }
+  .merge-cols { display: flex; gap: 1rem; }
+  .merge-cols > div { flex: 1; }
+  .noimg { display:inline-block; width:96px; height:96px; line-height:96px;
+           text-align:center; background:#eee; color:#999; border-radius:6px;
+           font-size:.7rem; }
+  .trunc { font-style: italic; opacity: .7; margin-top: .5rem; }
+</style>
+</head>
+<body>
+<h1>Synopticon review report — run {{ run_id }}</h1>
+<div class="stats">
+  <div class="stat"><span class="n">{{ faces }}</span><span class="l">faces</span></div>
+  <div class="stat"><span class="n">{{ n_clusters }}</span><span class="l">clusters</span></div>
+  <div class="stat"><span class="n">{{ n_mapped }}</span><span class="l">mapped</span></div>
+  {% for kind, n in counts_by_kind.items() %}
+  <div class="stat"><span class="n">{{ n }}</span><span class="l">{{ kind }}</span></div>
+  {% endfor %}
+</div>
+
+{% macro img(src, cls="") %}
+  {% if src %}<img class="{{ cls }}" src="{{ src }}" alt="crop">{% else %}<span class="noimg">no crop</span>{% endif %}
+{% endmacro %}
+
+<h2>Assignments ({{ sections.assign|length }})</h2>
+<div class="grid">
+{% for e in sections.assign %}
+  <div class="card">
+    {{ img(e.crop) }}
+    <div><strong>{{ e.payload.person_name or e.payload.person_id }}</strong></div>
+    <div class="muted">photo {{ e.payload.photo_id }} · {{ e.payload.space }}</div>
+    <div class="conf">confidence {{ '%.3f'|format(e.confidence or 0) }}</div>
+    <div class="muted">{{ e.status }}</div>
+  </div>
+{% endfor %}
+</div>
+{% if truncated.assign %}<p class="trunc">{{ truncated.assign }} more truncated.</p>{% endif %}
+
+<h2>Merges ({{ sections.merge|length }})</h2>
+<div class="grid">
+{% for e in sections.merge %}
+  <div class="card">
+    <div class="merge-cols">
+      <div>
+        <strong>{{ e.payload.person_a.name or e.payload.person_a.person_id }}</strong>
+        <div class="thumbs">{% for c in e.exemplars_a %}{{ img(c) }}{% endfor %}</div>
+      </div>
+      <div>
+        <strong>{{ e.payload.person_b.name or e.payload.person_b.person_id }}</strong>
+        <div class="thumbs">{% for c in e.exemplars_b %}{{ img(c) }}{% endfor %}</div>
+      </div>
+    </div>
+    <div class="muted">{{ e.payload.evidence|tojson }}</div>
+  </div>
+{% endfor %}
+</div>
+{% if truncated.merge %}<p class="trunc">{{ truncated.merge }} more truncated.</p>{% endif %}
+
+<h2>New persons ({{ sections.new_person|length }})</h2>
+<div class="grid">
+{% for e in sections.new_person %}
+  <div class="card">
+    <div>size {{ e.payload.size }}{% if e.payload.suggested_name %} · {{ e.payload.suggested_name }}{% endif %}</div>
+    <div class="thumbs">{% for c in e.crops %}{{ img(c) }}{% endfor %}</div>
+  </div>
+{% endfor %}
+</div>
+{% if truncated.new_person %}<p class="trunc">{{ truncated.new_person }} more truncated.</p>{% endif %}
+
+<h2>Flags ({{ sections.flags|length }})</h2>
+<div class="grid">
+{% for e in sections.flags %}
+  <div class="card">
+    {{ img(e.crop) }}
+    <div><strong>{{ e.payload.person_name or e.payload.person_id }}</strong></div>
+    <div class="conf">confidence {{ '%.3f'|format(e.confidence or 0) }}</div>
+    <div class="muted">{{ e.kind }} · {{ e.status }}</div>
+  </div>
+{% endfor %}
+</div>
+{% if truncated.flags %}<p class="trunc">{{ truncated.flags }} more truncated.</p>{% endif %}
+
+</body>
+</html>

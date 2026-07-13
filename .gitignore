@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+/data/
+/models/
+*.db
+*.db-wal
+*.db-shm
+dist/
+.pytest_cache/
+config.toml
+*.har

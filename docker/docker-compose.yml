@@ -1,0 +1,23 @@
+services:
+  synopticon:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: cpu
+    image: synopticon:latest
+    environment:
+      SYNOPTICON_NAS__URL: ${SYNOPTICON_NAS__URL:?set your NAS url, e.g. https://nas.example.com}
+      SYNOPTICON_NAS__ACCOUNT: ${SYNOPTICON_NAS__ACCOUNT:?set the NAS account}
+      SYNOPTICON_NAS__PASSWORD: ${SYNOPTICON_NAS__PASSWORD:?set the NAS password}
+      SYNOPTICON_CONFIG: /data/config.toml
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    # The review UI is the only long-running mode; expose it explicitly:
+    #   docker compose run --service-ports synopticon review
+    ports:
+      - "127.0.0.1:8686:8686"
+    # One-shot commands:
+    #   docker compose run synopticon sync
+    #   docker compose run synopticon extract
+    #   docker compose run synopticon cluster && docker compose run synopticon report

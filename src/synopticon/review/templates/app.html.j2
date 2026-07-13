@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synopticon review</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
+         background: #fafafa; color: #1a1a1a; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181c; color: #e6e6e6; }
+    .card, .bar { background: #22252b !important; border-color: #333 !important; }
+  }
+  .bar { position: sticky; top: 0; background: #fff; border: 1px solid #ddd;
+         padding: .5rem; border-radius: 8px; display: flex; gap: .5rem;
+         flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(240px,1fr));
+          gap: .75rem; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+          padding: .6rem; font-size: .85rem; }
+  .card.sel { outline: 3px solid #3b82f6; }
+  .card img { width: 96px; height: 96px; object-fit: cover; border-radius: 6px; }
+  .thumbs img { width: 48px; height: 48px; margin: 2px; border-radius: 4px; }
+  button { cursor: pointer; }
+  .muted { opacity: .6; font-size: .75rem; }
+</style>
+</head>
+<body>
+<div class="bar">
+  <strong>Synopticon review</strong>
+  <span class="muted">y = approve · n = reject · s = skip</span>
+  <span style="flex:1"></span>
+  <form method="get" style="display:flex;gap:.4rem;">
+    <select name="kind">
+      {% for k in ['', 'assign', 'low_confidence', 'merge', 'new_person'] %}
+      <option value="{{ k }}" {% if k==kind %}selected{% endif %}>{{ k or 'all kinds' }}</option>
+      {% endfor %}
+    </select>
+    <select name="status">
+      {% for s in ['pending','approved','rejected','applied'] %}
+      <option value="{{ s }}" {% if s==status %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">filter</button>
+  </form>
+  <button onclick="bulk()">approve all {{ kind or 'assign' }} &ge; conf</button>
+  <input id="bulkconf" type="number" step="0.01" value="0.55" style="width:5rem">
+</div>
+
+<div class="grid" id="grid">
+{% for it in items %}
+  <div class="card" data-id="{{ it.item_id }}" tabindex="0">
+    {% if it.crop %}<img src="{{ it.crop }}" alt="">{% endif %}
+    {% if it.kind == 'new_person' %}
+      <div class="thumbs">{% for c in it.new_person_crops %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
+      <input placeholder="suggested name" value="{{ it.payload.suggested_name or '' }}"
+             onchange="setName({{ it.item_id }}, this.value)">
+    {% elif it.kind == 'merge' %}
+      <div><strong>{{ it.payload.person_a.name or it.payload.person_a.person_id }}</strong>
+           &harr; <strong>{{ it.payload.person_b.name or it.payload.person_b.person_id }}</strong></div>
+    {% else %}
+      <div><strong>{{ it.payload.person_name or it.payload.person_id }}</strong></div>
+      <div class="muted">conf {{ '%.3f'|format(it.confidence or 0) }}</div>
+    {% endif %}
+    <div class="muted">{{ it.kind }} · {{ it.status }}</div>
+    <div>
+      <button onclick="decide({{ it.item_id }}, 'approve')">✓ (y)</button>
+      <button onclick="decide({{ it.item_id }}, 'reject')">✗ (n)</button>
+    </div>
+  </div>
+{% endfor %}
+</div>
+
+<script>
+function post(url, data) {
+  const body = new URLSearchParams(data);
+  return fetch(url, {method: 'POST', body});
+}
+function decide(id, decision) {
+  post('/decide/' + id, {decision}).then(() => {
+    const el = document.querySelector('.card[data-id="' + id + '"]');
+    if (el) { el.style.opacity = 0.35; }
+    focusNext();
+  });
+}
+function setName(id, name) { post('/name/' + id, {suggested_name: name}); }
+function bulk() {
+  const kind = "{{ kind or 'assign' }}";
+  const c = document.getElementById('bulkconf').value;
+  post('/bulk', {kind, min_confidence: c}).then(() => location.reload());
+}
+let idx = 0;
+const cards = () => Array.from(document.querySelectorAll('.card'));
+function select(i) {
+  cards().forEach(c => c.classList.remove('sel'));
+  const cs = cards();
+  if (!cs.length) return;
+  idx = Math.max(0, Math.min(i, cs.length - 1));
+  cs[idx].classList.add('sel');
+  cs[idx].scrollIntoView({block: 'nearest'});
+}
+function focusNext() { select(idx + 1); }
+document.addEventListener('keydown', e => {
+  const cs = cards();
+  if (!cs.length) return;
+  const id = cs[idx].dataset.id;
+  if (e.key === 'y') decide(id, 'approve');
+  else if (e.key === 'n') decide(id, 'reject');
+  else if (e.key === 's') focusNext();
+  else if (e.key === 'j') select(idx + 1);
+  else if (e.key === 'k') select(idx - 1);
+});
+select(0);
+</script>
+</body>
+</html>

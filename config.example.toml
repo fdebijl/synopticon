@@ -1,0 +1,49 @@
+# Synopticon configuration. Copy to config.toml (or /data/config.toml in Docker).
+# Every value can be overridden by env vars: SYNOPTICON_<SECTION>__<KEY>,
+# e.g. SYNOPTICON_NAS__URL. Credentials are best kept env-only.
+
+[nas]
+url = "https://nas.example.com"     # your Synology, any reachable scheme://host[:port]
+verify_tls = true
+account = ""                        # recommend a dedicated NAS user with Photos access
+# password: set via SYNOPTICON_NAS__PASSWORD
+spaces = ["personal"]               # "personal" (SYNO.Foto) and/or "shared" (SYNO.FotoTeam)
+requests_per_second = 4.0           # be nice to the NAS; reads
+write_requests_per_second = 1.0     # writes are throttled harder
+timeout_s = 60
+
+[storage]
+data_dir = "/data"                  # sqlite db, crops, reports, originals cache
+models_dir = "/models"              # ONNX models (populate via `synopticon models download`)
+keep_originals = false              # true = keep every downloaded original (needs ~1TB+)
+originals_cache_gb = 50.0           # LRU eviction budget when keep_originals = false
+
+[inference]
+device = "auto"                     # auto | cpu | cuda
+batch_size = 16
+
+[detection]
+scales = [1.0, 2.0]                 # multi-scale detection passes
+scrfd_score = 0.30                  # recall-first thresholds; precision comes later
+yolo_score = 0.35
+nms_iou = 0.45
+cross_iou = 0.50                    # cross-detector union dedup
+min_face_px = 20
+
+[restoration]
+enabled = false                     # requires the [restore] extra (pinned torch)
+trigger_px = 80
+fidelity = 0.7                      # CodeFormer w
+disagreement_cos = 0.30             # orig-vs-restored embedding disagreement flag
+
+[clustering]
+knn_k = 64
+edge_threshold = 0.50
+algorithm = "chinese_whispers"      # or "hdbscan"
+cw_iterations = 30
+seed = 42
+
+[crossref]
+majority = 0.60                     # vote fraction to map a cluster to a person
+min_labeled = 3
+assign_sim = 0.55                   # below this an assign becomes a low-confidence flag
