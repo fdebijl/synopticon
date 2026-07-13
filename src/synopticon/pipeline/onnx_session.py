@@ -78,12 +78,33 @@ def create_session(
     logger = logging.getLogger(__name__)
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = intra_op_threads or physical_cores()
+    # Silence per-inference "Expected shape ... does not match actual shape"
+    # WARNINGs: our detectors export static output shapes but run on
+    # variable-sized (padded) inputs, so VerifyOutputSizes flags every call.
+    # The outputs are correct; keep Error/Fatal (3) visible.
+    opts.log_severity_level = 3
 
     cuda_available = "CUDAExecutionProvider" in ort.get_available_providers()
     if device in ("auto", "cuda") and cuda_available:
         _preload_cuda_dlls(ort, logger)
+        # Our detectors feed variable-sized (padded to /32) inputs, so every
+        # distinct photo dimension is a new input shape. With the CUDA provider's
+        # default arena strategy (kNextPowerOfTwo, which never releases memory)
+        # plus per-shape cuDNN conv workspaces, GPU memory grows monotonically
+        # and OOMs after a few thousand photos. These options bound that growth:
+        #   * kSameAsRequested extends the arena by exactly what's asked rather
+        #     than doubling, so unique shapes don't compound waste.
+        #   * cudnn_conv_use_max_workspace=0 stops each conv reserving max scratch.
+        #   * HEURISTIC algo search avoids the default EXHAUSTIVE per-shape search
+        #     (slow to warm up and allocates large search buffers per new shape).
+        cuda_opts = {
+            "device_id": device_id,
+            "arena_extend_strategy": "kSameAsRequested",
+            "cudnn_conv_use_max_workspace": "0",
+            "cudnn_conv_algo_search": "HEURISTIC",
+        }
         providers = [
-            ("CUDAExecutionProvider", {"device_id": device_id}),
+            ("CUDAExecutionProvider", cuda_opts),
             "CPUExecutionProvider",
         ]
         try:
