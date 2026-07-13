@@ -32,21 +32,23 @@ def _require_fastapi():
 def _crop_url(crop_path: str | None, crops_dir: Path) -> str | None:
     if not crop_path:
         return None
-    p = Path(crop_path)
-    if p.is_absolute():
-        try:
-            rel = os.path.relpath(p, crops_dir)
-        except ValueError:
-            return None
-    else:
-        rel = str(p)
+    # The stored crop_path may be absolute or CWD-relative, and when relative it
+    # already includes the crops_dir prefix (the runner stores the full path).
+    # Resolve both to absolute and take the path relative to crops_dir, which is
+    # what the /crops static mount serves.
+    try:
+        rel = os.path.relpath(Path(crop_path).resolve(), crops_dir.resolve())
+    except ValueError:  # e.g. different drive on Windows
+        return None
+    if rel.startswith(".."):  # outside the served crops dir
+        return None
     return "/crops/" + rel.replace(os.sep, "/")
 
 
 def create_app(db_path: Path | str, settings: Settings):
     """Build the FastAPI app. Requires the [review] extra."""
     _require_fastapi()
-    from fastapi import FastAPI, Form, Request
+    from fastapi import FastAPI, Form
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -72,8 +74,24 @@ def create_app(db_path: Path | str, settings: Settings):
             for r in c.execute("SELECT face_id, crop_path FROM faces")
         }
 
+    def _merge_side_crops(
+        person: dict | None, exemplars: dict, crops: dict[int, str | None], limit: int = 3
+    ) -> list[str]:
+        """Up to ``limit`` crop URLs for a merge side, keyed by ``space:person_id``."""
+        if not person:
+            return []
+        key = f"{person.get('space')}:{person.get('person_id')}"
+        out = []
+        for fid in exemplars.get(key, []):
+            url = crops.get(int(fid))
+            if url:
+                out.append(url)
+            if len(out) >= limit:
+                break
+        return out
+
     @app.get("/", response_class=HTMLResponse)
-    def index(request: Request, kind: str = "", status: str = "pending"):
+    def index(kind: str = "", status: str = "pending"):
         c = conn()
         try:
             clauses, args = [], []
@@ -93,6 +111,7 @@ def create_app(db_path: Path | str, settings: Settings):
             items = []
             for r in rows:
                 payload = json.loads(r["payload_json"])
+                exemplars = (payload.get("evidence") or {}).get("exemplars", {})
                 items.append(
                     {
                         "item_id": r["item_id"],
@@ -106,6 +125,12 @@ def create_app(db_path: Path | str, settings: Settings):
                         "new_person_crops": [
                             crops.get(int(f)) for f in payload.get("face_ids", [])
                         ],
+                        "merge_crops_a": _merge_side_crops(
+                            payload.get("person_a"), exemplars, crops
+                        ),
+                        "merge_crops_b": _merge_side_crops(
+                            payload.get("person_b"), exemplars, crops
+                        ),
                     }
                 )
             template = env.get_template("app.html.j2")
