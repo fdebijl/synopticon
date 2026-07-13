@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -204,6 +205,80 @@ def recluster(
     conn = _conn(settings)
     run_id = run_clustering(conn, settings)
     typer.echo(f"cluster run {run_id} complete")
+
+
+# Tables produced by the local pipeline (safe to wipe and rebuild). Ordered
+# children-first so the deletes hold with foreign keys enforced.
+_DERIVED_TABLES = (
+    "review_queue",
+    "cluster_members",
+    "clusters",
+    "cluster_runs",
+    "embeddings",
+    "faces",
+    "extract_log",
+)
+# Metadata mirrored from the NAS; only cleared with --all (forces a re-sync).
+_SYNCED_TABLES = ("syno_faces", "person_photos", "persons", "photos", "sync_state")
+
+
+@app.command()
+def reset(
+    all_: bool = typer.Option(
+        False,
+        "--all",
+        help="Also drop synced NAS metadata (photos/persons/ground truth); forces a full re-sync.",
+    ),
+    keep_crops: bool = typer.Option(
+        False, help="Leave crop images on disk (default: delete them along with the faces)."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """Clear locally-computed data so the pipeline can rebuild from scratch.
+
+    Removes faces, embeddings, clusters and the review queue (and their crop
+    images) — useful after tweaking detection/clustering settings, since the
+    review UI pools items from every run and stale items would otherwise linger.
+    Synced NAS metadata is kept unless --all is given. Never touches the NAS.
+    """
+    settings = _settings()
+    conn = _conn(settings)
+
+    tables = list(_DERIVED_TABLES) + (list(_SYNCED_TABLES) if all_ else [])
+    counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
+    total = sum(counts.values())
+
+    scope = "ALL data (including synced NAS metadata)" if all_ else "pipeline-derived data"
+    typer.echo(f"Reset {scope} in {settings.storage.db_path}:")
+    for t in tables:
+        if counts[t]:
+            typer.echo(f"  {t}: {counts[t]} rows")
+    if not keep_crops:
+        typer.echo(f"  crop images under {settings.storage.crops_dir}")
+
+    if total == 0 and keep_crops:
+        typer.echo("nothing to reset")
+        return
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    # audit_log.review_item_id references review_queue with no cascade; null it
+    # first so clearing the queue can't trip the constraint. This keeps the
+    # NAS-write history, dropping only the now-stale local linkage.
+    conn.execute("UPDATE audit_log SET review_item_id = NULL WHERE review_item_id IS NOT NULL")
+    for t in tables:
+        conn.execute(f"DELETE FROM {t}")
+    conn.commit()
+
+    if not keep_crops:
+        shutil.rmtree(settings.storage.crops_dir, ignore_errors=True)
+        settings.storage.crops_dir.mkdir(parents=True, exist_ok=True)
+    # Drop cached kNN graphs (keyed by face_ids, now stale).
+    for npz in Path(settings.storage.data_dir).glob("graph_*.npz"):
+        npz.unlink()
+
+    nxt = "synopticon sync && synopticon extract" if all_ else "synopticon extract"
+    typer.echo(f"reset complete — next: {nxt}")
 
 
 @app.command()
