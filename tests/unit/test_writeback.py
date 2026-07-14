@@ -313,3 +313,25 @@ def test_apply_reviewed_merge_applies_when_enabled(respx_mock, client, nas_conn)
     assert stats.applied == 1
     row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'merge'").fetchone()
     assert row["status"] == "applied"
+
+
+def test_apply_reviewed_dry_run_does_not_consume_approvals(respx_mock, nas_conn):
+    # A dry run must rehearse stats but leave review_queue.status untouched —
+    # otherwise the preview consumes the approvals a real --apply run needs.
+    writer = writeback.DryRunWriter(nas_conn)
+    _insert_review_row(
+        nas_conn,
+        "assign",
+        {
+            "face_id": 1, "photo_id": 103153, "space": "personal", "person_id": 2660,
+            "person_name": None, "bbox_normalized": [0.1, 0.1, 0.2, 0.2], "confidence": 0.9,
+        },
+    )
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["assign"], apply_merges=False)
+
+    assert stats.considered == 1
+    assert stats.applied == 1
+    assert len(respx_mock.calls) == 0
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'assign'").fetchone()
+    assert row["status"] == "approved"

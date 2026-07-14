@@ -44,6 +44,8 @@ class PersonWriter(Protocol):
 class DryRunWriter:
     """Audit-only rehearsal: every call becomes a `dryrun.*` audit_log row, no NAS I/O."""
 
+    dry_run = True
+
     def __init__(self, conn: sqlite3.Connection):
         self.conn = conn
         self.client = None
@@ -78,6 +80,8 @@ class DryRunWriter:
 
 class SynoWriter:
     """Real writer: talks to the NAS via `SynoClient`, audits every step."""
+
+    dry_run = False
 
     def __init__(self, client: SynoClient, conn: sqlite3.Connection, space: Space):
         self.client = client
@@ -276,7 +280,15 @@ def apply_reviewed(
 
     client = getattr(writer, "client", None)
     writer_space = getattr(writer, "space", None)
+    dry_run = getattr(writer, "dry_run", False)
     consecutive_failures = 0
+
+    def mark(item_id: int, status: str) -> None:
+        # A dry run rehearses stats and audit rows but must never mutate
+        # review_queue state — otherwise it consumes the pending approvals it
+        # was meant to preview.
+        if not dry_run:
+            _mark(conn, item_id, status)
 
     for row in rows:
         payload = json.loads(row["payload_json"])
@@ -319,7 +331,7 @@ def apply_reviewed(
                 applied_already = False
 
         if applied_already:
-            _mark(conn, row["item_id"], "applied")
+            mark(row["item_id"], "applied")
             stats.applied += 1
             consecutive_failures = 0
             continue
@@ -340,11 +352,11 @@ def apply_reviewed(
             continue
 
         if result.success:
-            _mark(conn, row["item_id"], "applied")
+            mark(row["item_id"], "applied")
             stats.applied += 1
             consecutive_failures = 0
         else:
-            _mark(conn, row["item_id"], "failed")
+            mark(row["item_id"], "failed")
             stats.failed += 1
             consecutive_failures += 1
             if consecutive_failures >= stop_after_failures:
