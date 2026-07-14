@@ -204,7 +204,8 @@ def benchmark(
             return downloads.ensure_original(conn, client, settings, row)
 
         stats = run_benchmark(
-            conn, settings, fetch, limit=limit, photo_id=photo_id, space=space, warmup=warmup
+            conn, settings, fetch, limit=limit, photo_id=photo_id, space=space,
+            warmup=warmup, progress=typer.echo,
         )
     typer.echo(str(stats))
 

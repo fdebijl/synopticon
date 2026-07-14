@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
@@ -30,6 +31,14 @@ log = logging.getLogger(__name__)
 # Compute stages, in pipeline order. ``fetch`` (NAS download) is timed too but
 # kept out of this tuple so throughput reflects local compute, not the network.
 _STAGES = ("load", "detect", "align", "embed")
+
+# Progress sink: receives human-readable status lines. Defaults to a no-op so the
+# core stays quiet under test; the CLI wires this to ``typer.echo``.
+Progress = Callable[[str], None]
+
+
+def _noop(_msg: str) -> None:
+    pass
 
 
 @dataclass
@@ -97,6 +106,7 @@ def run_benchmark(
     warmup: int = 2,
     detector_factory=None,
     ensemble_factory=None,
+    progress: Progress | None = None,
 ) -> BenchmarkStats:
     """Time the extraction hot path over up to ``limit`` photos (read-only).
 
@@ -104,11 +114,18 @@ def run_benchmark(
     :func:`synopticon.pipeline.runner.run_extract` so the CLI wires them
     identically and tests can inject fakes. The first ``warmup`` measured photos
     are processed but excluded from the returned :class:`BenchmarkStats`.
+
+    ``progress`` receives one status line per step (model load, each photo,
+    completion) so the caller can show what the run is doing; it defaults to a
+    no-op, and CPU compute happens regardless of whether it is supplied.
     """
+    say = progress or _noop
+
     # A single explicit photo has nothing to spare for warmup.
     if photo_id is not None:
         warmup = 0
 
+    say(f"[{space}] loading detector + embedding ensemble (one-off ONNX session build)...")
     detector = detector_factory() if detector_factory else CompositeDetector.from_settings(
         settings.storage.models_dir, settings
     )
@@ -118,10 +135,18 @@ def run_benchmark(
 
     # Fetch `warmup` extra so the measured sample size still equals `limit`.
     rows = _fetch_bench_photos(conn, space, limit + max(0, warmup), photo_id)
+    if not rows:
+        say(f"[{space}] no benchmark photos found (nothing synced/downloadable?)")
+        return BenchmarkStats()
+    say(
+        f"[{space}] benchmarking {len(rows)} photos "
+        f"({min(warmup, len(rows))} warmup, timed after)..."
+    )
     stats = BenchmarkStats()
 
     for i, row in enumerate(rows):
         measuring = i >= warmup
+        phase = "measure" if measuring else "warmup"
         try:
             t = perf_counter()
             path = fetch_original(row)
@@ -129,7 +154,16 @@ def run_benchmark(
             faces, timings = _bench_photo(path, detector, ensemble)
         except Exception as exc:  # noqa: BLE001 - one bad photo must not abort the run
             log.warning("benchmark: skipping photo %s (space=%s): %s", row["id"], space, exc)
+            say(f"[{space}] {i + 1}/{len(rows)} photo {row['id']} ({phase}): SKIPPED ({exc})")
             continue
+
+        compute_ms = 1000 * sum(timings.values())
+        stage_ms = " ".join(f"{s}={1000 * timings[s]:.0f}" for s in _STAGES)
+        say(
+            f"[{space}] {i + 1}/{len(rows)} photo {row['id']} ({phase}): "
+            f"{faces} faces, fetch={1000 * fetch:.0f}ms compute={compute_ms:.0f}ms "
+            f"[{stage_ms}]"
+        )
 
         if measuring:
             stats.photos += 1
@@ -140,6 +174,7 @@ def run_benchmark(
         else:
             stats.warmup_photos += 1
 
+    say(f"[{space}] done: {stats.photos} photos timed, {stats.faces} faces")
     return stats
 
 
