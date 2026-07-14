@@ -78,6 +78,15 @@ def create_session(
     logger = logging.getLogger(__name__)
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = intra_op_threads or physical_cores()
+    # Our detectors pad each image to a multiple of 32, so every distinct photo
+    # dimension is a unique input shape. The CPU BFC arena extends on each new
+    # shape and never returns memory to the OS, so RSS grows monotonically and
+    # eventually a conv fails to allocate its activation buffer (~hundreds of MB)
+    # thousands of photos into a run. Disabling the arena frees each allocation
+    # after use -- slightly slower, but this is a batch/offline CPU pipeline where
+    # runtime is not a constraint. (CUDA gets the equivalent fix via arena opts
+    # below.)
+    opts.enable_cpu_mem_arena = False
     # Silence per-inference "Expected shape ... does not match actual shape"
     # WARNINGs: our detectors export static output shapes but run on
     # variable-sized (padded) inputs, so VerifyOutputSizes flags every call.

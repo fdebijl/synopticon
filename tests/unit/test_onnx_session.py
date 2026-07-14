@@ -49,7 +49,11 @@ def _install_fake_ort(monkeypatch, available, *, fail_on_cuda=False):
 def test_cuda_used_with_device_id_when_available(monkeypatch):
     _install_fake_ort(monkeypatch, CUDA_AND_CPU)
     sess = onnx_session.create_session("m.onnx", device="auto", device_id=2)
-    assert sess.providers[0] == ("CUDAExecutionProvider", {"device_id": 2})
+    name, cuda_opts = sess.providers[0]
+    assert name == "CUDAExecutionProvider"
+    # device_id must be threaded through; the memory-growth arena options are
+    # asserted loosely so tuning them doesn't re-break this test.
+    assert cuda_opts["device_id"] == 2
     assert "CPUExecutionProvider" in sess.providers
 
 
