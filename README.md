@@ -79,6 +79,16 @@ Detect faces and compute ensemble embeddings (resumable; interrupt any time). Ev
 | `--photo-id INTEGER` | none | Process a single photo id. |
 | `--space TEXT` | all configured | Limit to one space. |
 
+### `benchmark`
+Measure extraction throughput on your hardware without changing anything. Reuses the `extract` pipeline (detect → align → embed) over a sample of photos but writes no faces, embeddings, or crops. Reports photos/sec, faces/sec, ms/photo, and a per-stage breakdown so you can see where time goes. Originals are downloaded and cached exactly as `extract` would. A short warmup pass runs first so one-off ONNX session/thread-pool startup cost doesn't skew the numbers. Pair with `hwinfo` when tuning `[inference]` threads or comparing CPU vs GPU.
+
+| Option | Default | Description |
+|---|---|---|
+| `--limit INTEGER` | 25 | Number of photos to time. |
+| `--photo-id INTEGER` | none | Benchmark a single photo id. |
+| `--space TEXT` | `personal` | Space to pull benchmark photos from. |
+| `--warmup INTEGER` | 2 | Photos to process before timing (absorbs ONNX startup cost). |
+
 ### `cluster`
 Cluster all embeddings and cross-reference against Synology persons. Writes a new cluster run. No options.
 
@@ -120,12 +130,14 @@ Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
 
 | Option | Default | Description |
 |---|---|---|
-| `--kinds TEXT` | `assign` | Comma-separated kinds to apply: `assign`, `merge`, `new_person`. |
+| `--kinds TEXT` | `assign,low_confidence` | Comma-separated kinds to apply. `assign` and `low_confidence` are the same reviewer-approved face assignment (they differ only in the pipeline's original confidence), so both apply by default; `merge` is gated by `--apply-merges`. |
 | `--person-id INTEGER` | none | Scope to a single person id. |
 | `--apply` | off (dry-run) | Actually write to the NAS. |
 | `--apply-merges` | off | Extra gate required before any merge is written. |
 | `--space TEXT` | `personal` | Space to write to. |
 | `--report` | off | Print the audit trail afterward. |
+
+Every run (including dry-runs) appends a per-operation trace to `apply.log` in the project root, one line per writer call — useful for confirming what actually reached the NAS.
 
 ### `models download`
 Download and verify model weights into `storage.models_dir`.

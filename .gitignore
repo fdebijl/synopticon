@@ -13,3 +13,4 @@ dist/
 config.toml
 *.har
 .env
+apply.log

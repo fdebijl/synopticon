@@ -13,8 +13,10 @@ after `stop_after_failures` consecutive failures (circuit breaker).
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Protocol
 
 from synopticon import audit
@@ -23,6 +25,38 @@ from synopticon.db import store
 from synopticon.syno import foto
 from synopticon.syno.client import QuotedString, SynoApiError, SynoClient
 from synopticon.syno.models import WriteResult
+
+# Dedicated logger for the write-back / apply path. The CLI attaches a file
+# handler via `configure_apply_logging`; on its own this logger is inert
+# (no handler, no propagation) so importing the module has no side effects.
+log = logging.getLogger("synopticon.apply")
+
+# review_queue kinds that carry a single face->person assignment payload
+# (photo_id / person_id / bbox_normalized) and are written via `writer.assign`.
+# `low_confidence` items are cluster-crossref suggestions the reviewer approved
+# one at a time; structurally they are just assigns.
+ASSIGN_KINDS = frozenset({"assign", "low_confidence"})
+
+
+def configure_apply_logging(logfile: str | Path, level: int = logging.INFO) -> Path:
+    """Route the `synopticon.apply` logger to `logfile` (idempotent).
+
+    Adds a single `FileHandler` for `logfile`; calling again with the same path
+    is a no-op, so repeated `apply` invocations in one process don't stack
+    handlers. Returns the resolved log path.
+    """
+    logfile = Path(logfile)
+    resolved = logfile.expanduser().resolve()
+    for handler in log.handlers:
+        if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == resolved:
+            return resolved
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(resolved, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.addHandler(handler)
+    log.setLevel(level)
+    log.propagate = False  # keep apply chatter out of any root/console config
+    return resolved
 
 
 class PersonWriter(Protocol):
@@ -52,6 +86,7 @@ class DryRunWriter:
         self.space: Space | None = None
 
     def _record(self, action: str, params: dict) -> WriteResult:
+        log.info("dryrun %s %s", action, params)
         audit.record(
             self.conn, action=f"dryrun.{action}", api=None, params=params, response=None, success=True
         )
@@ -89,11 +124,16 @@ class SynoWriter:
         self.space = space
 
     def _simple_call(self, api: str, method: str, version: int, params: dict, action: str) -> WriteResult:
+        log.info("%s -> %s.%s v%s params=%s", action, api, method, version, params)
         try:
             data = self.client.call(api, method, version=version, **params)
             success, error_code = True, None
         except SynoApiError as exc:
             data, success, error_code = None, False, exc.code
+        if success:
+            log.info("%s ok", action)
+        else:
+            log.warning("%s FAILED code=%s", action, error_code)
         audit.record(
             self.conn,
             action=action,
@@ -124,6 +164,10 @@ class SynoWriter:
         api = self.client.api_name(space, "Browse.Person")
         version = self.client.version_for(api, 3)
         params = {"face": [face_entry], "id_item": item_id}
+        log.info(
+            "assign -> item=%s person=%s space=%s bbox=%s has_crop=%s",
+            item_id, person_id, space, bbox_normalized, face_crop_jpeg is not None,
+        )
 
         try:
             data = self.client.call(api, "add_face", version=version, **params)
@@ -140,6 +184,7 @@ class SynoWriter:
             success=add_success,
         )
         if not add_success:
+            log.warning("assign add_face FAILED item=%s person=%s code=%s", item_id, person_id, error_code)
             return WriteResult(
                 success=False, api=api, method="add_face", request_params=params, response=data,
                 error_code=error_code,
@@ -153,6 +198,7 @@ class SynoWriter:
                 break
         if real_face_id is None and entries:
             real_face_id = entries[0].get("face_id")
+        log.info("assign add_face ok item=%s person=%s face_id=%s", item_id, person_id, real_face_id)
 
         upload_success = True
         if face_crop_jpeg is not None and real_face_id is not None:
@@ -168,6 +214,10 @@ class SynoWriter:
                 upload_success = True
             except SynoApiError:
                 upload_data, upload_success = None, False
+            log.info(
+                "assign upload_face %s item=%s face_id=%s",
+                "ok" if upload_success else "FAILED", item_id, real_face_id,
+            )
             audit.record(
                 self.conn,
                 action="writeback.assign.upload_face",
@@ -195,7 +245,13 @@ class SynoWriter:
             success=verify_success,
         )
 
+        log.info("assign verify %s item=%s face_id=%s", "ok" if verify_success else "FAILED", item_id, real_face_id)
+
         overall = add_success and upload_success and verify_success
+        log.info(
+            "assign done item=%s person=%s overall=%s (add=%s upload=%s verify=%s)",
+            item_id, person_id, overall, add_success, upload_success, verify_success,
+        )
         return WriteResult(
             success=overall, api=api, method="add_face", request_params=params, response=data, error_code=None
         )
@@ -283,6 +339,11 @@ def apply_reviewed(
     dry_run = getattr(writer, "dry_run", False)
     consecutive_failures = 0
 
+    log.info(
+        "apply_reviewed start: %s approved row(s) kinds=%s person_id=%s apply_merges=%s dry_run=%s",
+        len(rows), kinds, person_id, apply_merges, dry_run,
+    )
+
     def mark(item_id: int, status: str) -> None:
         # A dry run rehearses stats and audit rows but must never mutate
         # review_queue state — otherwise it consumes the pending approvals it
@@ -295,7 +356,7 @@ def apply_reviewed(
         kind = row["kind"]
 
         if person_id is not None:
-            if kind == "assign":
+            if kind in ASSIGN_KINDS:
                 if payload.get("person_id") != person_id:
                     continue
             elif kind == "merge":
@@ -315,7 +376,7 @@ def apply_reviewed(
         applied_already = False
         if client is not None:
             try:
-                if kind == "assign":
+                if kind in ASSIGN_KINDS:
                     space = payload.get("space", writer_space)
                     faces = foto.list_item_faces(client, space, payload["photo_id"])
                     applied_already = any(f.person_id == payload["person_id"] for f in faces)
@@ -331,12 +392,13 @@ def apply_reviewed(
                 applied_already = False
 
         if applied_already:
+            log.info("item=%s kind=%s already applied on NAS -> skip write", row["item_id"], kind)
             mark(row["item_id"], "applied")
             stats.applied += 1
             consecutive_failures = 0
             continue
 
-        if kind == "assign":
+        if kind in ASSIGN_KINDS:
             result = writer.assign(
                 payload["photo_id"],
                 payload["person_id"],
@@ -348,6 +410,7 @@ def apply_reviewed(
             name = target.get("name") or merged.get("name") or ""
             result = writer.merge(target["person_id"], [merged["person_id"]], name)
         else:
+            log.info("item=%s kind=%s not writable -> skip", row["item_id"], kind)
             stats.skipped += 1
             continue
 
@@ -356,10 +419,17 @@ def apply_reviewed(
             stats.applied += 1
             consecutive_failures = 0
         else:
+            log.warning("item=%s kind=%s write failed code=%s", row["item_id"], kind, result.error_code)
             mark(row["item_id"], "failed")
             stats.failed += 1
             consecutive_failures += 1
             if consecutive_failures >= stop_after_failures:
+                log.warning("circuit breaker: %s consecutive failures, stopping early", consecutive_failures)
                 break
 
+    log.info(
+        "apply_reviewed done: considered=%s applied=%s skipped=%s failed=%s%s",
+        stats.considered, stats.applied, stats.skipped, stats.failed,
+        " (dry-run)" if dry_run else "",
+    )
     return stats

@@ -335,3 +335,68 @@ def test_apply_reviewed_dry_run_does_not_consume_approvals(respx_mock, nas_conn)
     assert len(respx_mock.calls) == 0
     row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'assign'").fetchone()
     assert row["status"] == "approved"
+
+
+def test_apply_reviewed_applies_low_confidence_as_assign(respx_mock, client, nas_conn):
+    # low_confidence rows carry the same photo_id/person_id/bbox payload as
+    # assigns and must be written via writer.assign — otherwise reviewer-approved
+    # crossref suggestions silently never reach the NAS.
+    _bootstrap(respx_mock)
+    added = {"done": False}
+
+    def _dispatch(request):
+        form = _form(request)
+        method = form.get("method")
+        if method == "list_face":
+            # Absent before add_face (idempotency probe), present after (verify).
+            return httpx.Response(
+                200, json=LIST_FACE_RESP_TAGGED if added["done"] else LIST_FACE_RESP_EMPTY
+            )
+        if method == "add_face":
+            added["done"] = True
+            return httpx.Response(200, json=ADD_FACE_RESP)
+        raise AssertionError(f"unexpected call: method={method!r}")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(
+        nas_conn,
+        "low_confidence",
+        {
+            "face_id": 1882, "photo_id": 103153, "space": "personal", "person_id": 2660,
+            "person_name": "Tim Jansen", "bbox_normalized": [0.1, 0.1, 0.2, 0.2], "confidence": 0.51,
+        },
+    )
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["low_confidence"], apply_merges=False)
+
+    assert stats.considered == 1
+    assert stats.applied == 1
+    assert stats.skipped == 0
+    assert added["done"] is True  # add_face actually fired
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'low_confidence'").fetchone()
+    assert row["status"] == "applied"
+
+
+def test_configure_apply_logging_is_idempotent(tmp_path):
+    before = list(writeback.log.handlers)
+    logfile = tmp_path / "apply.log"
+    try:
+        first = writeback.configure_apply_logging(logfile)
+        handlers_after_first = list(writeback.log.handlers)
+        second = writeback.configure_apply_logging(logfile)
+
+        assert first == second == logfile.resolve()
+        # Same path must not stack a second handler.
+        assert writeback.log.handlers == handlers_after_first
+
+        writeback.log.info("hello from apply")
+        for h in writeback.log.handlers:
+            h.flush()
+        assert "hello from apply" in logfile.read_text()
+    finally:
+        for h in writeback.log.handlers:
+            if h not in before:
+                writeback.log.removeHandler(h)
+                h.close()

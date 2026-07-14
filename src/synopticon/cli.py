@@ -182,6 +182,34 @@ def extract(
 
 
 @app.command()
+def benchmark(
+    limit: int = typer.Option(25, help="Number of photos to time (default: 25)."),
+    photo_id: int = typer.Option(None, help="Benchmark a single photo id."),
+    space: str = typer.Option("personal", help="Space to pull benchmark photos from."),
+    warmup: int = typer.Option(2, help="Photos to process before timing (absorbs ONNX startup cost)."),
+):
+    """Measure extraction throughput (detect+embed) without writing anything.
+
+    Read-only: reuses the extract pipeline but persists no faces/embeddings/crops.
+    Originals are downloaded (and cached) exactly as `extract` would.
+    """
+    from synopticon.pipeline.benchmark import run_benchmark
+    from synopticon.sync import downloads
+    from synopticon.syno.client import SynoClient
+
+    settings = _settings()
+    conn = _conn(settings)
+    with SynoClient(settings, conn) as client:
+        def fetch(row: sqlite3.Row) -> Path:
+            return downloads.ensure_original(conn, client, settings, row)
+
+        stats = run_benchmark(
+            conn, settings, fetch, limit=limit, photo_id=photo_id, space=space, warmup=warmup
+        )
+    typer.echo(str(stats))
+
+
+@app.command()
 def cluster():
     """Cluster all embeddings and cross-reference against Synology persons."""
     from synopticon.cluster.crossref import run_clustering
@@ -311,7 +339,11 @@ def review(
 
 @app.command()
 def apply(
-    kinds: str = typer.Option("assign", help="Comma-separated kinds: assign,merge,new_person."),
+    kinds: str = typer.Option(
+        "assign,low_confidence",
+        help="Comma-separated kinds: assign,low_confidence,merge,new_person. "
+        "assign and low_confidence are both approved face assignments and apply by default.",
+    ),
     person_id: int = typer.Option(None, help="Scope to a single person id."),
     apply_: bool = typer.Option(False, "--apply", help="Actually write to the NAS (default: dry-run)."),
     apply_merges: bool = typer.Option(False, help="Extra gate required to apply merges."),
@@ -321,11 +353,21 @@ def apply(
     """Apply approved review items to the NAS. Dry-run unless --apply is given."""
     from synopticon import audit
     from synopticon.syno.client import SynoClient
-    from synopticon.syno.writeback import DryRunWriter, SynoWriter, apply_reviewed
+    from synopticon.syno.writeback import (
+        DryRunWriter,
+        SynoWriter,
+        apply_reviewed,
+        configure_apply_logging,
+    )
 
     settings = _settings()
     conn = _conn(settings)
     kind_set = {k.strip() for k in kinds.split(",") if k.strip()}
+
+    # Per-operation apply log lives at the project root (alongside dry-runs too).
+    logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
+    typer.echo(f"logging apply operations to {logfile}")
+
     if apply_:
         with SynoClient(settings, conn) as client:
             writer = SynoWriter(client, conn, space)
