@@ -32,6 +32,7 @@ from .detect.base import Detection
 from .detect.merge import union
 from .embed.ensemble import MAGFACE_NAME, EmbeddingEnsemble, fuse
 from .manifest import manifest_bytes
+from .onnx_session import session_device
 
 log = logging.getLogger(__name__)
 
@@ -103,10 +104,28 @@ class CompositeDetector:
         return dets
 
 
+_HEIF_REGISTERED = False
+
+
+def _ensure_heif() -> None:
+    """Register pillow-heif's HEIC/HEIF opener with Pillow (once)."""
+    global _HEIF_REGISTERED
+    if _HEIF_REGISTERED:
+        return
+    try:
+        from pillow_heif import register_heif_opener
+    except ImportError:
+        _HEIF_REGISTERED = True  # not installed; treat as done, decode will fail loudly
+        return
+    register_heif_opener()
+    _HEIF_REGISTERED = True
+
+
 def load_image_bgr(path: Path | str) -> np.ndarray:
     """Decode an image to an EXIF-orientation-corrected BGR uint8 ndarray."""
     from PIL import Image, ImageOps
 
+    _ensure_heif()
     with Image.open(path) as img:
         img = ImageOps.exif_transpose(img)
         rgb = np.asarray(img.convert("RGB"))
@@ -190,6 +209,10 @@ def run_extract(
     if restoration_on and restore_fn is None:
         restore.startup_check(settings)
         restore_fn = restore.restore_crop
+
+    scrfd_session = getattr(getattr(detector, "scrfd", None), "session", None)
+    device = session_device(scrfd_session) if scrfd_session is not None else "CPU"
+    log.info("extract: running on %s (inference.device=%s)", device, settings.inference.device)
 
     crops_dir = settings.storage.crops_dir
     stats = ExtractStats()

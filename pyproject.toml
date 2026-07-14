@@ -14,6 +14,7 @@ dependencies = [
     "numpy>=1.26,<2",
     "opencv-python-headless>=4.9",
     "pillow>=10",
+    "pillow-heif>=0.16",
     "scikit-learn>=1.4",
     "scikit-image>=0.22",
     "scipy>=1.12",

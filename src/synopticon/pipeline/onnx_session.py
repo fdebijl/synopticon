@@ -31,6 +31,19 @@ def physical_cores() -> int:
     return os.cpu_count() or 1
 
 
+def session_device(session) -> str:
+    """Human-readable device label ('GPU'/'CPU') for an active ORT session.
+
+    Reads the session's *active* providers, so a CUDA session that failed to
+    init and fell back to CPU reports 'CPU' — the truth, not the request.
+    """
+    try:
+        providers = session.get_providers()
+    except Exception:  # noqa: BLE001 - never fatal; a label is not worth aborting for
+        return "CPU"
+    return "GPU" if "CUDAExecutionProvider" in providers else "CPU"
+
+
 _dlls_preloaded = False
 
 
