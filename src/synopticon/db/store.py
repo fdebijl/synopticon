@@ -18,6 +18,7 @@ _SCHEMA_DIR = Path(__file__).parent
 _MIGRATIONS = [
     _SCHEMA_DIR / "schema.sql",  # version 1
     _SCHEMA_DIR / "migrations" / "0002_extract_state.sql",  # version 2
+    _SCHEMA_DIR / "migrations" / "0003_photo_hashes.sql",  # version 3
     # Future migrations: append db/migrations/000N_*.sql paths here.
 ]
 

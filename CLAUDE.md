@@ -43,6 +43,13 @@ syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writ
 - HAR-verified Person API semantics: `separate` v1 (`face_id=[..]`, `target_id`, quoted `name`) atomically moves an existing face to another person — the face keeps its `face_id` (this is what the `reassign` review kind uses; reversible). `delete_face` v1 (`face_id=[..]`, `person_id`) **hard-deletes** the face detection from the photo — it is not a reversible unassign.
 - `SYNO.Foto.*` (personal space) and `SYNO.FotoTeam.*` (shared space) are mirrored APIs; every DB row carries a `space` column and `client.api_name(space, suffix)` picks the namespace.
 
+### Content hashes (`sync/hashes.py`)
+
+- `sync --hash` populates `photos.sha256` / `phash` / `hash_cache_key` / `hashed_at` by downloading each original (videos excluded; `live` included). Like the pipeline, it takes a `fetch_original(row) -> Path` callable and commits per photo — resumable by construction.
+- **`phash` is a 64-bit DCT pHash (16 hex chars); compare by hamming distance on the bits, never by string equality.** Byte-identical duplicate detection is `sha256`'s job. pHash is computed after EXIF orientation, so a rotated re-import of the same shot hashes identically.
+- Re-hashing is gated by `hash_cache_key IS NOT cache_key` (the same skip mechanism as `extract_log`): a photo edited/replaced on the NAS gets picked up on the next `--hash` pass automatically. Regular syncs never touch the hash columns — they're not in `sync_items`' upsert SET list; keep it that way.
+- An undecodable image still gets its `sha256` with `phash` NULL, so `phash IS NULL` does not mean "not yet hashed" — check `sha256 IS NULL` for that.
+
 ### Pipeline (`pipeline/`)
 
 - `pipeline_version` (hash of model manifest + detection config) gates re-extraction; per-photo processed state is in the `extract_log` table. Each photo is one atomic DB transaction — crash-resume is by construction.
@@ -65,3 +72,4 @@ Phases before `apply` are read-only toward the NAS. `apply` is dry-run by defaul
 - Python 3.11, `numpy<2` pinned (insightface/basicsr compat).
 - New CLI commands go in `cli.py` with lazy imports inside the command function (keeps CLI startup fast), and must also be documented in README.md.
 - The README is the FOSS onboarding path — keep its quickstart honest when changing CLI, config, or Docker layout.
+- When adding new commands or when changing the data model, do a pass on CLAUDE.md as well to ensure the content is up to date

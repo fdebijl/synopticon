@@ -67,8 +67,11 @@ Pull photos, persons, and ground-truth labels from the NAS. Prints live progress
 | `--skip-faces` | off | Skip the per-photo face-level ground-truth pass. |
 | `--all-faces` | off | Fetch `list_face` for ALL photos, not just those already tagged. |
 | `--resume` / `--no-resume` | `--resume` | Resume the faces pass from its saved cursor; `--no-resume` forces a full re-scan. |
+| `--hash` | off | Also download each image and store its sha256 + 64-bit perceptual hash (DCT pHash) on the `photos` table. |
 
 The faces pass is checkpointed per-photo, so it resumes cleanly after an interruption. The items and persons passes are idempotent but restart from the top.
+
+`--hash` downloads every image original (videos are skipped), so the first pass is slow on a large library; it commits per photo and skips already-hashed photos on re-runs, re-hashing only photos whose Synology `cache_key` changed (i.e. edited/replaced). Cached originals are evicted afterward unless `storage.keep_originals` is set. Compare `phash` values by hamming distance, not equality — byte-identical duplicates are the `sha256` column's job.
 
 ### `extract`
 Detect faces and compute ensemble embeddings (resumable; interrupt any time). Evicts cached originals afterward unless `storage.keep_originals` is set.
@@ -139,6 +142,16 @@ Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
 | `--report` | off | Print the audit trail afterward. |
 
 Every run (including dry-runs) appends a per-operation trace to `apply.log` in the project root, one line per writer call — useful for confirming what actually reached the NAS.
+
+### `apply-all`
+Apply **all** approved review items — assigns, low-confidence assigns, reassigns, *and* merges — in one go. Prints a per-kind count of what is about to be written and asks for confirmation; unlike `apply` there is no dry-run stage and the `--apply-merges`/`--apply-reassigns` gates are implicitly lifted. Merges are still irreversible — take a NAS snapshot before a large run.
+
+| Option | Default | Description |
+|---|---|---|
+| `--yes`, `-Y` | off | Skip the confirmation prompt (for scripted runs). |
+| `--person-id INTEGER` | none | Scope to a single person id. |
+| `--space TEXT` | `personal` | Space to write to. |
+| `--report` | off | Print the audit trail afterward. |
 
 ### `models download`
 Download and verify model weights into `storage.models_dir`.

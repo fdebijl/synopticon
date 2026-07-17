@@ -98,6 +98,46 @@ def create_app(db_path: Path | str, settings: Settings):
             for r in c.execute("SELECT face_id, crop_path FROM faces")
         }
 
+    # (space, person_id) -> our face_ids labeled to that person, best quality
+    # first. Built lazily from ground truth (faces/syno_faces are static while
+    # the review server runs); used for reassign target-person thumbnails.
+    _person_faces: dict[tuple[str, int], list[int]] | None = None
+
+    def person_faces(c: sqlite3.Connection) -> dict[tuple[str, int], list[int]]:
+        nonlocal _person_faces
+        if _person_faces is None:
+            from ..cluster.crossref import label_faces
+
+            quality = {
+                int(r["face_id"]): r["quality"] or 0.0
+                for r in c.execute("SELECT face_id, quality FROM faces")
+            }
+            by_person: dict[tuple[str, int], list[int]] = {}
+            for fid, pk in label_faces(c, settings).items():
+                by_person.setdefault(pk, []).append(fid)
+            for fids in by_person.values():
+                fids.sort(key=lambda f: quality.get(f, 0.0), reverse=True)
+            _person_faces = by_person
+        return _person_faces
+
+    def _target_crops(
+        c: sqlite3.Connection,
+        payload: dict,
+        crops: dict[int, str | None],
+        limit: int = 3,
+    ) -> list[str]:
+        space, person_id = payload.get("space"), payload.get("person_id")
+        if not space or person_id is None:
+            return []
+        out = []
+        for fid in person_faces(c).get((space, int(person_id)), []):
+            url = crops.get(fid)
+            if url:
+                out.append(url)
+            if len(out) >= limit:
+                break
+        return out
+
     def _merge_side_crops(
         person: dict | None, exemplars: dict, crops: dict[int, str | None], limit: int = 3
     ) -> list[str]:
@@ -172,6 +212,14 @@ def create_app(db_path: Path | str, settings: Settings):
                         "merge_crops_b": _merge_side_crops(
                             payload.get("person_b"), exemplars, crops
                         ),
+                        "unnamed_target": r["kind"] == "reassign"
+                        and not str(payload.get("person_name") or "").strip(),
+                        "unnamed_merge": r["kind"] == "merge"
+                        and not str(person_a.get("name") or "").strip()
+                        and not str(person_b.get("name") or "").strip(),
+                        "target_crops": _target_crops(c, payload, crops)
+                        if r["kind"] == "reassign"
+                        else [],
                     }
                 )
             template = env.get_template("app.html.j2")

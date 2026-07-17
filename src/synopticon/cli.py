@@ -132,9 +132,13 @@ def sync(
     resume: bool = typer.Option(
         True, "--resume/--no-resume", help="Resume the faces pass from its saved cursor (default: resume)."
     ),
+    hash_: bool = typer.Option(
+        False, "--hash",
+        help="Also download each image and store its sha256 + perceptual hash on the photos table.",
+    ),
 ):
     """Pull photos, persons, and ground-truth labels from the NAS (read-only)."""
-    from synopticon.sync import items, persons
+    from synopticon.sync import downloads, hashes, items, persons
     from synopticon.syno.client import SynoClient
 
     settings = _settings()
@@ -154,6 +158,16 @@ def sync(
                 )
                 _finish_line()
                 typer.echo(f"[{sp}] faces: {stats}")
+            if hash_:
+                def fetch(row: sqlite3.Row) -> Path:
+                    return downloads.ensure_original(conn, client, settings, row)
+
+                stats = hashes.sync_hashes(conn, fetch, sp, progress=_progress(sp, "hashes"))
+                _finish_line()
+                typer.echo(f"[{sp}] hashes: {stats}")
+    if hash_ and not settings.storage.keep_originals:
+        evicted = downloads.evict_originals(settings)
+        typer.echo(f"evicted: {evicted}")
 
 
 @app.command()
@@ -384,6 +398,70 @@ def apply(
         stats = apply_reviewed(
             conn, DryRunWriter(conn), kind_set, person_id=person_id,
             apply_merges=apply_merges, apply_reassigns=apply_reassigns,
+        )
+    typer.echo(f"{stats}")
+    if show_audit:
+        for row in audit.tail(conn, limit=50):
+            typer.echo(dict(row))
+
+
+@app.command("apply-all")
+def apply_all(
+    yes: bool = typer.Option(
+        False, "--yes", "-Y", help="Skip the confirmation prompt."
+    ),
+    person_id: int = typer.Option(None, help="Scope to a single person id."),
+    space: str = typer.Option("personal"),
+    show_audit: bool = typer.Option(False, "--report", help="Print the audit trail afterwards."),
+):
+    """Apply ALL approved review items — assigns, reassigns, and merges — to the NAS.
+
+    Unlike `apply` there is no dry-run stage and the merge/reassign gates are
+    implicitly lifted; the confirmation prompt (or --yes/-Y) is the only gate.
+    """
+    from synopticon import audit
+    from synopticon.syno.client import SynoClient
+    from synopticon.syno.writeback import (
+        ASSIGN_KINDS,
+        REASSIGN_KIND,
+        SynoWriter,
+        apply_reviewed,
+        configure_apply_logging,
+    )
+
+    settings = _settings()
+    conn = _conn(settings)
+    kind_set = set(ASSIGN_KINDS) | {REASSIGN_KIND, "merge"}
+
+    placeholders = ",".join("?" for _ in kind_set)
+    counts = {
+        row["kind"]: row["n"]
+        for row in conn.execute(
+            f"SELECT kind, COUNT(*) AS n FROM review_queue "
+            f"WHERE status = 'approved' AND kind IN ({placeholders}) GROUP BY kind",
+            sorted(kind_set),
+        )
+    }
+    total = sum(counts.values())
+    if not total:
+        typer.echo("nothing to do: no approved review items")
+        raise typer.Exit()
+
+    summary = ", ".join(f"{n} {kind}" for kind, n in sorted(counts.items()))
+    typer.echo(f"approved items: {summary}")
+    if counts.get("merge"):
+        typer.echo("note: merges are irreversible — consider a NAS snapshot first")
+    if not yes:
+        typer.confirm(f"write {total} item(s) to the NAS?", abort=True)
+
+    logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
+    typer.echo(f"logging apply operations to {logfile}")
+
+    with SynoClient(settings, conn) as client:
+        writer = SynoWriter(client, conn, space)
+        stats = apply_reviewed(
+            conn, writer, kind_set, person_id=person_id,
+            apply_merges=True, apply_reassigns=True,
         )
     typer.echo(f"{stats}")
     if show_audit:

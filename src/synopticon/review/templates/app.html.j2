@@ -29,6 +29,8 @@
   .merge-arrow { flex: 0 0 auto; opacity: .6; }
   button { cursor: pointer; }
   .muted { opacity: .6; font-size: .75rem; }
+  body.hide-unnamed .card[data-unnamed-target] { display: none; }
+  body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
 </style>
 </head>
 <body>
@@ -51,12 +53,20 @@
   </form>
   <button onclick="bulk()">approve all {{ kind or 'assign' }} &ge; conf</button>
   <input id="bulkconf" type="number" step="0.01" value="0.55" style="width:5rem">
+  <label class="muted" style="display:flex;align-items:center;gap:.25rem;">
+    <input type="checkbox" id="hideUnnamed" onchange="toggleUnnamed()">
+    hide reassigns to unnamed
+  </label>
+  <label class="muted" style="display:flex;align-items:center;gap:.25rem;">
+    <input type="checkbox" id="hideUnnamedMerges" onchange="toggleUnnamedMerges()">
+    hide merges between unnamed
+  </label>
 </div>
 
 <div class="grid" id="grid">
 {% for it in items %}
-  <div class="card" data-id="{{ it.item_id }}" tabindex="0">
-    {% if it.crop %}
+  <div class="card" data-id="{{ it.item_id }}"{% if it.unnamed_target %} data-unnamed-target="1"{% endif %}{% if it.unnamed_merge %} data-unnamed-merge="1"{% endif %} tabindex="0">
+    {% if it.crop and it.kind != 'reassign' %}
       {% if it.item_url %}<a href="{{ it.item_url }}" target="_blank" rel="noopener" title="open photo in Synology Photos"><img src="{{ it.crop }}" alt=""></a>
       {% else %}<img src="{{ it.crop }}" alt="">{% endif %}
     {% endif %}
@@ -83,16 +93,25 @@
         </div>
       </div>
     {% elif it.kind == 'reassign' %}
-      <div>
-        <strong>
-          {% if it.from_person_url %}<a href="{{ it.from_person_url }}" target="_blank" rel="noopener">{{ it.payload.from_person_name or it.payload.from_person_id }}</a>
-          {% else %}{{ it.payload.from_person_name or it.payload.from_person_id }}{% endif %}
-        </strong>
-        &rarr;
-        <strong>
-          {% if it.person_url %}<a href="{{ it.person_url }}" target="_blank" rel="noopener">{{ it.payload.person_name or it.payload.person_id }}</a>
-          {% else %}{{ it.payload.person_name or it.payload.person_id }}{% endif %}
-        </strong>
+      <div class="merge">
+        <div class="merge-side">
+          <div><strong>
+            {% if it.from_person_url %}<a href="{{ it.from_person_url }}" target="_blank" rel="noopener">{{ it.payload.from_person_name or it.payload.from_person_id }}</a>
+            {% else %}{{ it.payload.from_person_name or it.payload.from_person_id }}{% endif %}
+          </strong></div>
+          {% if it.crop %}
+            {% if it.item_url %}<a href="{{ it.item_url }}" target="_blank" rel="noopener" title="open photo in Synology Photos"><img src="{{ it.crop }}" alt=""></a>
+            {% else %}<img src="{{ it.crop }}" alt="">{% endif %}
+          {% endif %}
+        </div>
+        <div class="merge-arrow">&rarr;</div>
+        <div class="merge-side">
+          <div><strong>
+            {% if it.person_url %}<a href="{{ it.person_url }}" target="_blank" rel="noopener">{{ it.payload.person_name or it.payload.person_id }}</a>
+            {% else %}{{ it.payload.person_name or it.payload.person_id }}{% endif %}
+          </strong></div>
+          <div class="thumbs">{% for c in it.target_crops %}<img src="{{ c }}">{% endfor %}</div>
+        </div>
       </div>
       <div class="muted">to-sim {{ '%.3f'|format(it.confidence or 0) }}{% if it.payload.from_similarity is not none %} · from-sim {{ '%.3f'|format(it.payload.from_similarity) }}{% endif %}</div>
     {% else %}
@@ -126,8 +145,29 @@ function bulk() {
   const c = document.getElementById('bulkconf').value;
   post('/bulk', {kind, min_confidence: c}).then(() => location.reload());
 }
+function toggleUnnamed() {
+  const on = document.getElementById('hideUnnamed').checked;
+  document.body.classList.toggle('hide-unnamed', on);
+  localStorage.setItem('hideUnnamed', on ? '1' : '');
+  select(0);
+}
+if (localStorage.getItem('hideUnnamed')) {
+  document.getElementById('hideUnnamed').checked = true;
+  document.body.classList.add('hide-unnamed');
+}
+function toggleUnnamedMerges() {
+  const on = document.getElementById('hideUnnamedMerges').checked;
+  document.body.classList.toggle('hide-unnamed-merges', on);
+  localStorage.setItem('hideUnnamedMerges', on ? '1' : '');
+  select(0);
+}
+if (localStorage.getItem('hideUnnamedMerges')) {
+  document.getElementById('hideUnnamedMerges').checked = true;
+  document.body.classList.add('hide-unnamed-merges');
+}
 let idx = 0;
-const cards = () => Array.from(document.querySelectorAll('.card'));
+const cards = () => Array.from(document.querySelectorAll('.card'))
+  .filter(c => c.offsetParent !== null);
 function select(i) {
   cards().forEach(c => c.classList.remove('sel'));
   const cs = cards();
