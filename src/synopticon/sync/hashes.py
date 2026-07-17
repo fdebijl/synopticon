@@ -76,6 +76,16 @@ def compute_phash(path: Path) -> str:
     return f"{value:0{_PHASH_SIZE * _PHASH_SIZE // 4}x}"
 
 
+def phash_hamming(a_hex: str, b_hex: str) -> int:
+    """Hamming distance between two 16-hex-char (64-bit) DCT pHashes.
+
+    pHashes are near-, not exactly-equal for visually similar images, so
+    duplicate detection compares them by bit distance rather than string
+    equality (see `compute_phash`).
+    """
+    return (int(a_hex, 16) ^ int(b_hex, 16)).bit_count()
+
+
 def _fetch_work(conn: sqlite3.Connection, space: Space) -> list[sqlite3.Row]:
     # `IS NOT` is SQLite's null-safe comparison: a photo whose cache_key
     # changed on the NAS (edited/replaced) gets re-hashed.

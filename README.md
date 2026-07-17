@@ -15,7 +15,7 @@ sync  →  extract  →  cluster  →  report  →  review  →  apply
 └──────── read-only ────────────────────────┘          └─ gated write ─┘
 ```
 
-`recluster` and `eval` are side-loops off `cluster` — they re-run clustering from the cached embeddings with different parameters and never touch the NAS.
+`recluster` and `eval` are side-loops off `cluster` — they re-run clustering from the cached embeddings with different parameters and never touch the NAS. `dedupe` is a separate utility off `sync --hash`: it deletes duplicate photos from the NAS using the stored content hashes (dry-run by default).
 
 1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels become ground truth.
 2. **`extract`** — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into a local SQLite cache. Interrupt any time; it resumes.
@@ -152,6 +152,20 @@ Apply **all** approved review items — assigns, low-confidence assigns, reassig
 | `--person-id INTEGER` | none | Scope to a single person id. |
 | `--space TEXT` | `personal` | Space to write to. |
 | `--report` | off | Print the audit trail afterward. |
+
+### `dedupe`
+Delete duplicate photos from the NAS using the content hashes `sync --hash` stores. Two independent levels (pass either or both); within each duplicate group the **highest-resolution** photo is kept (tie-break: largest file, then lowest id) and the rest are deleted. Hashes are trusted, so there is no review step — but it is **dry-run by default** and prints a Synology Photos deep link for every photo first, and `--apply` asks for confirmation before writing.
+
+| Option | Default | Description |
+|---|---|---|
+| `--exact` | off | Delete byte-identical duplicates (grouped by `sha256`). |
+| `--visual` | off | Delete visually near-identical duplicates (`phash` within `--threshold` bits; transitively grouped). |
+| `--threshold INTEGER` | 5 | Max pHash hamming distance (0–64) for a `--visual` match; lower is stricter. |
+| `--apply` | off (dry-run) | Actually delete from the NAS. |
+| `--space TEXT` | all configured | Deduplicate within one space (groups never span personal/shared). |
+| `--yes`, `-y` | off | Skip the confirmation prompt when deleting. |
+
+Requires a prior `sync --hash` pass to populate the hashes. Each attempt (including dry-runs) is recorded in `audit_log` and `apply.log`. Deletion goes through Synology's `BackgroundTask.File.delete` API as a batched background task; **verify on your DSM whether that moves photos to the recycle bin or hard-deletes them before trusting `--apply` on a large run** — start with one known duplicate and check.
 
 ### `models download`
 Download and verify model weights into `storage.models_dir`.

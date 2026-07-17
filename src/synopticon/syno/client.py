@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from synopticon.syno.auth import AuthSession
 
 SESSION_EXPIRED_CODES = frozenset({105, 106, 107, 119})
-WRITE_METHODS = frozenset({"add_face", "merge", "set", "delete_face", "separate", "upload"})
+WRITE_METHODS = frozenset({"add_face", "merge", "set", "delete_face", "separate", "upload", "delete"})
 API_INFO_STATE_KEY = "api_info"
 
 _SPACE_PREFIX: dict[str, str] = {"personal": "SYNO.Foto", "shared": "SYNO.FotoTeam"}

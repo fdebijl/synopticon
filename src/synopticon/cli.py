@@ -131,6 +131,23 @@ def _skip_logger(space: str, label: str):
     return cb
 
 
+def _human_bytes(n: int | None) -> str:
+    size = float(int(n or 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"  # unreachable; keeps type-checkers happy
+
+
+def _item_web_url(settings: Settings, space: str, photo_id: int) -> str | None:
+    """Synology Photos deep link to one timeline item, or None if no base URL set."""
+    base = (settings.nas.web_url or settings.nas.url or "").strip().rstrip("/")
+    if not base:
+        return None
+    return f"{base}/?launchApp=SYNO.Foto.AppInstance#/{space}_space/timeline/item/{photo_id}"
+
+
 @app.command()
 def hwinfo():
     """Print hardware/environment stats relevant to extraction & clustering (for bug reports)."""
@@ -483,6 +500,97 @@ def apply_all(
     if show_audit:
         for row in audit.tail(conn, limit=50):
             typer.echo(dict(row))
+
+
+@app.command()
+def dedupe(
+    exact: bool = typer.Option(False, "--exact", help="Delete byte-identical (sha256) duplicates."),
+    visual: bool = typer.Option(False, "--visual", help="Delete near-identical (phash) duplicates."),
+    threshold: int = typer.Option(
+        5, help="Max phash hamming distance (0-64) for --visual matches; lower is stricter."
+    ),
+    apply_: bool = typer.Option(False, "--apply", help="Actually delete from the NAS (default: dry-run)."),
+    space: str = typer.Option(None, help="Limit to one space (default: all configured)."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when deleting."),
+):
+    """Delete duplicate photos from the NAS using synced content hashes.
+
+    --exact removes byte-identical copies (grouped by sha256); --visual removes
+    visually near-identical copies (phash within --threshold bits). The
+    highest-resolution photo in each group is kept, the rest deleted. Hashes are
+    trusted, so there is no review step — but this is dry-run unless --apply is
+    given, and it prints a Synology Photos link per photo first.
+    """
+    from synopticon import dedupe as dd
+    from synopticon.dedupe_writeback import delete_items
+    from synopticon.syno.client import SynoClient
+    from synopticon.syno.writeback import configure_apply_logging
+
+    if not exact and not visual:
+        typer.echo("nothing to do: pass --exact and/or --visual", err=True)
+        raise typer.Exit(1)
+
+    settings = _settings()
+    conn = _conn(settings)
+    spaces = _spaces(settings, space)
+
+    drop_ids_by_space: dict[str, list[int]] = {}
+    total_groups = total_drop = total_bytes = 0
+    for sp in spaces:
+        groups = []
+        if exact:
+            groups += dd.find_exact(conn, sp)
+        if visual:
+            groups += dd.find_visual(conn, sp, threshold)
+        if not groups:
+            continue
+        typer.echo(f"\n[{sp}] {len(groups)} duplicate group(s):")
+        unique_drop: dict[int, sqlite3.Row] = {}
+        for grp in groups:
+            keep, kurl = grp.keep, _item_web_url(settings, sp, grp.keep["id"])
+            typer.echo(
+                f"  {grp.kind}: keep {keep['id']} ({keep['filename']}, "
+                f"{keep['width']}x{keep['height']}){' -> ' + kurl if kurl else ''}"
+            )
+            for d in grp.drop:
+                unique_drop.setdefault(d["id"], d)
+                url = _item_web_url(settings, sp, d["id"])
+                typer.echo(
+                    f"      drop {d['id']} ({d['filename']}, {_human_bytes(d['filesize'])})"
+                    f"{' -> ' + url if url else ''}"
+                )
+        drop_ids_by_space[sp] = dd.collect_drop_ids(groups)
+        total_groups += len(groups)
+        total_drop += len(unique_drop)
+        total_bytes += sum(int(r["filesize"] or 0) for r in unique_drop.values())
+
+    if total_drop == 0:
+        typer.echo("no duplicates found")
+        return
+
+    typer.echo(
+        f"\ntotal: {total_groups} group(s), {total_drop} photo(s), "
+        f"{_human_bytes(total_bytes)} reclaimable"
+    )
+
+    logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
+
+    if not apply_:
+        typer.echo("\nDRY RUN — pass --apply to delete these photos from the NAS")
+        for sp, ids in drop_ids_by_space.items():
+            delete_items(conn, None, sp, ids, dry_run=True)
+        return
+
+    if not yes:
+        typer.confirm(f"delete {total_drop} photo(s) from the NAS?", abort=True)
+    typer.echo(f"logging delete operations to {logfile}")
+    agg = {"deleted": 0, "skipped": 0, "failed": 0}
+    with SynoClient(settings, conn) as client:
+        for sp, ids in drop_ids_by_space.items():
+            stats = delete_items(conn, client, sp, ids, dry_run=False)
+            for k in agg:
+                agg[k] += stats[k]
+    typer.echo(f"{agg}")
 
 
 @eval_app.command("holdout")
