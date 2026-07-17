@@ -71,11 +71,23 @@ def _load_face_meta(conn: sqlite3.Connection) -> dict[int, dict]:
 
 
 def label_faces(conn: sqlite3.Connection, settings: Settings) -> dict[int, PersonKey]:
+    """Map our detected faces to ground-truth persons (labels only)."""
+    return label_faces_with_ids(conn, settings)[0]
+
+
+def label_faces_with_ids(
+    conn: sqlite3.Connection, settings: Settings
+) -> tuple[dict[int, PersonKey], dict[int, int]]:
     """Map our detected faces to ground-truth persons.
 
     Face-level ground truth first (IoU >= 0.3 greedy match against
     ``syno_faces``), then a photo-level fallback for photos with no syno_faces
     rows AND exactly one detected face AND exactly one tagged person.
+
+    Returns ``(labels, syno_face_ids)`` where ``syno_face_ids`` maps our
+    face_id to the matched Synology face id. Only the IoU branch contributes
+    to it — photo-level fallback labels have no syno_faces row, so those
+    faces are ineligible for reassignment (nothing to separate).
     """
     meta = _load_face_meta(conn)
 
@@ -88,7 +100,7 @@ def label_faces(conn: sqlite3.Connection, settings: Settings) -> dict[int, Perso
     syno_by_photo: dict[tuple[str, int], list[dict]] = {}
     photos_with_syno: set[tuple[str, int]] = set()
     for row in conn.execute(
-        "SELECT space, photo_id, person_id, x1, y1, x2, y2 FROM syno_faces"
+        "SELECT space, syno_face_id, photo_id, person_id, x1, y1, x2, y2 FROM syno_faces"
     ):
         key = (row["space"], int(row["photo_id"]))
         photos_with_syno.add(key)
@@ -96,6 +108,7 @@ def label_faces(conn: sqlite3.Connection, settings: Settings) -> dict[int, Perso
             continue
         syno_by_photo.setdefault(key, []).append(
             {
+                "syno_face_id": int(row["syno_face_id"]),
                 "person_id": int(row["person_id"]),
                 "box": (
                     float(row["x1"]),
@@ -107,6 +120,7 @@ def label_faces(conn: sqlite3.Connection, settings: Settings) -> dict[int, Perso
         )
 
     labels: dict[int, PersonKey] = {}
+    syno_face_ids: dict[int, int] = {}
 
     # Face-level IoU matching (greedy, best pair first).
     for key, syno_list in syno_by_photo.items():
@@ -127,6 +141,7 @@ def label_faces(conn: sqlite3.Connection, settings: Settings) -> dict[int, Perso
             used_faces.add(fid)
             used_syno.add(si)
             labels[fid] = (space, syno_list[si]["person_id"])
+            syno_face_ids[fid] = syno_list[si]["syno_face_id"]
 
     # Photo-level fallback.
     person_photos_by_photo: dict[tuple[str, int], list[int]] = {}
@@ -144,7 +159,7 @@ def label_faces(conn: sqlite3.Connection, settings: Settings) -> dict[int, Perso
         if len(our) == 1 and len(persons) == 1:
             labels[our[0]] = (key[0], persons[0])
 
-    return labels
+    return labels, syno_face_ids
 
 
 # --------------------------------------------------------------------------- #
@@ -170,6 +185,7 @@ class ClusterResult:
     new_persons: list[dict]
     merges: list[dict]
     predicted_person: dict[int, PersonKey]  # face_id -> mapped person of its cluster
+    reassigns: list[dict] = field(default_factory=list)
 
 
 def _relabel_contiguous(labels: np.ndarray) -> np.ndarray:
@@ -197,6 +213,8 @@ def _crossref_core(
     settings: Settings,
     face_meta: dict[int, dict],
     person_photos: set[tuple[str, int, int]],
+    *,
+    syno_face_ids: dict[int, int] | None = None,
 ) -> ClusterResult:
     cfg = settings.crossref
     labels = _relabel_contiguous(labels)
@@ -228,7 +246,17 @@ def _crossref_core(
     assigns: list[dict] = []
     new_persons: list[dict] = []
     merges: list[dict] = []
+    reassigns: list[dict] = []
     merge_pairs_seen: set[tuple] = set()
+
+    # Corpus-wide index of labeled positions per person, for reassign evidence
+    # (mean similarity of a disputed face to the rest of its Synology person).
+    positions_by_person: dict[PersonKey, list[int]] = {}
+    if syno_face_ids is not None:
+        for fid, pk in label_map.items():
+            pos = pos_of.get(fid)
+            if pos is not None:
+                positions_by_person.setdefault(pk, []).append(pos)
 
     for cid, info in clusters.items():
         labeled_positions = [p for p in info.members if int(face_ids[p]) in label_map]
@@ -260,6 +288,63 @@ def _crossref_core(
                 kind = "assign" if conf >= cfg.assign_sim else "low_confidence"
                 assigns.append({"kind": kind, "confidence": conf, "payload": payload,
                                 "person_key": info.mapped_person})
+
+        # --- reassign: Synology says Y, this cluster says X ---
+        # Leave-one-out: dropping the disputed face's non-X vote can only
+        # raise X's vote fraction, so the LOO majority condition is implied
+        # by the full mapping — only the support floor can fail. Do not
+        # "fix" this by recomputing the fraction; it is intentional.
+        if (
+            syno_face_ids is not None
+            and info.mapped_person is not None
+            and info.labeled_total - 1 >= cfg.min_labeled
+        ):
+            x_pk = info.mapped_person
+            x_positions = [
+                p for p in info.members if label_map.get(int(face_ids[p])) == x_pk
+            ]
+            x_mat = X[x_positions]
+            for pos in info.members:
+                fid = int(face_ids[pos])
+                y_pk = label_map.get(fid)
+                if y_pk is None or y_pk == x_pk:
+                    continue
+                sfid = syno_face_ids.get(fid)
+                if sfid is None:
+                    continue  # photo-fallback label: no syno face to separate
+                meta = face_meta.get(fid)
+                if meta is None or meta["bbox_norm"] is None:
+                    continue
+                if y_pk[0] != x_pk[0] or meta["space"] != x_pk[0]:
+                    continue  # cannot move a face across spaces
+                conf = float((X[pos] @ x_mat.T).mean()) if x_mat.shape[0] else 0.0
+                if conf < cfg.assign_sim:
+                    continue  # a weak "Synology is wrong" claim is noise
+                others = [p for p in positions_by_person.get(y_pk, []) if p != pos]
+                from_sim = (
+                    float((X[pos] @ X[others].T).mean()) if others else None
+                )
+                reassigns.append(
+                    {
+                        "kind": "reassign",
+                        "confidence": conf,
+                        "person_key": x_pk,
+                        "from_person_key": y_pk,
+                        "payload": {
+                            "face_id": fid,
+                            "photo_id": meta["photo_id"],
+                            "space": meta["space"],
+                            "syno_face_id": sfid,
+                            "from_person_id": y_pk[1],
+                            "from_person_name": None,
+                            "person_id": x_pk[1],
+                            "person_name": None,
+                            "bbox_normalized": meta["bbox_norm"],
+                            "confidence": conf,
+                            "from_similarity": from_sim,
+                        },
+                    }
+                )
 
         # --- new_person ---
         if info.labeled_total == 0 and len(info.members) >= cfg.new_person_min_faces:
@@ -345,6 +430,7 @@ def _crossref_core(
         new_persons=new_persons,
         merges=merges,
         predicted_person=predicted_person,
+        reassigns=reassigns,
     )
 
 
@@ -420,6 +506,7 @@ def _existing_identities(conn: sqlite3.Connection) -> dict[str, set]:
     assigns: set[tuple[int, int]] = set()
     merges: set[tuple] = set()
     new_persons: set[tuple] = set()
+    reassigns: set[tuple[int, int]] = set()
     for row in conn.execute(
         "SELECT kind, payload_json FROM review_queue "
         "WHERE status IN ('pending','approved','applied')"
@@ -448,7 +535,18 @@ def _existing_identities(conn: sqlite3.Connection) -> dict[str, set]:
             fids = payload.get("face_ids")
             if fids:
                 new_persons.add(tuple(sorted(int(f) for f in fids)))
-    return {"assign": assigns, "merge": merges, "new_person": new_persons}
+        elif kind == "reassign":
+            # Keyed on (our face, target person): the claim "this face is X"
+            # stays the same even if Synology relabels it to a different
+            # wrong person between runs.
+            if "face_id" in payload and "person_id" in payload:
+                reassigns.add((int(payload["face_id"]), int(payload["person_id"])))
+    return {
+        "assign": assigns,
+        "merge": merges,
+        "new_person": new_persons,
+        "reassign": reassigns,
+    }
 
 
 def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
@@ -460,15 +558,17 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
     indices, sims = graph.build_or_load_graph(settings, face_ids, X)
     labels = _cluster_labels(indices, sims, settings)
 
-    label_map = {
-        fid: pk
-        for fid, pk in label_faces(conn, settings).items()
-        if fid in set(int(f) for f in face_ids.tolist())
+    all_labels, all_syno_ids = label_faces_with_ids(conn, settings)
+    present = set(int(f) for f in face_ids.tolist())
+    label_map = {fid: pk for fid, pk in all_labels.items() if fid in present}
+    syno_face_ids = {
+        fid: sfid for fid, sfid in all_syno_ids.items() if fid in present
     }
     face_meta = _load_face_meta(conn)
     person_photos = _load_person_photos(conn)
     result = _crossref_core(
-        face_ids, X, labels, label_map, settings, face_meta, person_photos
+        face_ids, X, labels, label_map, settings, face_meta, person_photos,
+        syno_face_ids=syno_face_ids,
     )
 
     names = _load_person_names(conn)
@@ -525,6 +625,21 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
             "INSERT INTO review_queue (run_id, kind, payload_json, confidence, created_at) "
             "VALUES (?,?,?,?,?)",
             (run_id, item["kind"], json.dumps(payload), item["confidence"], ts),
+        )
+
+    for item in sorted(result.reassigns, key=lambda x: x["payload"]["face_id"]):
+        pk = item["person_key"]
+        fid = item["payload"]["face_id"]
+        if (fid, pk[1]) in existing["reassign"]:
+            continue
+        existing["reassign"].add((fid, pk[1]))
+        payload = dict(item["payload"])
+        payload["person_name"] = name_of(pk)
+        payload["from_person_name"] = name_of(item["from_person_key"])
+        conn.execute(
+            "INSERT INTO review_queue (run_id, kind, payload_json, confidence, created_at) "
+            "VALUES (?,?,?,?,?)",
+            (run_id, "reassign", json.dumps(payload), item["confidence"], ts),
         )
 
     for item in result.new_persons:

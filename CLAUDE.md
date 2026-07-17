@@ -36,10 +36,11 @@ syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writ
 
 ### Synology API layer (`syno/`)
 
-- **Never hardcode API versions.** The live NAS runs newer versions than the reverse-engineered docs in `SynologyPhotosAPI/` (e.g. Browse.Item v7, Browse.Person v3 vs documented v1/v2). `client.py` discovers min/max per API at runtime via `SYNO.API.Info` and caches it in `sync_state`.
+- **Never hardcode API versions.** The live NAS runs newer versions than the reverse-engineered docs once did (e.g. Browse.Item v7, Browse.Person v3 vs the documented v1/v2 — the `SynologyPhotosAPI/` doc repo is no longer checked out here). `client.py` discovers min/max per API at runtime via `SYNO.API.Info` and caches it in `sync_state`.
 - Param encoding has Synology-specific quirks centralized in `client.encode_params`: lists/dicts become compact JSON strings (`id=[2660]`), and some string values must be quoted — wrap them in `QuotedString`. Get this wrong and calls fail silently; it's heavily unit-tested.
 - Write throttling is auto-detected by method name (`WRITE_METHODS` frozenset in client.py: add_face, merge, set, delete_face, separate, upload) — separate, slower token bucket than reads.
-- The write-back chain (`Person.add_face` v3 → `Upload.Face.upload` multipart → `list_face` verify) is byte-exact from captured browser traffic. Ground truth lives in `requests.md` and `adding_face_to_photo_without_face.har` — consult those before changing payload shapes.
+- Write-back payloads are byte-exact from captured browser traffic. Ground truth lives in the sample HAR captures in `./har/` (gitignored beyond the samples): `add_face_to_photo_without_faces.har` (the `Person.add_face` v3 → `Upload.Face.upload` multipart → `list_face` verify chain), `reassign_existing_face_to_other_person.har`, and `remove_face_from_photo.har` — consult those before changing payload shapes.
+- HAR-verified Person API semantics: `separate` v1 (`face_id=[..]`, `target_id`, quoted `name`) atomically moves an existing face to another person — the face keeps its `face_id` (this is what the `reassign` review kind uses; reversible). `delete_face` v1 (`face_id=[..]`, `person_id`) **hard-deletes** the face detection from the photo — it is not a reversible unassign.
 - `SYNO.Foto.*` (personal space) and `SYNO.FotoTeam.*` (shared space) are mirrored APIs; every DB row carries a `space` column and `client.api_name(space, suffix)` picks the namespace.
 
 ### Pipeline (`pipeline/`)

@@ -103,6 +103,166 @@ def test_merge_from_split_person():
     assert pair == (("personal", 10), ("personal", 20))
 
 
+def test_reassign_detected_for_mislabeled_face():
+    settings = load_settings()
+    # One cluster: 4 labeled X, 1 labeled Y (Synology got it wrong).
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 6)]
+    label_map = {i: ("personal", 100) for i in range(1, 5)}
+    label_map[5] = ("personal", 200)
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 5, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set(),
+        syno_face_ids={5: 555},
+    )
+    assert len(result.reassigns) == 1
+    item = result.reassigns[0]
+    assert item["person_key"] == ("personal", 100)
+    assert item["from_person_key"] == ("personal", 200)
+    p = item["payload"]
+    assert p["face_id"] == 5
+    assert p["syno_face_id"] == 555
+    assert p["from_person_id"] == 200
+    assert p["person_id"] == 100
+    assert p["confidence"] > 0.99
+    # Existing semantics untouched: the disputed face still predicts X, and
+    # no assigns appear (every face is labeled).
+    assert result.predicted_person[5] == ("personal", 100)
+    assert result.assigns == []
+
+
+def test_reassign_requires_loo_support():
+    settings = load_settings()
+    # 2 X + 1 Y: full mapping holds (2/3 >= 0.6, labeled_total 3 >= min_labeled 3)
+    # but excluding the disputed vote leaves 2 < min_labeled -> no reassign.
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 4)]
+    label_map = {1: ("personal", 100), 2: ("personal", 100), 3: ("personal", 200)}
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 3, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set(),
+        syno_face_ids={3: 555},
+    )
+    assert result.clusters[0].mapped_person == ("personal", 100)
+    assert result.reassigns == []
+
+
+def test_reassign_skips_photo_fallback_labels():
+    settings = load_settings()
+    # Same as the detection case, but the mislabeled face has no syno_faces
+    # row (photo-level fallback label) -> nothing to separate on the NAS.
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 6)]
+    label_map = {i: ("personal", 100) for i in range(1, 5)}
+    label_map[5] = ("personal", 200)
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 5, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set(),
+        syno_face_ids={},
+    )
+    assert result.reassigns == []
+
+
+def test_reassign_below_assign_sim_not_emitted():
+    settings = load_settings()
+    # The Y-labeled face sits in the cluster but is dissimilar to the X
+    # members (cos ~0.4 < assign_sim 0.55) -> too weak to contradict Synology.
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 5)]
+    specs.append((5, [0.4, 0.9, 0, 0]))
+    label_map = {i: ("personal", 100) for i in range(1, 5)}
+    label_map[5] = ("personal", 200)
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 5, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set(),
+        syno_face_ids={5: 555},
+    )
+    assert result.reassigns == []
+
+
+def test_reassign_skips_cross_space_moves():
+    settings = load_settings()
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 6)]
+    label_map = {i: ("personal", 100) for i in range(1, 5)}
+    label_map[5] = ("shared", 200)  # Synology label lives in the other space
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 5, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set(),
+        syno_face_ids={5: 555},
+    )
+    assert result.reassigns == []
+
+
+def test_core_backward_compatible_without_syno_ids():
+    settings = load_settings()
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 6)]
+    label_map = {i: ("personal", 100) for i in range(1, 5)}
+    label_map[5] = ("personal", 200)
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 5, label_map)
+    # Positional call exactly as eval/holdout does it -> no reassign pass.
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+    assert result.reassigns == []
+
+
+def test_reassign_from_similarity_evidence():
+    settings = load_settings()
+    # Cluster 0: 4 X + 1 mislabeled Y. Cluster 1: 2 genuine Y faces far away.
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 6)]
+    specs += [(6, [0, 1, 0, 0]), (7, [0, 1, 0, 0])]
+    label_map = {i: ("personal", 100) for i in range(1, 5)}
+    label_map[5] = ("personal", 200)
+    label_map[6] = ("personal", 200)
+    label_map[7] = ("personal", 200)
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 5 + [1] * 2, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set(),
+        syno_face_ids={5: 555},
+    )
+    assert len(result.reassigns) == 1
+    from_sim = result.reassigns[0]["payload"]["from_similarity"]
+    assert from_sim is not None and from_sim < 0.1  # orthogonal to the real Ys
+
+    # Without any other Y-labeled face, the evidence is None.
+    label_map2 = {i: ("personal", 100) for i in range(1, 5)}
+    label_map2[5] = ("personal", 200)
+    face_ids2, X2, labels2, lm2, meta2 = _core_inputs(specs[:5], [0] * 5, label_map2)
+    result2 = crossref._crossref_core(
+        face_ids2, X2, labels2, lm2, settings, meta2, person_photos=set(),
+        syno_face_ids={5: 555},
+    )
+    assert len(result2.reassigns) == 1
+    assert result2.reassigns[0]["payload"]["from_similarity"] is None
+
+
+def test_run_clustering_reassign_row_and_dedup(db_helpers, tmp_settings):
+    h = db_helpers
+    h.insert_person("personal", 100, "Alice")
+    h.insert_person("personal", 200, "Bob")
+    # 5 identical faces in distinct photos; Synology labeled 4 as Alice and
+    # one (photo 4) wrongly as Bob.
+    for i in range(5):
+        h.insert_photo("personal", i)
+        h.insert_face("personal", i, 100, 100, 200, 200)  # -> [0.1,0.1,0.3,0.3]
+    for fid in range(1, 6):
+        h.insert_embedding(fid, "arcface", [1.0, 0.0, 0.0, 0.0])
+    for photo in range(4):
+        h.insert_syno_face("personal", photo + 1, photo, 100, (0.1, 0.1, 0.3, 0.3))
+    h.insert_syno_face("personal", 5, 4, 200, (0.1, 0.1, 0.3, 0.3))
+    h.commit()
+
+    crossref.run_clustering(h.conn, tmp_settings)
+    crossref.run_clustering(h.conn, tmp_settings)  # second run must not duplicate
+
+    import json
+
+    rows = h.conn.execute(
+        "SELECT payload_json FROM review_queue WHERE kind = 'reassign'"
+    ).fetchall()
+    assert len(rows) == 1
+    p = json.loads(rows[0]["payload_json"])
+    assert p["syno_face_id"] == 5
+    assert p["from_person_id"] == 200
+    assert p["from_person_name"] == "Bob"
+    assert p["person_id"] == 100
+    assert p["person_name"] == "Alice"
+
+
 def test_run_clustering_dedup_across_runs(db_helpers, tmp_settings):
     h = db_helpers
     h.insert_person("personal", 100, "Alice")

@@ -68,6 +68,20 @@
 </div>
 {% if truncated.assign %}<p class="trunc">{{ truncated.assign }} more truncated.</p>{% endif %}
 
+<h2>Reassignments ({{ sections.reassign|length }})</h2>
+<div class="grid">
+{% for e in sections.reassign %}
+  <div class="card">
+    {{ img(e.crop) }}
+    <div><strong>{{ e.payload.from_person_name or e.payload.from_person_id }}</strong> &rarr; <strong>{{ e.payload.person_name or e.payload.person_id }}</strong></div>
+    <div class="muted">photo {{ e.payload.photo_id }} · {{ e.payload.space }}</div>
+    <div class="conf">to-sim {{ '%.3f'|format(e.confidence or 0) }}{% if e.payload.from_similarity is not none %} · from-sim {{ '%.3f'|format(e.payload.from_similarity) }}{% endif %}</div>
+    <div class="muted">{{ e.status }}</div>
+  </div>
+{% endfor %}
+</div>
+{% if truncated.reassign %}<p class="trunc">{{ truncated.reassign }} more truncated.</p>{% endif %}
+
 <h2>Merges ({{ sections.merge|length }})</h2>
 <div class="grid">
 {% for e in sections.merge %}

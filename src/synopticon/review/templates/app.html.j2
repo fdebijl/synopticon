@@ -38,7 +38,7 @@
   <span style="flex:1"></span>
   <form method="get" style="display:flex;gap:.4rem;">
     <select name="kind">
-      {% for k in ['', 'assign', 'low_confidence', 'merge', 'new_person'] %}
+      {% for k in ['', 'assign', 'low_confidence', 'reassign', 'merge', 'new_person'] %}
       <option value="{{ k }}" {% if k==kind %}selected{% endif %}>{{ k or 'all kinds' }}</option>
       {% endfor %}
     </select>
@@ -82,6 +82,19 @@
           <div class="thumbs">{% for c in it.merge_crops_b %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
         </div>
       </div>
+    {% elif it.kind == 'reassign' %}
+      <div>
+        <strong>
+          {% if it.from_person_url %}<a href="{{ it.from_person_url }}" target="_blank" rel="noopener">{{ it.payload.from_person_name or it.payload.from_person_id }}</a>
+          {% else %}{{ it.payload.from_person_name or it.payload.from_person_id }}{% endif %}
+        </strong>
+        &rarr;
+        <strong>
+          {% if it.person_url %}<a href="{{ it.person_url }}" target="_blank" rel="noopener">{{ it.payload.person_name or it.payload.person_id }}</a>
+          {% else %}{{ it.payload.person_name or it.payload.person_id }}{% endif %}
+        </strong>
+      </div>
+      <div class="muted">to-sim {{ '%.3f'|format(it.confidence or 0) }}{% if it.payload.from_similarity is not none %} · from-sim {{ '%.3f'|format(it.payload.from_similarity) }}{% endif %}</div>
     {% else %}
       <div><strong>{{ it.payload.person_name or it.payload.person_id }}</strong></div>
       <div class="muted">conf {{ '%.3f'|format(it.confidence or 0) }}</div>

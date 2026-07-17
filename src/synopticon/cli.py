@@ -342,12 +342,15 @@ def review(
 def apply(
     kinds: str = typer.Option(
         "assign,low_confidence",
-        help="Comma-separated kinds: assign,low_confidence,merge,new_person. "
+        help="Comma-separated kinds: assign,low_confidence,reassign,merge,new_person. "
         "assign and low_confidence are both approved face assignments and apply by default.",
     ),
     person_id: int = typer.Option(None, help="Scope to a single person id."),
     apply_: bool = typer.Option(False, "--apply", help="Actually write to the NAS (default: dry-run)."),
     apply_merges: bool = typer.Option(False, help="Extra gate required to apply merges."),
+    apply_reassigns: bool = typer.Option(
+        False, help="Extra gate required to apply reassigns (moves an existing Synology face label to a different person)."
+    ),
     space: str = typer.Option("personal"),
     show_audit: bool = typer.Option(False, "--report", help="Print the audit trail afterwards."),
 ):
@@ -372,10 +375,16 @@ def apply(
     if apply_:
         with SynoClient(settings, conn) as client:
             writer = SynoWriter(client, conn, space)
-            stats = apply_reviewed(conn, writer, kind_set, person_id=person_id, apply_merges=apply_merges)
+            stats = apply_reviewed(
+                conn, writer, kind_set, person_id=person_id,
+                apply_merges=apply_merges, apply_reassigns=apply_reassigns,
+            )
     else:
         typer.echo("DRY RUN (pass --apply to write to the NAS)")
-        stats = apply_reviewed(conn, DryRunWriter(conn), kind_set, person_id=person_id, apply_merges=apply_merges)
+        stats = apply_reviewed(
+            conn, DryRunWriter(conn), kind_set, person_id=person_id,
+            apply_merges=apply_merges, apply_reassigns=apply_reassigns,
+        )
     typer.echo(f"{stats}")
     if show_audit:
         for row in audit.tail(conn, limit=50):

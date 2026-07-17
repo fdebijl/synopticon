@@ -2,7 +2,7 @@
 
 A standalone, quality-first face-recognition supplement for **Synology Photos**. Synology's built-in face detection misses faces and sometimes links photos to the wrong person; Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
 
-It runs anywhere Docker or Python runs (a homelab box, not the NAS itself), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available, and treats runtime as a non-issue: batch runs of hours or days are expected and fully resumable.
+It runs anywhere Docker or Python runs (such as a homelab box, running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available, and treats runtime as a non-issue: batch runs of hours or days are expected and fully resumable.
 
 ## How it works
 
@@ -19,7 +19,7 @@ sync  →  extract  →  cluster  →  report  →  review  →  apply
 
 1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels become ground truth.
 2. **`extract`** — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into a local SQLite cache. Interrupt any time; it resumes.
-3. **`cluster`** — builds an exact k-NN similarity graph over all faces, clusters (Chinese Whispers by default), and maps clusters onto Synology persons by majority vote. Produces proposals: *new face assignments*, *merge candidates*, and *new people*.
+3. **`cluster`** — builds an exact k-NN similarity graph over all faces, clusters (Chinese Whispers by default), and maps clusters onto Synology persons by majority vote. Produces proposals: *new face assignments*, *wrong-label corrections* (a face Synology tagged as one person that clearly belongs to another), *merge candidates*, and *new people*.
 4. **`report` / `review`** — a static HTML report and an interactive web UI to approve or reject each proposal. Nothing is written until you approve it.
 5. **`apply`** — pushes approved assignments back via the `add_face` API (works even on photos Synology found no face in). Dry-run by default; merges require a second explicit flag; every write is audit-logged and assignments are individually reversible.
 6. **`recluster` / `eval`** — retune thresholds from the embedding cache (no re-extraction, no NAS traffic) and measure quality by masking known labels and checking recovery.
@@ -130,10 +130,11 @@ Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
 
 | Option | Default | Description |
 |---|---|---|
-| `--kinds TEXT` | `assign,low_confidence` | Comma-separated kinds to apply. `assign` and `low_confidence` are the same reviewer-approved face assignment (they differ only in the pipeline's original confidence), so both apply by default; `merge` is gated by `--apply-merges`. |
-| `--person-id INTEGER` | none | Scope to a single person id. |
+| `--kinds TEXT` | `assign,low_confidence` | Comma-separated kinds to apply. `assign` and `low_confidence` are the same reviewer-approved face assignment (they differ only in the pipeline's original confidence), so both apply by default; `merge` is gated by `--apply-merges`; `reassign` (opt-in via `--kinds reassign`) is gated by `--apply-reassigns`. |
+| `--person-id INTEGER` | none | Scope to a single person id (matches either side of a merge or reassign). |
 | `--apply` | off (dry-run) | Actually write to the NAS. |
 | `--apply-merges` | off | Extra gate required before any merge is written. |
+| `--apply-reassigns` | off | Extra gate required before any reassign is written — it moves an existing (wrong) Synology face label to a different person via a single reversible `Person.separate` call. |
 | `--space TEXT` | `personal` | Space to write to. |
 | `--report` | off | Print the audit trail afterward. |
 
@@ -214,8 +215,9 @@ The pipeline degrades gracefully to whatever subset is present (minimum: SCRFD +
 ## Safety model
 
 - Phases 1–3 are **read-only** toward the NAS.
-- `apply` is **dry-run by default**; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply).
-- Only reviewer-**approved** queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`.
+- `apply` is **dry-run by default**; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply), and `--apply-reassigns` is required for reassigns (they alter labels a human can already see in Photos — review these per-item rather than bulk-approving).
+- Only reviewer-**approved** queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`, and a reassign is a single `Person.separate` call that can be reversed by moving the face back.
+- A cluster can propose both a merge of persons A/B and reassigns between them; if the merge is applied first the reassigns become no-ops (the pre-write NAS check skips them).
 - Recommended first write: scope with `--person-id <id>` to a test person and verify in the Photos UI.
 
 ## Compatibility

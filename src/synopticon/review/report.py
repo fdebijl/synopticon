@@ -76,6 +76,7 @@ def generate(conn: sqlite3.Connection, settings: Settings, run_id: int) -> Path:
     counts_by_kind: dict[str, int] = {}
     sections: dict[str, list[dict]] = {
         "assign": [],
+        "reassign": [],
         "merge": [],
         "new_person": [],
         "flags": [],
@@ -105,6 +106,9 @@ def generate(conn: sqlite3.Connection, settings: Settings, run_id: int) -> Path:
         if kind == "assign":
             entry["crop"] = crop_for(payload.get("face_id"))
             sections["assign"].append(entry)
+        elif kind == "reassign":
+            entry["crop"] = crop_for(payload.get("face_id"))
+            sections["reassign"].append(entry)
         elif kind == "merge":
             ev = payload.get("evidence", {})
             entry["exemplars_a"] = [

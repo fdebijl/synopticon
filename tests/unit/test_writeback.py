@@ -47,6 +47,67 @@ LIST_FACE_RESP_TAGGED = {
 }
 LIST_FACE_RESP_EMPTY = {"success": True, "data": {"list": []}}
 
+# Verbatim from har/reassign_existing_face_to_other_person.har: entry 10's
+# response (Person.separate), and entries 0/13 (list_face before/after the move
+# — same face_id, re-bound person).
+SEPARATE_RESP = {
+    "data": {
+        "additional": {"thumbnail": {"cache_key": "64599_1691070797"}},
+        "cover": 47412,
+        "id": 7185,
+        "item_count": 256,
+        "name": "Hannah Lips",
+        "show": True,
+    },
+    "success": True,
+}
+_REASSIGN_BBOX = {
+    "top_left": {"x": 0.453206817586503, "y": 0.21220010263430777},
+    "bottom_right": {"x": 0.70277045712515362, "y": 0.39933720102046893},
+}
+LIST_FACE_RESP_WRONG_PERSON = {
+    "data": {
+        "list": [
+            {
+                "face_bounding_box": _REASSIGN_BBOX,
+                "face_id": 79940,
+                "name": "Hannah Todd",
+                "person_id": 15315,
+                "thumbnail": {"cache_key": "84364_1739711312"},
+            }
+        ]
+    },
+    "success": True,
+}
+LIST_FACE_RESP_REBOUND = {
+    "data": {
+        "list": [
+            {
+                "face_bounding_box": _REASSIGN_BBOX,
+                "face_id": 79940,
+                "name": "Hannah Lips",
+                "person_id": 7185,
+                "thumbnail": {"cache_key": "64599_1691070797"},
+            }
+        ]
+    },
+    "success": True,
+}
+
+REASSIGN_PAYLOAD = {
+    "face_id": 1,
+    "photo_id": 103181,
+    "space": "personal",
+    "syno_face_id": 79940,
+    "from_person_id": 15315,
+    "from_person_name": "Hannah Todd",
+    "person_id": 7185,
+    "person_name": "Hannah Lips",
+    "bbox_normalized": [0.4532, 0.2122, 0.7028, 0.3993],
+    "confidence": 0.91,
+    "from_similarity": 0.30,
+}
+
 
 def _form(request: httpx.Request) -> dict[str, str]:
     return dict(urllib.parse.parse_qsl(request.content.decode()))
@@ -85,15 +146,17 @@ def test_dryrun_writer_audits_without_any_network_call(respx_mock, nas_conn):
     r1 = writer.assign(1, 2, (0.1, 0.1, 0.2, 0.2))
     r2 = writer.merge(10, [11], "Foo")
     r3 = writer.rename(10, "Bar")
-    r4 = writer.delete_face("personal", 5)
+    r4 = writer.delete_face("personal", 5, 10)
+    r5 = writer.reassign("personal", 79940, 7185, "Hannah Lips", 103181)
 
-    assert r1.success and r2.success and r3.success and r4.success
+    assert r1.success and r2.success and r3.success and r4.success and r5.success
     assert len(respx_mock.calls) == 0
 
     rows = audit.tail(nas_conn, limit=10)
     dryrun_rows = [r for r in rows if r["action"].startswith("dryrun.")]
     assert {r["action"] for r in dryrun_rows} == {
         "dryrun.assign", "dryrun.merge", "dryrun.rename", "dryrun.delete_face",
+        "dryrun.reassign",
     }
     assert all(r["success"] == 1 for r in dryrun_rows)
 
@@ -377,6 +440,193 @@ def test_apply_reviewed_applies_low_confidence_as_assign(respx_mock, client, nas
     assert added["done"] is True  # add_face actually fired
     row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'low_confidence'").fetchone()
     assert row["status"] == "applied"
+
+
+# -- apply_reviewed: reassign ---------------------------------------------------
+
+
+def test_apply_reviewed_reassign_gated_without_flag(respx_mock, client, nas_conn):
+    _bootstrap(respx_mock)
+    # No entry.cgi route registered -- the gate must trip before any NAS probe.
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["reassign"], apply_reassigns=False)
+    assert stats.considered == 1
+    assert stats.skipped == 1
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'reassign'").fetchone()
+    assert row["status"] == "approved"
+
+
+def test_apply_reviewed_reassign_full_chain(respx_mock, client, nas_conn):
+    _bootstrap(respx_mock)
+    separated = {"done": False, "form": None}
+
+    def _dispatch(request):
+        form = _form(request)
+        method = form.get("method")
+        if method == "list_face":
+            # Wrong person before separate (idempotency probe), re-bound after (verify).
+            return httpx.Response(
+                200,
+                json=LIST_FACE_RESP_REBOUND if separated["done"] else LIST_FACE_RESP_WRONG_PERSON,
+            )
+        if method == "separate":
+            separated["done"] = True
+            separated["form"] = form
+            return httpx.Response(200, json=SEPARATE_RESP)
+        raise AssertionError(f"unexpected call: method={method!r}")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["reassign"], apply_reassigns=True)
+    assert stats.considered == 1
+    assert stats.applied == 1
+    assert stats.failed == 0
+
+    # HAR-exact payload shape: JSON list face_id, plain target_id, quoted name.
+    assert separated["form"]["face_id"] == "[79940]"
+    assert separated["form"]["target_id"] == "7185"
+    assert separated["form"]["name"] == '"Hannah Lips"'
+
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'reassign'").fetchone()
+    assert row["status"] == "applied"
+    rows = audit.tail(nas_conn, limit=10)
+    actions = sorted(r["action"] for r in rows if r["action"].startswith("writeback.reassign"))
+    assert actions == ["writeback.reassign.separate", "writeback.reassign.verify"]
+    assert all(r["success"] == 1 for r in rows if r["action"].startswith("writeback.reassign"))
+
+
+def test_apply_reviewed_reassign_uses_fresh_person_name(respx_mock, client, nas_conn):
+    # The separate call must carry the target's current name from the local
+    # mirror, not the possibly-stale name captured in the payload.
+    _bootstrap(respx_mock)
+    nas_conn.execute(
+        "INSERT INTO persons (space, id, name, synced_at) VALUES ('personal', 7185, 'Hannah L.', 0)"
+    )
+    nas_conn.commit()
+    separated = {"done": False, "form": None}
+
+    def _dispatch(request):
+        form = _form(request)
+        method = form.get("method")
+        if method == "list_face":
+            return httpx.Response(
+                200,
+                json=LIST_FACE_RESP_REBOUND if separated["done"] else LIST_FACE_RESP_WRONG_PERSON,
+            )
+        if method == "separate":
+            separated["done"] = True
+            separated["form"] = form
+            return httpx.Response(200, json=SEPARATE_RESP)
+        raise AssertionError(f"unexpected call: method={method!r}")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["reassign"], apply_reassigns=True)
+    assert stats.applied == 1
+    assert separated["form"]["name"] == '"Hannah L."'
+
+
+def test_apply_reviewed_reassign_idempotent_skip(respx_mock, client, nas_conn):
+    _bootstrap(respx_mock)
+
+    def _dispatch(request):
+        method = _form(request).get("method")
+        if method == "list_face":
+            return httpx.Response(200, json=LIST_FACE_RESP_REBOUND)
+        raise AssertionError(f"unexpected call: method={method!r} (separate must not fire)")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["reassign"], apply_reassigns=True)
+    assert stats.applied == 1
+    assert stats.failed == 0
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'reassign'").fetchone()
+    assert row["status"] == "applied"
+
+
+def test_apply_reviewed_reassign_face_gone_skips(respx_mock, client, nas_conn):
+    # The Synology face vanished since the last sync (NAS drift): nothing to
+    # move, so the row must be skipped without writes and stay approved.
+    _bootstrap(respx_mock)
+
+    def _dispatch(request):
+        method = _form(request).get("method")
+        if method == "list_face":
+            return httpx.Response(200, json=LIST_FACE_RESP_EMPTY)
+        raise AssertionError(f"unexpected call: method={method!r} (separate must not fire)")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["reassign"], apply_reassigns=True)
+    assert stats.considered == 1
+    assert stats.skipped == 1
+    assert stats.applied == 0
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'reassign'").fetchone()
+    assert row["status"] == "approved"
+
+
+def test_apply_reviewed_reassign_separate_failure_marks_failed(respx_mock, client, nas_conn):
+    _bootstrap(respx_mock)
+
+    def _dispatch(request):
+        method = _form(request).get("method")
+        if method == "list_face":
+            return httpx.Response(200, json=LIST_FACE_RESP_WRONG_PERSON)
+        if method == "separate":
+            return httpx.Response(200, json={"success": False, "error": {"code": 999}})
+        raise AssertionError(f"unexpected call: method={method!r}")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["reassign"], apply_reassigns=True)
+    assert stats.failed == 1
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'reassign'").fetchone()
+    assert row["status"] == "failed"
+
+
+def test_apply_reviewed_reassign_dry_run_parity(respx_mock, nas_conn):
+    writer = writeback.DryRunWriter(nas_conn)
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    stats = writeback.apply_reviewed(nas_conn, writer, kinds=["reassign"], apply_reassigns=True)
+
+    assert stats.considered == 1
+    assert stats.applied == 1
+    assert len(respx_mock.calls) == 0
+    row = nas_conn.execute("SELECT status FROM review_queue WHERE kind = 'reassign'").fetchone()
+    assert row["status"] == "approved"  # dry run must not consume the approval
+    rows = audit.tail(nas_conn, limit=5)
+    assert any(r["action"] == "dryrun.reassign" for r in rows)
+
+
+def test_apply_reviewed_reassign_person_filter(respx_mock, nas_conn):
+    # person_id must match either side of the move; dry-run keeps the row
+    # approved so the same row can be probed with different filters.
+    writer = writeback.DryRunWriter(nas_conn)
+    _insert_review_row(nas_conn, "reassign", REASSIGN_PAYLOAD)
+
+    for pid, expected in [(7185, 1), (15315, 1), (99999, 0)]:
+        stats = writeback.apply_reviewed(
+            nas_conn, writer, kinds=["reassign"], person_id=pid, apply_reassigns=True
+        )
+        assert stats.considered == expected, f"person_id={pid}"
 
 
 def test_configure_apply_logging_is_idempotent(tmp_path):

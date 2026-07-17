@@ -11,6 +11,7 @@ models/
 dist/
 .pytest_cache/
 config.toml
+har/
 *.har
 .env
 apply.log

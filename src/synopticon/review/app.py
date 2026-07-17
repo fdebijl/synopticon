@@ -157,6 +157,12 @@ def create_app(db_path: Path | str, settings: Settings):
                         "person_b_url": _person_url(
                             web_base, person_b.get("space"), person_b.get("person_id")
                         ),
+                        "person_url": _person_url(
+                            web_base, payload.get("space"), payload.get("person_id")
+                        ),
+                        "from_person_url": _person_url(
+                            web_base, payload.get("space"), payload.get("from_person_id")
+                        ),
                         "new_person_crops": [
                             crops.get(int(f)) for f in payload.get("face_ids", [])
                         ],
