@@ -4,20 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Synopticon supplements Synology Photos' face recognition: it syncs a photo library from a NAS, runs an ensemble face pipeline (SCRFD + YOLO detection, ArcFace/AdaFace/MagFace embeddings), clusters faces, cross-references clusters against Synology's existing person labels, and writes approved corrections back through Synology's undocumented Person API. Quality-first, CPU-only, batch/offline — runtime is explicitly not a constraint; resumability is.
+Synopticon supplements Synology Photos' face recognition: it syncs a photo library from a NAS, runs an ensemble face pipeline (SCRFD + YOLO detection, ArcFace/AdaFace/MagFace embeddings), clusters faces, cross-references clusters against Synology's existing person labels, and writes approved corrections back through Synology's undocumented Person API. Quality-first, CPU-first (optional CUDA GPU), batch/offline — runtime is explicitly not a constraint; resumability is.
 
 ## Commands
 
 ```bash
-uv sync --all-extras --no-extra restore --no-extra export   # dev setup (torch extras are opt-in)
-uv run pytest tests/unit/ -q                # full suite (~70 tests, fully mocked, fast)
+uv sync --extra cpu --extra review --extra faiss   # dev setup (cpu/gpu are mutually exclusive; torch extras are opt-in)
+uv run pytest tests/unit/ -q                # full suite (~120 tests, fully mocked, fast)
 uv run pytest tests/unit/test_client.py -q  # one file; -k <name> for one test
-uv run synopticon --help                    # CLI: check|sync|extract|cluster|recluster|report|review|apply|eval|models
+uv run synopticon --help                    # CLI: check|hwinfo|sync|extract|benchmark|cluster|recluster|reset|report|review|apply|apply-all|eval|models
 uv run synopticon check                     # fast read-only NAS connectivity + auth probe
 uv run --extra export python scripts/export_adaface_onnx.py ...   # ONNX exports need the export extra
 ```
 
-`uv run` re-syncs the venv to the default extras — torch disappears again after a plain `uv run`. Always use `uv run --extra export` for the export scripts.
+The `cpu` and `gpu` extras share one import namespace and are declared conflicting, so `--all-extras` no longer resolves — pick exactly one (`--extra gpu` for CUDA). `uv run` re-syncs the venv to the default extras — torch disappears again after a plain `uv run`. Always use `uv run --extra export` for the export scripts.
 
 Tests must never contact a real NAS; all HTTP is mocked with respx. Live verification is done manually via `synopticon check` / `sync` (read-only).
 
@@ -65,7 +65,7 @@ Precedence: init kwargs > env vars (`SYNOPTICON_<SECTION>__<KEY>`) > `.env` file
 
 ### Safety model (do not weaken)
 
-Phases before `apply` are read-only toward the NAS. `apply` is dry-run by default (`--apply` to write; `--apply-merges` additionally gates merges — merges are the one irreversible operation). Only `review_queue` rows with `status='approved'` are eligible; every write attempt lands in `audit_log`; idempotency pre-checks re-fetch NAS state before each write.
+Phases before `apply` are read-only toward the NAS. `apply` is dry-run by default (`--apply` to write; `--apply-merges` additionally gates merges — merges are the one irreversible operation; `--apply-reassigns` gates reassigns, which move a face-label a human can already see in Photos). `apply-all` is the one command that writes every approved kind at once with those extra gates implicitly lifted — it still confirms interactively and never dry-runs. Only `review_queue` rows with `status='approved'` are eligible; every write attempt lands in `audit_log`; idempotency pre-checks re-fetch NAS state before each write.
 
 ## Conventions
 

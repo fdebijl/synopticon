@@ -5,15 +5,29 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 
-from synopticon.config import Space
+from synopticon.config import Settings, Space
 from synopticon.db import store
 from synopticon.syno import foto
-from synopticon.syno.client import SynoClient
+from synopticon.syno.client import SynoApiError, SynoClient
 
 _CHUNK = 500
 _PROGRESS_EVERY = 50
 
 Progress = Callable[[int, int | None], None]
+# Called once per photo we couldn't list faces for: (photo_id, error_code, item_url|None).
+SkipCallback = Callable[[int, "int | None", "str | None"], None]
+
+
+def _item_web_url(settings: Settings, space: Space, photo_id: int) -> str | None:
+    """Synology Photos deep link to a single timeline item, or None if no base URL is set.
+
+    Mirrors review.app._item_url — kept local so the sync layer needn't import the
+    FastAPI review module.
+    """
+    base = (settings.nas.web_url or settings.nas.url or "").strip().rstrip("/")
+    if not base:
+        return None
+    return f"{base}/?launchApp=SYNO.Foto.AppInstance#/{space}_space/timeline/item/{photo_id}"
 
 
 def sync_persons(
@@ -79,6 +93,7 @@ def sync_faces(
     only_tagged: bool = True,
     resume: bool = True,
     progress: Progress | None = None,
+    on_skip: SkipCallback | None = None,
 ) -> dict:
     """Per-photo `Browse.Item.list_face` -> `syno_faces` upsert, resumable via `sync_state`.
 
@@ -87,8 +102,13 @@ def sync_faces(
     photo instead. The cursor is cleared once a full pass completes.
     """
     if only_tagged:
+        # Join photos (not just person_photos) so tags left dangling by a since-deleted
+        # or vanished photo are excluded — otherwise list_face errors 117 on them. This
+        # mirrors the deleted=0 filter the all-photos branch already applies.
         rows = conn.execute(
-            "SELECT DISTINCT photo_id FROM person_photos WHERE space = ? ORDER BY photo_id",
+            "SELECT DISTINCT pp.photo_id FROM person_photos pp "
+            "JOIN photos p ON p.space = pp.space AND p.id = pp.photo_id "
+            "WHERE pp.space = ? AND p.deleted = 0 ORDER BY pp.photo_id",
             (space,),
         ).fetchall()
     else:
@@ -105,11 +125,23 @@ def sync_faces(
 
     photos_processed = 0
     faces_upserted = 0
+    faces_skipped = 0
     total = len(candidate_ids)
     now = store.now()
 
     for photo_id in candidate_ids:
-        faces = foto.list_item_faces(client, space, photo_id)
+        try:
+            faces = foto.list_item_faces(client, space, photo_id)
+        except SynoApiError as exc:
+            # A single unlistable item (deleted/moved/permission-class error such as
+            # code 117) must not abort the whole sweep. Advance the cursor past it so
+            # resume doesn't wedge on the same photo, and surface it to the caller.
+            faces_skipped += 1
+            store.set_state(conn, cursor_key, photo_id)
+            conn.commit()
+            if on_skip is not None:
+                on_skip(photo_id, exc.code, _item_web_url(client.settings, space, photo_id))
+            continue
         conn.execute("DELETE FROM syno_faces WHERE space = ? AND photo_id = ?", (space, photo_id))
         for face in faces:
             x1, y1, x2, y2 = face.bbox.as_tuple()
@@ -135,4 +167,8 @@ def sync_faces(
     store.set_state(conn, cursor_key, None)
     conn.commit()
 
-    return {"photos_processed": photos_processed, "faces_upserted": faces_upserted}
+    return {
+        "photos_processed": photos_processed,
+        "faces_upserted": faces_upserted,
+        "faces_skipped": faces_skipped,
+    }

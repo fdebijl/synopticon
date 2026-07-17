@@ -116,6 +116,21 @@ def _finish_line():
         typer.echo("")
 
 
+def _skip_logger(space: str, label: str):
+    """Render a per-item skip as a standalone console line, without clobbering progress."""
+
+    def cb(photo_id: int, code, url):
+        _finish_line()  # end any in-place progress line first
+        link = f" -> {url}" if url else ""
+        typer.secho(
+            f"[{space}] {label}: skipped photo {photo_id} (error code {code}){link}",
+            fg="yellow",
+            err=True,
+        )
+
+    return cb
+
+
 @app.command()
 def hwinfo():
     """Print hardware/environment stats relevant to extraction & clustering (for bug reports)."""
@@ -155,6 +170,7 @@ def sync(
                 stats = persons.sync_faces(
                     conn, client, sp, only_tagged=not all_faces, resume=resume,
                     progress=_progress(sp, "faces"),
+                    on_skip=_skip_logger(sp, "faces"),
                 )
                 _finish_line()
                 typer.echo(f"[{sp}] faces: {stats}")
