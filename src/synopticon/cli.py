@@ -357,6 +357,109 @@ def reset(
     typer.echo(f"reset complete — next: {nxt}")
 
 
+@app.command("clear-queue")
+def clear_queue(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """Delete only the PENDING review-queue items so `cluster` can re-generate them.
+
+    Pending rows regenerate cleanly on the next `cluster` run (crossref re-inserts
+    them fresh, picking up any person names synced since the last run). Approved,
+    applied and rejected rows are left untouched: they are the ledger crossref uses
+    to avoid re-surfacing work you have already handled, so this command refuses to
+    touch them. Never contacts the NAS.
+    """
+    settings = _settings()
+    conn = _conn(settings)
+
+    n = conn.execute(
+        "SELECT COUNT(*) FROM review_queue WHERE status = 'pending'"
+    ).fetchone()[0]
+    if n == 0:
+        typer.echo("no pending items to clear")
+        return
+
+    typer.echo(f"Clear {n} pending review-queue item(s) in {settings.storage.db_path}")
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    # audit_log.review_item_id references review_queue with no cascade; null any
+    # links to the rows we're about to drop so the delete can't trip the FK.
+    conn.execute(
+        "UPDATE audit_log SET review_item_id = NULL WHERE review_item_id IN "
+        "(SELECT item_id FROM review_queue WHERE status = 'pending')"
+    )
+    conn.execute("DELETE FROM review_queue WHERE status = 'pending'")
+    conn.commit()
+
+    typer.echo(f"cleared {n} pending item(s) — next: synopticon cluster")
+
+
+@app.command("regen-crops")
+def regen_crops_cmd(
+    space: str = typer.Option(None, help="Limit to one space (default: all configured)."),
+    only_missing: bool = typer.Option(
+        True, "--only-missing/--all",
+        help="Only rebuild crops whose files are missing (default); --all rewrites every face's crops.",
+    ),
+    limit: int = typer.Option(None, help="Process at most N photos."),
+):
+    """Rebuild face crop images from stored bboxes + originals (fetched from the NAS).
+
+    Crops are a derived artifact — the faces table keeps every bbox/landmark, so
+    this reconstructs them without re-running detection or embedding. Use it after
+    `delete-crops`, or to repair a partial wipe. Resumable: it commits per photo.
+    """
+    from synopticon.pipeline.crops import regen_crops
+    from synopticon.sync import downloads
+    from synopticon.syno.client import SynoClient
+
+    settings = _settings()
+    conn = _conn(settings)
+    with SynoClient(settings, conn) as client:
+        for sp in _spaces(settings, space):
+            def fetch(row: sqlite3.Row) -> Path:
+                return downloads.ensure_original(conn, client, settings, row)
+
+            stats = regen_crops(
+                conn, settings, fetch, space=sp, only_missing=only_missing,
+                limit=limit, progress=_progress(sp, "regen"),
+            )
+            _finish_line()
+            typer.echo(f"[{sp}] {stats}")
+    if not settings.storage.keep_originals:
+        evicted = downloads.evict_originals(settings)
+        typer.echo(f"evicted: {evicted}")
+
+
+@app.command("delete-crops")
+def delete_crops_cmd(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """Delete all crop images from disk to reclaim space (the DB is untouched).
+
+    Crops can dominate on-disk size across intermittent runs; since they're a pure
+    derived artifact, wiping them between passes is safe — rebuild on demand with
+    `regen-crops`. Never touches the NAS or the faces table.
+    """
+    from synopticon.pipeline.crops import crops_disk_usage, delete_crops
+
+    settings = _settings()
+    crops_dir = settings.storage.crops_dir
+    files, nbytes = crops_disk_usage(crops_dir)
+    if files == 0:
+        typer.echo(f"no crops on disk under {crops_dir}")
+        return
+
+    typer.echo(f"Delete {files} crop files ({_human_bytes(nbytes)}) under {crops_dir}")
+    typer.echo("The faces table is untouched; rebuild later with `synopticon regen-crops`.")
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    delete_crops(crops_dir)
+    typer.echo("crops deleted")
+
+
 @app.command()
 def report(run_id: int = typer.Option(None, help="Cluster run to report on (default: latest).")):
     """Generate the static HTML review report."""

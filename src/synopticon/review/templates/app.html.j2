@@ -1,3 +1,11 @@
+{% macro hidden_badge(cls='') -%}
+<span class="hidden-badge {{ cls }}" title="Hidden on Synology Photos" aria-label="Person hidden on Synology Photos">
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>
+</span>
+{%- endmacro %}
 <!doctype html>
 <html lang="en">
 <head>
@@ -29,6 +37,12 @@
   .merge-arrow { flex: 0 0 auto; opacity: .6; }
   button { cursor: pointer; }
   .muted { opacity: .6; font-size: .75rem; }
+  .thumb-group { position: relative; display: inline-block; }
+  .hidden-badge { display: inline-flex; align-items: center; line-height: 0;
+                  color: #fff; background: rgba(0,0,0,.62); border-radius: 999px;
+                  padding: 2px; }
+  .thumb-group > .hidden-badge { position: absolute; top: 3px; right: 3px; z-index: 1; }
+  .name-hidden { margin-left: .3rem; vertical-align: middle; opacity: .85; }
   body.hide-unnamed .card[data-unnamed-target] { display: none; }
   body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
 </style>
@@ -81,7 +95,7 @@
             {% if it.person_a_url %}<a href="{{ it.person_a_url }}" target="_blank" rel="noopener">{{ it.payload.person_a.name or it.payload.person_a.person_id }}</a>
             {% else %}{{ it.payload.person_a.name or it.payload.person_a.person_id }}{% endif %}
           </strong></div>
-          <div class="thumbs">{% for c in it.merge_crops_a %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
+          <div class="thumb-group">{% if it.person_a_hidden %}{{ hidden_badge() }}{% endif %}<div class="thumbs">{% for c in it.merge_crops_a %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div></div>
         </div>
         <div class="merge-arrow">&harr;</div>
         <div class="merge-side">
@@ -89,7 +103,7 @@
             {% if it.person_b_url %}<a href="{{ it.person_b_url }}" target="_blank" rel="noopener">{{ it.payload.person_b.name or it.payload.person_b.person_id }}</a>
             {% else %}{{ it.payload.person_b.name or it.payload.person_b.person_id }}{% endif %}
           </strong></div>
-          <div class="thumbs">{% for c in it.merge_crops_b %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
+          <div class="thumb-group">{% if it.person_b_hidden %}{{ hidden_badge() }}{% endif %}<div class="thumbs">{% for c in it.merge_crops_b %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div></div>
         </div>
       </div>
     {% elif it.kind == 'reassign' %}
@@ -110,12 +124,12 @@
             {% if it.person_url %}<a href="{{ it.person_url }}" target="_blank" rel="noopener">{{ it.payload.person_name or it.payload.person_id }}</a>
             {% else %}{{ it.payload.person_name or it.payload.person_id }}{% endif %}
           </strong></div>
-          <div class="thumbs">{% for c in it.target_crops %}<img src="{{ c }}">{% endfor %}</div>
+          <div class="thumb-group">{% if it.target_hidden %}{{ hidden_badge() }}{% endif %}<div class="thumbs">{% for c in it.target_crops %}<img src="{{ c }}">{% endfor %}</div></div>
         </div>
       </div>
       <div class="muted">to-sim {{ '%.3f'|format(it.confidence or 0) }}{% if it.payload.from_similarity is not none %} · from-sim {{ '%.3f'|format(it.payload.from_similarity) }}{% endif %}</div>
     {% else %}
-      <div><strong>{{ it.payload.person_name or it.payload.person_id }}</strong></div>
+      <div><strong>{{ it.payload.person_name or it.payload.person_id }}</strong>{% if it.target_hidden %}{{ hidden_badge('name-hidden') }}{% endif %}</div>
       <div class="muted">conf {{ '%.3f'|format(it.confidence or 0) }}</div>
     {% endif %}
     <div class="muted">{{ it.kind }} · {{ it.status }}</div>

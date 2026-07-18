@@ -113,6 +113,33 @@ Clear locally-computed data (faces, embeddings, clusters, and the review queue) 
 
 Typical use after changing `[detection]` scores: `synopticon reset` then `synopticon extract && synopticon cluster`.
 
+### `clear-queue`
+Delete only the **pending** review-queue items so the next `cluster` run re-generates them from scratch. Pending rows regenerate cleanly — crossref re-inserts them, picking up any person names synced since the last run (handy when a face was suggested for a person who was still unnamed on the NAS at cluster time). Approved, applied and rejected rows are the ledger crossref uses to avoid re-surfacing work you've already handled, so this command refuses to touch them; use `reset` if you truly want to rebuild everything. **Never touches the NAS.**
+
+| Option | Default | Description |
+|---|---|---|
+| `--yes` / `-y` | off | Skip the confirmation prompt. |
+
+Typical use after a `sync` fills in previously-missing person names: `synopticon clear-queue` then `synopticon cluster`.
+
+### `delete-crops`
+Delete every face crop image from disk to reclaim space, leaving the `faces` table (bboxes, landmarks, embeddings) untouched. Crops are a pure derived artifact, so this is safe and reversible — rebuild them on demand with `regen-crops`. **Never touches the NAS.**
+
+Crop images can accumulate to many gigabytes over a large library. If you run the pipeline intermittently and don't need the review report/UI between passes, wiping crops after each pass keeps disk usage down — the crops cost nothing to recreate from the cached `faces` rows (plus the originals, re-fetched from the NAS) when you next want to review.
+
+| Option | Default | Description |
+|---|---|---|
+| `--yes` / `-y` | off | Skip the confirmation prompt. |
+
+### `regen-crops`
+Rebuild face crop images from the stored bboxes/landmarks and the originals (re-fetched from the NAS), without re-running detection or embedding. Use it to recover from a `delete-crops` (or an accidental wipe), or to repair a partial one. Resumable — it commits per photo. Originals are evicted afterward unless `storage.keep_originals` is set. **Reads the NAS but never writes to it.**
+
+| Option | Default | Description |
+|---|---|---|
+| `--space TEXT` | all | Limit to one space. |
+| `--only-missing` / `--all` | `--only-missing` | Only rebuild crops whose files are missing (skips photos already fully on disk, so re-runs are cheap); `--all` rewrites every face's crops. |
+| `--limit INTEGER` | none | Process at most N photos. |
+
 ### `report`
 Generate the static HTML review report.
 

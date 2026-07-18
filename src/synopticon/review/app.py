@@ -98,6 +98,26 @@ def create_app(db_path: Path | str, settings: Settings):
             for r in c.execute("SELECT face_id, crop_path FROM faces")
         }
 
+    # (space, person_id) pairs that are hidden on the NAS (persons.show = 0).
+    # Built lazily; persons is static while the review server runs.
+    _hidden: set[tuple[str, int]] | None = None
+
+    def hidden_persons(c: sqlite3.Connection) -> set[tuple[str, int]]:
+        nonlocal _hidden
+        if _hidden is None:
+            _hidden = {
+                (r["space"], int(r["id"]))
+                for r in c.execute(
+                    "SELECT space, id FROM persons WHERE show = 0 AND deleted = 0"
+                )
+            }
+        return _hidden
+
+    def _is_hidden(c: sqlite3.Connection, space: Any, person_id: Any) -> bool:
+        if not space or person_id is None:
+            return False
+        return (space, int(person_id)) in hidden_persons(c)
+
     # (space, person_id) -> our face_ids labeled to that person, best quality
     # first. Built lazily from ground truth (faces/syno_faces are static while
     # the review server runs); used for reassign target-person thumbnails.
@@ -220,6 +240,15 @@ def create_app(db_path: Path | str, settings: Settings):
                         "target_crops": _target_crops(c, payload, crops)
                         if r["kind"] == "reassign"
                         else [],
+                        "target_hidden": _is_hidden(
+                            c, payload.get("space"), payload.get("person_id")
+                        ),
+                        "person_a_hidden": _is_hidden(
+                            c, person_a.get("space"), person_a.get("person_id")
+                        ),
+                        "person_b_hidden": _is_hidden(
+                            c, person_b.get("space"), person_b.get("person_id")
+                        ),
                     }
                 )
             template = env.get_template("app.html.j2")

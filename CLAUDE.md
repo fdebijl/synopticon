@@ -12,7 +12,7 @@ Synopticon supplements Synology Photos' face recognition: it syncs a photo libra
 uv sync --extra cpu --extra review --extra faiss   # dev setup (cpu/gpu are mutually exclusive; torch extras are opt-in)
 uv run pytest tests/unit/ -q                # full suite (~120 tests, fully mocked, fast)
 uv run pytest tests/unit/test_client.py -q  # one file; -k <name> for one test
-uv run synopticon --help                    # CLI: check|hwinfo|sync|extract|benchmark|cluster|recluster|reset|report|review|apply|apply-all|dedupe|eval|models
+uv run synopticon --help                    # CLI: check|hwinfo|sync|extract|benchmark|cluster|recluster|reset|clear-queue|delete-crops|regen-crops|report|review|apply|apply-all|dedupe|eval|models
 uv run synopticon check                     # fast read-only NAS connectivity + auth probe
 uv run --extra export python scripts/export_adaface_onnx.py ...   # ONNX exports need the export extra
 ```
