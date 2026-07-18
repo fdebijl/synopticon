@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import numpy as np
@@ -14,6 +15,22 @@ from synopticon.db import store
 # test_writeback): a fake NAS base URL + settings with fast rate limits so
 # token-bucket throttling doesn't slow the suite down.
 NAS_BASE_URL = "https://nas.test"
+
+
+@pytest.fixture(autouse=True)
+def isolate_ambient_config(tmp_path, monkeypatch):
+    """Keep the developer's real config out of the test settings.
+
+    ``load_settings`` discovers ``./config.toml`` / ``./data/config.toml`` and
+    ``.env`` relative to the CWD, plus ``SYNOPTICON_*`` env vars. Running from a
+    checkout that has any of those makes settings-dependent tests pass or fail
+    based on local files (e.g. a ``data/config.toml`` that sets a detection
+    threshold). chdir to an empty dir and strip the env so every test sees the
+    pristine defaults.
+    """
+    for key in [k for k in os.environ if k.startswith("SYNOPTICON_")]:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
 
 
 @pytest.fixture
