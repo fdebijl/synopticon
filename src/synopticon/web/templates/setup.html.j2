@@ -12,6 +12,7 @@
   })();
 </script>
 <link rel="stylesheet" href="/static/css/app.css?v={{ version }}">
+{% include "partials/favicons.html.j2" %}
 <style>
   /* Wizard chrome — page-scoped, kept out of the shared app.css per the plan. */
   .wizard { max-width: 560px; }
@@ -82,7 +83,7 @@
 <body class="auth-body">
 <main class="auth-card auth-card-wide wizard" role="main" aria-labelledby="wizard-heading">
   <div class="brand brand-lg">
-    <span class="brand-mark" aria-hidden="true"></span>
+    <img class="brand-mark" src="/static/img/logo.svg" alt="" aria-hidden="true">
     <span class="brand-name">Synopticon</span>
   </div>
   <h1 class="auth-title" id="wizard-heading">Setup wizard</h1>

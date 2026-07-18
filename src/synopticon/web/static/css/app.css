@@ -9,7 +9,7 @@
 /* ------------------------------- TOKENS -------------------------------- */
 :root {
   color-scheme: light dark;
-  --accent: #ee6352; --accent-hover: #e0523f; --accent-tint: #fdefec;   /* coral: identity/active-nav only */
+  --accent: #662d91; --accent-hover: #56267b; --accent-tint: #f2ebf8;   /* purple: identity/active-nav only */
   --action: #1272d4; --action-hover: #0f63b8; --action-active: #0d569f; /* blue: buttons/links/selection */
   --sel-tint: rgba(18, 114, 212, .06); --sel-tint-strong: rgba(18, 114, 212, .14);
   --ok: #1f9d4d; --warn: #e0850f; --danger: #d84343; --danger-hover: #c23636;
@@ -27,7 +27,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --accent: #f57e6e; --accent-hover: #f78d7f; --accent-tint: rgba(245, 126, 110, .16);
+    --accent: #a276d6; --accent-hover: #b088dd; --accent-tint: rgba(162, 118, 214, .18);
     --action: #4a97e6; --action-hover: #5ba3ea; --action-active: #74b1ee;
     --sel-tint: rgba(74, 151, 230, .1); --sel-tint-strong: rgba(74, 151, 230, .22);
     --text: #eceff1; --text-2: rgba(236, 239, 241, .64); --text-3: rgba(236, 239, 241, .42);
@@ -38,7 +38,7 @@
   }
 }
 :root[data-theme="light"] {
-  --accent: #ee6352; --accent-hover: #e0523f; --accent-tint: #fdefec;
+  --accent: #662d91; --accent-hover: #56267b; --accent-tint: #f2ebf8;
   --action: #1272d4; --action-hover: #0f63b8; --action-active: #0d569f;
   --sel-tint: rgba(18, 114, 212, .06); --sel-tint-strong: rgba(18, 114, 212, .14);
   --text: #39434d; --text-2: rgba(57, 67, 77, .62); --text-3: rgba(57, 67, 77, .4);
@@ -48,7 +48,7 @@
   --shadow-modal: 0 6px 22px rgba(15, 25, 35, .3);
 }
 :root[data-theme="dark"] {
-  --accent: #f57e6e; --accent-hover: #f78d7f; --accent-tint: rgba(245, 126, 110, .16);
+  --accent: #a276d6; --accent-hover: #b088dd; --accent-tint: rgba(162, 118, 214, .18);
   --action: #4a97e6; --action-hover: #5ba3ea; --action-active: #74b1ee;
   --sel-tint: rgba(74, 151, 230, .1); --sel-tint-strong: rgba(74, 151, 230, .22);
   --text: #eceff1; --text-2: rgba(236, 239, 241, .64); --text-3: rgba(236, 239, 241, .42);
@@ -97,8 +97,9 @@ kbd {
   padding: var(--sp-3); position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
 .brand { display: flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2); font-weight: 600; font-size: var(--fs-lg); }
-.brand-mark { width: 18px; height: 18px; border-radius: 5px; background: var(--accent); flex: 0 0 auto; }
+.brand-mark { width: 22px; height: 22px; flex: 0 0 auto; display: block; }
 .brand-lg { justify-content: center; font-size: var(--fs-xl); margin-bottom: var(--sp-4); }
+.brand-lg .brand-mark { width: 36px; height: 36px; }
 .nav { list-style: none; margin: var(--sp-3) 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .nav-item {
   display: flex; align-items: center; gap: var(--sp-2); height: var(--nav-item-h);

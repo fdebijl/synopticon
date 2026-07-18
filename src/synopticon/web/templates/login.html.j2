@@ -11,11 +11,12 @@
   })();
 </script>
 <link rel="stylesheet" href="/static/css/app.css?v={{ version }}">
+{% include "partials/favicons.html.j2" %}
 </head>
 <body class="auth-body">
 <main class="auth-card" role="main">
   <div class="brand brand-lg">
-    <span class="brand-mark" aria-hidden="true"></span>
+    <img class="brand-mark" src="/static/img/logo.svg" alt="" aria-hidden="true">
     <span class="brand-name">Synopticon</span>
   </div>
   <h1 class="auth-title">Sign in</h1>
