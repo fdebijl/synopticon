@@ -295,6 +295,59 @@ body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
 .danger-banner { background: var(--danger); color: #fff; font-weight: 600; font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-2); border-radius: var(--radius); margin-bottom: var(--sp-2); }
 .scroll-sentinel { height: 1px; }
 .end-note { text-align: center; padding: var(--sp-4); }
+
+/* ----------------------------- FOCUS VIEW ------------------------------ */
+/* Segmented Grid|Focus control lives in the toolbar. */
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.seg-btn {
+  border: 0; background: var(--bg-raised); color: var(--text-2);
+  font: inherit; font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-3); cursor: pointer;
+}
+.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
+.seg-btn[aria-pressed="true"] { background: var(--sel-tint-strong); color: var(--action); font-weight: 600; }
+
+/* Mode switch: focus DOM is always present, CSS shows one view at a time. */
+.focus-view { display: none; }
+.review-page.view-focus .focus-view { display: block; }
+.review-page.view-focus .review-grid,
+.review-page.view-focus .scroll-sentinel,
+.review-page.view-focus .end-note { display: none; }
+
+/* Big card: the cloned grid .card scaled up for a single-item focus. */
+.focus-current { display: flex; justify-content: center; margin-bottom: var(--sp-4); }
+.focus-current .card {
+  max-width: 720px; width: 100%; padding: var(--sp-5); font-size: var(--fs-lg);
+}
+.focus-current .card.sel { outline: none; }
+.focus-current .card img { width: 224px; height: 224px; }
+.focus-current .card .thumbs img { width: 88px; height: 88px; }
+.focus-current .card .card-actions .btn { font-size: var(--fs-lg); padding: var(--sp-2) var(--sp-4); }
+.focus-empty { text-align: center; padding: var(--sp-5); }
+
+/* Carousel: horizontal strip of thumbs, current one centered. */
+.carousel {
+  display: flex; gap: var(--sp-2); overflow-x: auto; padding: var(--sp-2);
+  background: var(--bg-sunken); border-radius: var(--radius-lg); scroll-behavior: smooth;
+}
+.carousel-thumb {
+  flex: 0 0 auto; width: 64px; height: 64px; padding: 0; border: 2px solid var(--border);
+  border-radius: var(--radius); background: var(--bg-raised); cursor: pointer; position: relative;
+  overflow: hidden; color: var(--text-2);
+}
+.carousel-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 0; }
+.carousel-thumb.no-img {
+  display: flex; align-items: center; justify-content: center; font-size: var(--fs-sm); text-align: center;
+}
+.carousel-thumb[aria-current="true"] { border-color: var(--action); box-shadow: 0 0 0 2px var(--action); }
+.carousel-thumb.decided { opacity: .45; }
+.carousel-thumb.decided::after {
+  position: absolute; top: 2px; right: 4px; font-size: var(--fs-base); font-weight: 700;
+}
+.carousel-thumb[data-decision="approved"]::after { content: "\2713"; color: var(--ok); }
+.carousel-thumb[data-decision="rejected"]::after { content: "\2717"; color: var(--danger); }
+body.hide-unnamed .carousel-thumb[data-unnamed-target] { display: none; }
+body.hide-unnamed-merges .carousel-thumb[data-unnamed-merge] { display: none; }
+
 .popover {
   position: fixed; bottom: var(--sp-5); right: var(--sp-5); background: var(--bg-raised);
   border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-modal);
@@ -312,10 +365,13 @@ body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
   body.nav-open .sidebar { transform: translateX(0); }
   body.nav-open .nav-scrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(15, 25, 35, .4); }
   .nav-toggle { display: inline-flex; }
+  .focus-current .card { padding: var(--sp-3); }
+  .focus-current .card img { width: 160px; height: 160px; }
 }
 
 /* --------------------- REDUCED MOTION ---------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .progress.indeterminate .progress-bar { animation: none; width: 100%; opacity: .5; }
+  .carousel { scroll-behavior: auto; }
 }

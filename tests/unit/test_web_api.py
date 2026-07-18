@@ -318,6 +318,46 @@ def test_review_bulk_and_name(app, db):
 
 
 # --------------------------------------------------------------------------- #
+# Review page — Grid / Focus layout toggle (?view=)
+# --------------------------------------------------------------------------- #
+def test_review_page_defaults_to_grid(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.get("/review")
+        assert r.status_code == 200
+        body = r.text
+        assert "view-focus" not in body
+        assert 'data-view="grid" aria-pressed="true"' in body
+        assert 'view: "grid"' in body
+
+
+def test_review_page_focus_view(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.get("/review?view=focus")
+        assert r.status_code == 200
+        body = r.text
+        assert "view-focus" in body
+        assert 'id="focus-view"' in body
+        assert 'data-view="focus" aria-pressed="true"' in body
+        assert 'view: "focus"' in body
+
+
+def test_review_page_bogus_view_sanitized_to_grid(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.get("/review?view=bogus")
+        assert r.status_code == 200
+        body = r.text
+        assert "view-focus" not in body
+        assert 'data-view="grid" aria-pressed="true"' in body
+        assert 'view: "grid"' in body
+
+
+# --------------------------------------------------------------------------- #
 # Jobs — consent mapping, param/queue errors, submit, SSE
 # --------------------------------------------------------------------------- #
 def test_job_missing_confirm_maps_to_428_without_leaking_phrase(app, db):

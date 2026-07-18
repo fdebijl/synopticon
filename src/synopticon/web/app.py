@@ -262,8 +262,13 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
         return render("pipeline.html.j2", request, "pipeline", "Pipeline")
 
     @app.get("/review", response_class=HTMLResponse)
-    def page_review(request: Request, kind: str = "", status: str = "pending"):
+    def page_review(
+        request: Request, kind: str = "", status: str = "pending", view: str = "grid"
+    ):
         first_page = 100
+        # Sanitize the view param: only "grid" or "focus" are meaningful; anything
+        # else (including a shared link with a stale value) falls back to grid.
+        view = view if view == "focus" else "grid"
         c = conn()
         try:
             items = queries.load_review_items(
@@ -279,6 +284,7 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
             "Review",
             kind=kind,
             status=status,
+            view=view,
             items=items,
             total=total,
             page_size=first_page,

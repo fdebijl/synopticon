@@ -1,7 +1,7 @@
 {% extends "base.html.j2" %}
 {% from "partials/review_card.html.j2" import review_card %}
 {% block content %}
-<div class="page review-page">
+<div class="page review-page{% if view == 'focus' %} view-focus{% endif %}" id="review-page">
   <div class="toolbar review-toolbar" role="region" aria-label="Review controls">
     <form method="get" class="filters" id="review-filters">
       <label class="sr-only" for="f-kind">Kind</label>
@@ -16,8 +16,13 @@
         <option value="{{ s }}" {% if s == status %}selected{% endif %}>{{ s }}</option>
         {% endfor %}
       </select>
+      <input type="hidden" name="view" id="f-view" value="{{ view }}">
       <button type="submit" class="btn btn-sm">Filter</button>
     </form>
+    <div class="seg" role="group" aria-label="Review layout">
+      <button type="button" class="seg-btn" data-view="grid" aria-pressed="{{ 'true' if view != 'focus' else 'false' }}">Grid</button>
+      <button type="button" class="seg-btn" data-view="focus" aria-pressed="{{ 'true' if view == 'focus' else 'false' }}">Focus</button>
+    </div>
     <div class="toolbar-spacer"></div>
     <span class="loaded-count" id="loaded-count" aria-live="polite">
       {{ items|length }} of {{ total }} loaded
@@ -38,6 +43,12 @@
     <input type="checkbox" id="hide-unnamed-merges"> hide merges between unnamed
   </label>
 
+  <div class="focus-view" id="focus-view">
+    <div class="focus-current" id="focus-current" aria-live="polite"></div>
+    <p class="muted focus-empty" id="focus-empty" hidden></p>
+    <div class="carousel" id="carousel" aria-label="Review queue"></div>
+  </div>
+
   <div class="grid review-grid" id="grid">
     {% for it in items %}{{ review_card(it) }}{% endfor %}
   </div>
@@ -50,6 +61,7 @@
   <ul>
     <li><kbd>y</kbd> approve · <kbd>n</kbd> reject · <kbd>s</kbd> skip</li>
     <li><kbd>j</kbd> next card · <kbd>k</kbd> previous card</li>
+    <li><kbd>&larr;</kbd> previous · <kbd>&rarr;</kbd> next (focus view)</li>
     <li><kbd>u</kbd> undo last decision (this session)</li>
   </ul>
   <button class="btn btn-sm" id="shortcut-legend-close">Close</button>
@@ -63,6 +75,7 @@
     total: {{ total }},
     loaded: {{ items|length }},
     pageSize: {{ page_size }},
+    view: {{ view | tojson }},
   };
 </script>
 <script src="/static/js/review.js?v={{ version }}"></script>
