@@ -237,6 +237,7 @@ def create_app(db_path: Path | str, settings: Settings):
                         "unnamed_merge": r["kind"] == "merge"
                         and not str(person_a.get("name") or "").strip()
                         and not str(person_b.get("name") or "").strip(),
+                        "named_merge": r["kind"] == "merge_named",
                         "target_crops": _target_crops(c, payload, crops)
                         if r["kind"] == "reassign"
                         else [],

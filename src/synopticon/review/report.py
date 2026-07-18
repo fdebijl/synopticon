@@ -78,6 +78,7 @@ def generate(conn: sqlite3.Connection, settings: Settings, run_id: int) -> Path:
         "assign": [],
         "reassign": [],
         "merge": [],
+        "merge_named": [],
         "new_person": [],
         "flags": [],
     }
@@ -109,7 +110,7 @@ def generate(conn: sqlite3.Connection, settings: Settings, run_id: int) -> Path:
         elif kind == "reassign":
             entry["crop"] = crop_for(payload.get("face_id"))
             sections["reassign"].append(entry)
-        elif kind == "merge":
+        elif kind in ("merge", "merge_named"):
             ev = payload.get("evidence", {})
             entry["exemplars_a"] = [
                 crop_for(f)
@@ -123,7 +124,7 @@ def generate(conn: sqlite3.Connection, settings: Settings, run_id: int) -> Path:
                     _pk(payload.get("person_b")), []
                 )
             ]
-            sections["merge"].append(entry)
+            sections[kind].append(entry)
         elif kind == "new_person":
             entry["crops"] = [crop_for(f) for f in payload.get("face_ids", [])]
             sections["new_person"].append(entry)

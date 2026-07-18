@@ -378,6 +378,71 @@ def test_apply_reviewed_merge_applies_when_enabled(respx_mock, client, nas_conn)
     assert row["status"] == "applied"
 
 
+def test_apply_reviewed_merge_named_not_applied_by_apply_merges(respx_mock, client, nas_conn):
+    # A named->named merge must NOT ride in on the ordinary --apply-merges gate;
+    # it needs its own apply_merges_named. No entry.cgi route is registered, so
+    # any write/probe would raise.
+    _bootstrap(respx_mock)
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(
+        nas_conn,
+        "merge_named",
+        {
+            "person_a": {"space": "personal", "person_id": 10, "name": "Alice"},
+            "person_b": {"space": "personal", "person_id": 20, "name": "Bob"},
+            "evidence": {},
+        },
+    )
+    stats = writeback.apply_reviewed(
+        nas_conn, writer, kinds=["merge_named"], apply_merges=True, apply_merges_named=False
+    )
+    assert stats.considered == 1
+    assert stats.skipped == 1
+    row = nas_conn.execute(
+        "SELECT status FROM review_queue WHERE kind = 'merge_named'"
+    ).fetchone()
+    assert row["status"] == "approved"
+
+
+def test_apply_reviewed_merge_named_applies_when_gate_open(respx_mock, client, nas_conn):
+    _bootstrap(respx_mock)
+
+    def _dispatch(request):
+        method = _form(request).get("method")
+        if method == "get":
+            return httpx.Response(
+                200,
+                json={
+                    "success": True,
+                    "data": {"list": [{"id": 20, "name": "Bob", "item_count": 3, "show": True, "cover": 1}]},
+                },
+            )
+        if method == "merge":
+            return httpx.Response(200, json={"success": True})
+        raise AssertionError(f"unexpected call: method={method!r}")
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_dispatch)
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    _insert_review_row(
+        nas_conn,
+        "merge_named",
+        {
+            "person_a": {"space": "personal", "person_id": 10, "name": "Alice"},
+            "person_b": {"space": "personal", "person_id": 20, "name": "Bob"},
+            "evidence": {},
+        },
+    )
+    stats = writeback.apply_reviewed(
+        nas_conn, writer, kinds=["merge_named"], apply_merges_named=True
+    )
+    assert stats.applied == 1
+    row = nas_conn.execute(
+        "SELECT status FROM review_queue WHERE kind = 'merge_named'"
+    ).fetchone()
+    assert row["status"] == "applied"
+
+
 def test_apply_reviewed_dry_run_does_not_consume_approvals(respx_mock, nas_conn):
     # A dry run must rehearse stats but leave review_queue.status untouched —
     # otherwise the preview consumes the approvals a real --apply run needs.

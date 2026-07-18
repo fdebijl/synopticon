@@ -42,6 +42,15 @@ ASSIGN_KINDS = frozenset({"assign", "low_confidence"})
 # re-bound to the target person). Gated behind `apply_reassigns`.
 REASSIGN_KIND = "reassign"
 
+# Merge kinds, split by danger. `merge` joins a cluster where at least one side
+# is unnamed (the routine case); `merge_named` joins two *already-named* people —
+# irreversible and destroys a human-assigned label, so it carries a separate,
+# stricter apply gate (`apply_merges_named`). Both write via `Browse.Person.merge`
+# and are otherwise handled identically.
+MERGE_KIND = "merge"
+MERGE_NAMED_KIND = "merge_named"
+MERGE_KINDS = frozenset({MERGE_KIND, MERGE_NAMED_KIND})
+
 
 def configure_apply_logging(logfile: str | Path, level: int = logging.INFO) -> Path:
     """Route the `synopticon.apply` logger to `logfile` (idempotent).
@@ -411,6 +420,7 @@ def apply_reviewed(
     kinds: Iterable[str],
     person_id: int | None = None,
     apply_merges: bool = False,
+    apply_merges_named: bool = False,
     apply_reassigns: bool = False,
     stop_after_failures: int = 5,
 ) -> ApplyStats:
@@ -418,9 +428,11 @@ def apply_reviewed(
 
     `person_id`, when given, restricts to rows whose payload references that
     person (either side of a merge or a reassign). `kind='merge'` rows are
-    skipped entirely unless `apply_merges=True`; likewise `kind='reassign'`
-    rows require `apply_reassigns=True` (they alter existing human-visible
-    labels). A NAS-backed `writer` (one exposing `.client`) gets a pre-write
+    skipped entirely unless `apply_merges=True`; the more dangerous
+    `kind='merge_named'` rows (joining two already-named people) require the
+    separate `apply_merges_named=True`. Likewise `kind='reassign'` rows require
+    `apply_reassigns=True` (they alter existing human-visible labels). A
+    NAS-backed `writer` (one exposing `.client`) gets a pre-write
     idempotency check; a client-less writer (e.g. DryRunWriter) always
     proceeds straight to the write call. A reassign whose Synology face has
     vanished from the NAS since the last sync is skipped (logged as drift),
@@ -445,8 +457,9 @@ def apply_reviewed(
 
     log.info(
         "apply_reviewed start: %s approved row(s) kinds=%s person_id=%s "
-        "apply_merges=%s apply_reassigns=%s dry_run=%s",
-        len(rows), kinds, person_id, apply_merges, apply_reassigns, dry_run,
+        "apply_merges=%s apply_merges_named=%s apply_reassigns=%s dry_run=%s",
+        len(rows), kinds, person_id,
+        apply_merges, apply_merges_named, apply_reassigns, dry_run,
     )
 
     def mark(item_id: int, status: str) -> None:
@@ -464,7 +477,7 @@ def apply_reviewed(
             if kind in ASSIGN_KINDS:
                 if payload.get("person_id") != person_id:
                     continue
-            elif kind == "merge":
+            elif kind in MERGE_KINDS:
                 pa = (payload.get("person_a") or {}).get("person_id")
                 pb = (payload.get("person_b") or {}).get("person_id")
                 if person_id not in (pa, pb):
@@ -477,7 +490,11 @@ def apply_reviewed(
 
         stats.considered += 1
 
-        if kind == "merge" and not apply_merges:
+        if kind == MERGE_KIND and not apply_merges:
+            stats.skipped += 1
+            continue
+
+        if kind == MERGE_NAMED_KIND and not apply_merges_named:
             stats.skipped += 1
             continue
 
@@ -505,7 +522,7 @@ def apply_reviewed(
                         reassign_face_gone = True
                     else:
                         applied_already = target.person_id == payload["person_id"]
-                elif kind == "merge":
+                elif kind in MERGE_KINDS:
                     # The merged-away side is chosen by _merge_order, not always
                     # person_b — probe that side for absence to detect re-applies.
                     _, merged = _merge_order(conn, payload["person_a"], payload["person_b"])
@@ -538,7 +555,7 @@ def apply_reviewed(
                 tuple(payload["bbox_normalized"]),
                 payload.get("face_crop_jpeg"),
             )
-        elif kind == "merge":
+        elif kind in MERGE_KINDS:
             target, merged = _merge_order(conn, payload["person_a"], payload["person_b"])
             name = target.get("name") or merged.get("name") or ""
             result = writer.merge(target["person_id"], [merged["person_id"]], name)

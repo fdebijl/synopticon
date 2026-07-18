@@ -519,7 +519,7 @@ def _existing_identities(conn: sqlite3.Connection) -> dict[str, set]:
         if kind in ("assign", "low_confidence"):
             if "face_id" in payload and "person_id" in payload:
                 assigns.add((int(payload["face_id"]), int(payload["person_id"])))
-        elif kind == "merge":
+        elif kind in ("merge", "merge_named"):
             pa, pb = payload.get("person_a"), payload.get("person_b")
             if pa and pb:
                 key = tuple(
@@ -660,12 +660,20 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
             continue
         existing["merge"].add(key)
         payload = item["payload"]
-        payload["person_a"]["name"] = name_of(a)
-        payload["person_b"]["name"] = name_of(b)
+        name_a, name_b = name_of(a), name_of(b)
+        payload["person_a"]["name"] = name_a
+        payload["person_b"]["name"] = name_b
+        # Joining two already-named people destroys a human label and is
+        # irreversible — split it into a distinct, more strictly gated kind.
+        kind = (
+            "merge_named"
+            if (name_a or "").strip() and (name_b or "").strip()
+            else "merge"
+        )
         conn.execute(
             "INSERT INTO review_queue (run_id, kind, payload_json, confidence, created_at) "
             "VALUES (?,?,?,?,?)",
-            (run_id, "merge", json.dumps(payload), None, ts),
+            (run_id, kind, json.dumps(payload), None, ts),
         )
 
     conn.commit()

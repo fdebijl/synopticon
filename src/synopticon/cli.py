@@ -492,12 +492,19 @@ def review(
 def apply(
     kinds: str = typer.Option(
         "assign,low_confidence",
-        help="Comma-separated kinds: assign,low_confidence,reassign,merge,new_person. "
+        help="Comma-separated kinds: assign,low_confidence,reassign,merge,merge_named,new_person. "
         "assign and low_confidence are both approved face assignments and apply by default.",
     ),
     person_id: int = typer.Option(None, help="Scope to a single person id."),
     apply_: bool = typer.Option(False, "--apply", help="Actually write to the NAS (default: dry-run)."),
-    apply_merges: bool = typer.Option(False, help="Extra gate required to apply merges."),
+    apply_merges: bool = typer.Option(
+        False, help="Extra gate required to apply merges (unnamed side involved)."
+    ),
+    apply_merges_named: bool = typer.Option(
+        False,
+        help="Extra gate required to apply merge_named items — joining two "
+        "already-named people, irreversible and destroys a human label.",
+    ),
     apply_reassigns: bool = typer.Option(
         False, help="Extra gate required to apply reassigns (moves an existing Synology face label to a different person)."
     ),
@@ -527,13 +534,15 @@ def apply(
             writer = SynoWriter(client, conn, space)
             stats = apply_reviewed(
                 conn, writer, kind_set, person_id=person_id,
-                apply_merges=apply_merges, apply_reassigns=apply_reassigns,
+                apply_merges=apply_merges, apply_merges_named=apply_merges_named,
+                apply_reassigns=apply_reassigns,
             )
     else:
         typer.echo("DRY RUN (pass --apply to write to the NAS)")
         stats = apply_reviewed(
             conn, DryRunWriter(conn), kind_set, person_id=person_id,
-            apply_merges=apply_merges, apply_reassigns=apply_reassigns,
+            apply_merges=apply_merges, apply_merges_named=apply_merges_named,
+            apply_reassigns=apply_reassigns,
         )
     typer.echo(f"{stats}")
     if show_audit:
@@ -546,6 +555,11 @@ def apply_all(
     yes: bool = typer.Option(
         False, "--yes", "-Y", help="Skip the confirmation prompt."
     ),
+    apply_merges_named: bool = typer.Option(
+        False,
+        help="Also apply named->named merges (required to include them with -Y; "
+        "interactively they get a separate confirmation instead).",
+    ),
     person_id: int = typer.Option(None, help="Scope to a single person id."),
     space: str = typer.Option("personal"),
     show_audit: bool = typer.Option(False, "--report", help="Print the audit trail afterwards."),
@@ -554,11 +568,16 @@ def apply_all(
 
     Unlike `apply` there is no dry-run stage and the merge/reassign gates are
     implicitly lifted; the confirmation prompt (or --yes/-Y) is the only gate.
+    The exception is `merge_named` (joining two already-named people): it is
+    always listed with a loud warning and requires a *separate* confirmation,
+    or --apply-merges-named when running non-interactively with -Y.
     """
     from synopticon import audit
     from synopticon.syno.client import SynoClient
     from synopticon.syno.writeback import (
         ASSIGN_KINDS,
+        MERGE_KIND,
+        MERGE_NAMED_KIND,
         REASSIGN_KIND,
         SynoWriter,
         apply_reviewed,
@@ -567,7 +586,7 @@ def apply_all(
 
     settings = _settings()
     conn = _conn(settings)
-    kind_set = set(ASSIGN_KINDS) | {REASSIGN_KIND, "merge"}
+    kind_set = set(ASSIGN_KINDS) | {REASSIGN_KIND, MERGE_KIND, MERGE_NAMED_KIND}
 
     placeholders = ",".join("?" for _ in kind_set)
     counts = {
@@ -585,10 +604,44 @@ def apply_all(
 
     summary = ", ".join(f"{n} {kind}" for kind, n in sorted(counts.items()))
     typer.echo(f"approved items: {summary}")
-    if counts.get("merge"):
+    if counts.get(MERGE_KIND):
         typer.echo("note: merges are irreversible — consider a NAS snapshot first")
+
+    # Named->named merges are the one dangerous class: list every pair and gate
+    # them behind their own confirmation, separate from the bulk prompt.
+    named_count = counts.get(MERGE_NAMED_KIND, 0)
+    include_named = False
+    if named_count:
+        typer.secho(
+            f"WARNING: {named_count} approved merge(s) join two already-named "
+            "people — irreversible and each destroys a human-assigned label:",
+            fg="red",
+        )
+        for row in conn.execute(
+            "SELECT payload_json FROM review_queue "
+            "WHERE status = 'approved' AND kind = ? ORDER BY item_id",
+            (MERGE_NAMED_KIND,),
+        ):
+            payload = json.loads(row["payload_json"])
+            a, b = payload.get("person_a") or {}, payload.get("person_b") or {}
+            la = a.get("name") or a.get("person_id")
+            lb = b.get("name") or b.get("person_id")
+            typer.echo(f"  - {la} (id {a.get('person_id')}) ↔ {lb} (id {b.get('person_id')})")
+        if apply_merges_named:
+            include_named = True
+        elif not yes:
+            include_named = typer.confirm(
+                "also apply these named->named merges?", default=False
+            )
+        else:
+            typer.echo(
+                "skipping named->named merges "
+                "(pass --apply-merges-named to include them with -Y)"
+            )
+
+    write_total = total - (0 if include_named else named_count)
     if not yes:
-        typer.confirm(f"write {total} item(s) to the NAS?", abort=True)
+        typer.confirm(f"write {write_total} item(s) to the NAS?", abort=True)
 
     logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
     typer.echo(f"logging apply operations to {logfile}")
@@ -597,7 +650,7 @@ def apply_all(
         writer = SynoWriter(client, conn, space)
         stats = apply_reviewed(
             conn, writer, kind_set, person_id=person_id,
-            apply_merges=True, apply_reassigns=True,
+            apply_merges=True, apply_merges_named=include_named, apply_reassigns=True,
         )
     typer.echo(f"{stats}")
     if show_audit:

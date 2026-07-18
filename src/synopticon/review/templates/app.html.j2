@@ -45,6 +45,10 @@
   .name-hidden { margin-left: .3rem; vertical-align: middle; opacity: .85; }
   body.hide-unnamed .card[data-unnamed-target] { display: none; }
   body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
+  .card[data-named-merge] { border-color: #dc2626; box-shadow: 0 0 0 1px #dc2626 inset; }
+  .danger-banner { background: #dc2626; color: #fff; font-weight: 600;
+                   font-size: .72rem; padding: .25rem .4rem; border-radius: 6px;
+                   margin-bottom: .4rem; }
 </style>
 </head>
 <body>
@@ -54,7 +58,7 @@
   <span style="flex:1"></span>
   <form method="get" style="display:flex;gap:.4rem;">
     <select name="kind">
-      {% for k in ['', 'assign', 'low_confidence', 'reassign', 'merge', 'new_person'] %}
+      {% for k in ['', 'assign', 'low_confidence', 'reassign', 'merge', 'merge_named', 'new_person'] %}
       <option value="{{ k }}" {% if k==kind %}selected{% endif %}>{{ k or 'all kinds' }}</option>
       {% endfor %}
     </select>
@@ -79,7 +83,7 @@
 
 <div class="grid" id="grid">
 {% for it in items %}
-  <div class="card" data-id="{{ it.item_id }}"{% if it.unnamed_target %} data-unnamed-target="1"{% endif %}{% if it.unnamed_merge %} data-unnamed-merge="1"{% endif %} tabindex="0">
+  <div class="card" data-id="{{ it.item_id }}"{% if it.unnamed_target %} data-unnamed-target="1"{% endif %}{% if it.unnamed_merge %} data-unnamed-merge="1"{% endif %}{% if it.named_merge %} data-named-merge="1"{% endif %} tabindex="0">
     {% if it.crop and it.kind != 'reassign' %}
       {% if it.item_url %}<a href="{{ it.item_url }}" target="_blank" rel="noopener" title="open photo in Synology Photos"><img src="{{ it.crop }}" alt=""></a>
       {% else %}<img src="{{ it.crop }}" alt="">{% endif %}
@@ -88,7 +92,12 @@
       <div class="thumbs">{% for c in it.new_person_crops %}{% if c %}<img src="{{ c }}">{% endif %}{% endfor %}</div>
       <input placeholder="suggested name" value="{{ it.payload.suggested_name or '' }}"
              onchange="setName({{ it.item_id }}, this.value)">
-    {% elif it.kind == 'merge' %}
+    {% elif it.kind in ('merge', 'merge_named') %}
+      {% if it.named_merge %}
+      <div class="danger-banner" title="Both people are already named — merging is irreversible and destroys a human label">
+        &#9888; named &harr; named — irreversible, destroys a human label
+      </div>
+      {% endif %}
       <div class="merge">
         <div class="merge-side">
           <div><strong>

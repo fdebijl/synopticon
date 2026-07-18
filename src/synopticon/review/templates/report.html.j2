@@ -37,6 +37,8 @@
            text-align:center; background:#eee; color:#999; border-radius:6px;
            font-size:.7rem; }
   .trunc { font-style: italic; opacity: .7; margin-top: .5rem; }
+  .danger { color: #dc2626; }
+  .danger-card { border-color: #dc2626 !important; box-shadow: 0 0 0 1px #dc2626 inset; }
 </style>
 </head>
 <body>
@@ -101,6 +103,27 @@
 {% endfor %}
 </div>
 {% if truncated.merge %}<p class="trunc">{{ truncated.merge }} more truncated.</p>{% endif %}
+
+<h2>Named &harr; named merges ({{ sections.merge_named|length }})</h2>
+<p class="danger">&#9888; These merges join two <strong>already-named</strong> people. Merging is irreversible and each destroys a human-assigned label — apply only after deliberate review (<code>apply --kinds merge_named --apply --apply-merges-named</code>).</p>
+<div class="grid">
+{% for e in sections.merge_named %}
+  <div class="card danger-card">
+    <div class="merge-cols">
+      <div>
+        <strong>{{ e.payload.person_a.name or e.payload.person_a.person_id }}</strong>
+        <div class="thumbs">{% for c in e.exemplars_a %}{{ img(c) }}{% endfor %}</div>
+      </div>
+      <div>
+        <strong>{{ e.payload.person_b.name or e.payload.person_b.person_id }}</strong>
+        <div class="thumbs">{% for c in e.exemplars_b %}{{ img(c) }}{% endfor %}</div>
+      </div>
+    </div>
+    <div class="muted">{{ e.payload.evidence|tojson }}</div>
+  </div>
+{% endfor %}
+</div>
+{% if truncated.merge_named %}<p class="trunc">{{ truncated.merge_named }} more truncated.</p>{% endif %}
 
 <h2>New persons ({{ sections.new_person|length }})</h2>
 <div class="grid">

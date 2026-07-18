@@ -122,7 +122,7 @@ CREATE INDEX idx_cluster_members_cluster ON cluster_members (run_id, cluster_id)
 CREATE TABLE review_queue (
     item_id      INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id       INTEGER REFERENCES cluster_runs (run_id) ON DELETE SET NULL,
-    kind         TEXT NOT NULL,  -- 'assign'|'merge'|'new_person'|'restore_disagreement'|'low_confidence'|'reassign'
+    kind         TEXT NOT NULL,  -- 'assign'|'merge'|'merge_named'|'new_person'|'restore_disagreement'|'low_confidence'|'reassign'
     payload_json TEXT NOT NULL,
     confidence   REAL,
     status       TEXT NOT NULL DEFAULT 'pending',  -- pending|approved|rejected|applied|failed

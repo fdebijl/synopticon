@@ -158,10 +158,11 @@ Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
 
 | Option | Default | Description |
 |---|---|---|
-| `--kinds TEXT` | `assign,low_confidence` | Comma-separated kinds to apply. `assign` and `low_confidence` are the same reviewer-approved face assignment (they differ only in the pipeline's original confidence), so both apply by default; `merge` is gated by `--apply-merges`; `reassign` (opt-in via `--kinds reassign`) is gated by `--apply-reassigns`. |
+| `--kinds TEXT` | `assign,low_confidence` | Comma-separated kinds to apply. `assign` and `low_confidence` are the same reviewer-approved face assignment (they differ only in the pipeline's original confidence), so both apply by default; `merge` (an unnamed side is involved) is gated by `--apply-merges`; `merge_named` (joins two **already-named** people) is gated by the stricter `--apply-merges-named`; `reassign` (opt-in via `--kinds reassign`) is gated by `--apply-reassigns`. |
 | `--person-id INTEGER` | none | Scope to a single person id (matches either side of a merge or reassign). |
 | `--apply` | off (dry-run) | Actually write to the NAS. |
-| `--apply-merges` | off | Extra gate required before any merge is written. |
+| `--apply-merges` | off | Extra gate required before an ordinary `merge` (at least one unnamed side) is written. |
+| `--apply-merges-named` | off | Extra gate required before a `merge_named` — joining two people who *both* already have a name. Irreversible and destroys a human-assigned label, so it is deliberately not covered by `--apply-merges`. |
 | `--apply-reassigns` | off | Extra gate required before any reassign is written — it moves an existing (wrong) Synology face label to a different person via a single reversible `Person.separate` call. |
 | `--space TEXT` | `personal` | Space to write to. |
 | `--report` | off | Print the audit trail afterward. |
@@ -171,9 +172,12 @@ Every run (including dry-runs) appends a per-operation trace to `apply.log` in t
 #### `apply-all`
 Apply **all** approved review items — assigns, low-confidence assigns, reassigns, *and* merges — in one go. Prints a per-kind count of what is about to be written and asks for confirmation; unlike `apply` there is no dry-run stage and the `--apply-merges`/`--apply-reassigns` gates are implicitly lifted. Merges are still irreversible — take a NAS snapshot before a large run.
 
+The one exception is `merge_named` (joining two already-named people): every such pair is listed with a loud warning and gated behind a **separate** confirmation, so approving the bulk write never silently applies them. When running non-interactively (`-Y`), named→named merges are skipped unless you also pass `--apply-merges-named`.
+
 | Option | Default | Description |
 |---|---|---|
 | `--yes`, `-Y` | off | Skip the confirmation prompt (for scripted runs). |
+| `--apply-merges-named` | off | Include `merge_named` items. Required to apply them with `-Y`; interactively they get their own confirmation prompt instead. |
 | `--person-id INTEGER` | none | Scope to a single person id. |
 | `--space TEXT` | `personal` | Space to write to. |
 | `--report` | off | Print the audit trail afterward. |
@@ -305,7 +309,7 @@ The pipeline degrades gracefully to whatever subset is present (minimum: SCRFD +
 Every tool that can change your library is opt-in and leaves an audit trail:
 
 - The face pipeline is **read-only** toward the NAS through `report`/`review`; only `apply`/`apply-all` write.
-- `apply` is **dry-run by default**; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply), and `--apply-reassigns` is required for reassigns (they alter labels a human can already see in Photos — review these per-item rather than bulk-approving).
+- `apply` is **dry-run by default**; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply), `--apply-merges-named` is separately required for `merge_named` (joining two already-named people destroys a human label — the most dangerous write, so it is never covered by `--apply-merges` and `apply-all` gates it behind its own confirmation), and `--apply-reassigns` is required for reassigns (they alter labels a human can already see in Photos — review these per-item rather than bulk-approving).
 - Only reviewer-**approved** queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`, and a reassign is a single `Person.separate` call that can be reversed by moving the face back.
 - A cluster can propose both a merge of persons A/B and reassigns between them; if the merge is applied first the reassigns become no-ops (the pre-write NAS check skips them).
 - `dedupe` follows the same model: **dry-run by default**, `--apply` (plus a confirmation prompt) required to delete, a per-id idempotency check before each deletion, and every attempt audit-logged. Duplicate deletion is not reversible from Synopticon — confirm your DSM's recycle-bin behavior first.

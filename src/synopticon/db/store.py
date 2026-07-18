@@ -20,6 +20,7 @@ _MIGRATIONS = [
     _SCHEMA_DIR / "migrations" / "0002_extract_state.sql",  # version 2
     _SCHEMA_DIR / "migrations" / "0003_photo_hashes.sql",  # version 3
     _SCHEMA_DIR / "migrations" / "0004_photo_hash_index.sql",  # version 4
+    _SCHEMA_DIR / "migrations" / "0005_split_merge_named.sql",  # version 5
     # Future migrations: append db/migrations/000N_*.sql paths here.
 ]
 

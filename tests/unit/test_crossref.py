@@ -293,3 +293,81 @@ def test_run_clustering_dedup_across_runs(db_helpers, tmp_settings):
     # The single unlabeled face (id 4) -> exactly one assign identity, no dupes.
     assert len(identities) == len(set(identities))
     assert (4, 100) in identities
+
+
+def _split_person_cluster(h, name_a, name_b):
+    """5 identical faces in one cluster: 3 labeled person 10, 2 labeled person 20."""
+    h.insert_person("personal", 10, name_a)
+    h.insert_person("personal", 20, name_b)
+    for i in range(5):
+        h.insert_photo("personal", i)
+        h.insert_face("personal", i, 100, 100, 200, 200)  # -> [0.1,0.1,0.3,0.3]
+    for fid in range(1, 6):
+        h.insert_embedding(fid, "arcface", [1.0, 0.0, 0.0, 0.0])
+    for photo in range(3):  # 3 faces -> person 10 (majority)
+        h.insert_syno_face("personal", photo + 1, photo, 10, (0.1, 0.1, 0.3, 0.3))
+    for photo in (3, 4):  # 2 faces -> person 20
+        h.insert_syno_face("personal", photo + 1, photo, 20, (0.1, 0.1, 0.3, 0.3))
+    h.commit()
+
+
+def test_run_clustering_named_merge_gets_distinct_kind(db_helpers, tmp_settings):
+    # Both split persons are named -> the merge is the dangerous 'merge_named'.
+    h = db_helpers
+    _split_person_cluster(h, "Alice", "Bob")
+    crossref.run_clustering(h.conn, tmp_settings)
+
+    rows = h.conn.execute(
+        "SELECT kind FROM review_queue WHERE kind LIKE 'merge%'"
+    ).fetchall()
+    assert [r["kind"] for r in rows] == ["merge_named"]
+
+
+def test_run_clustering_unnamed_side_stays_plain_merge(db_helpers, tmp_settings):
+    # One side unnamed -> ordinary 'merge', not 'merge_named'.
+    h = db_helpers
+    _split_person_cluster(h, "Alice", None)
+    crossref.run_clustering(h.conn, tmp_settings)
+
+    rows = h.conn.execute(
+        "SELECT kind FROM review_queue WHERE kind LIKE 'merge%'"
+    ).fetchall()
+    assert [r["kind"] for r in rows] == ["merge"]
+
+
+def test_migration_0005_reclassifies_pending_named_merges(tmp_path):
+    import json
+    from pathlib import Path
+
+    from synopticon.db import store
+
+    conn = store.connect(tmp_path / "db.sqlite")
+    named = json.dumps({"person_a": {"name": "A"}, "person_b": {"name": "B"}})
+    half = json.dumps({"person_a": {"name": "A"}, "person_b": {"name": ""}})
+    for status in ("pending", "approved", "applied", "rejected"):
+        conn.execute(
+            "INSERT INTO review_queue (kind, payload_json, status, created_at) "
+            "VALUES ('merge', ?, ?, 0)",
+            (named, status),
+        )
+    conn.execute(
+        "INSERT INTO review_queue (kind, payload_json, status, created_at) "
+        "VALUES ('merge', ?, 'pending', 0)",
+        (half,),
+    )
+    conn.commit()
+
+    sql = (
+        Path(store.__file__).parent / "migrations" / "0005_split_merge_named.sql"
+    ).read_text()
+    conn.executescript(sql)
+
+    reclassified = {
+        r["status"]
+        for r in conn.execute("SELECT status FROM review_queue WHERE kind = 'merge_named'")
+    }
+    # Only un-applied both-named rows move; historical + half-named stay 'merge'.
+    assert reclassified == {"pending", "approved"}
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM review_queue WHERE kind = 'merge'"
+    ).fetchone()["c"] == 3
