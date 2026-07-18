@@ -1,0 +1,82 @@
+{% extends "base.html.j2" %}
+{% block head %}
+<style>
+  /* Settings-specific styles (page-scoped; shared tokens live in app.css). */
+  .settings-tabs {
+    display: flex; gap: var(--sp-1); flex-wrap: wrap;
+    border-bottom: 1px solid var(--border-soft); margin-bottom: var(--sp-4);
+  }
+  .settings-tab {
+    position: relative; background: transparent; border: none;
+    border-bottom: 2px solid transparent; color: var(--text-2);
+    padding: var(--sp-2) var(--sp-3); cursor: pointer; font: inherit;
+  }
+  .settings-tab:hover { color: var(--text); }
+  .settings-tab.active { color: var(--action); border-bottom-color: var(--action); font-weight: 600; }
+  .settings-tab .err-dot {
+    display: none; position: absolute; top: 5px; right: 0;
+    width: 7px; height: 7px; border-radius: 50%; background: var(--danger);
+  }
+  .settings-tab.has-error .err-dot { display: block; }
+  .settings-panel { display: none; }
+  .settings-panel.active { display: block; }
+  .field-row {
+    display: grid; grid-template-columns: 240px 1fr; gap: var(--sp-4);
+    align-items: start; padding: var(--sp-3) 0; border-bottom: 1px solid var(--border-soft);
+  }
+  .field-label .field-name { font-weight: 500; }
+  .field-label .field-key {
+    display: block; margin-top: 2px; font-size: var(--fs-sm); color: var(--text-3);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  .field-control { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+  .field-control .input, .field-control .select, .field-control textarea { max-width: 420px; width: 100%; }
+  .field-control textarea { font: inherit; font-family: ui-monospace, monospace; padding: var(--sp-2);
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); color: var(--text); min-height: 4.5em; }
+  .field-control .check { margin: 4px 0 0; }
+  .field-desc { font-size: var(--fs-sm); color: var(--text-2); }
+  .field-error { font-size: var(--fs-sm); color: var(--danger); display: none; }
+  .field-row.has-error .field-error { display: block; }
+  .field-row.has-error .input, .field-row.has-error .select, .field-row.has-error textarea { border-color: var(--danger); }
+  .env-chip {
+    display: inline-flex; align-items: center; gap: 4px; align-self: flex-start;
+    font-size: var(--fs-sm); background: rgba(224, 133, 15, .16); color: var(--warn);
+    border-radius: 999px; padding: 2px 8px;
+  }
+  .save-bar {
+    position: sticky; bottom: 0; display: flex; align-items: center; gap: var(--sp-3);
+    padding: var(--sp-3) 0; margin-top: var(--sp-4);
+    background: var(--bg); border-top: 1px solid var(--border-soft);
+  }
+  .save-status { font-size: var(--fs-sm); color: var(--text-2); }
+  .save-status.dirty { color: var(--warn); }
+  .save-status.ok { color: var(--ok); }
+  .save-status.err { color: var(--danger); }
+  .access-section { margin-bottom: var(--sp-5); max-width: 640px; }
+  .access-form { display: flex; flex-direction: column; gap: var(--sp-2); max-width: 380px; margin-top: var(--sp-3); }
+  .access-form label { font-size: var(--fs-sm); color: var(--text-2); }
+  .key-table { width: 100%; }
+  .key-table tr.revoked td { opacity: .5; }
+  .key-reveal {
+    margin-top: var(--sp-2); font-family: ui-monospace, monospace; background: var(--bg-sunken);
+    border: 1px solid var(--action); border-radius: var(--radius); padding: var(--sp-2) var(--sp-3); word-break: break-all;
+  }
+  .settings-loading { color: var(--text-2); }
+</style>
+{% endblock %}
+{% block content %}
+<div class="page" id="settings-page">
+  <div class="settings-tabs" id="settings-tabs" role="tablist" aria-label="Settings sections"></div>
+  <div id="settings-body">
+    <p class="settings-loading" id="settings-loading">Loading configuration…</p>
+  </div>
+  <div class="save-bar hidden" id="save-bar">
+    <button class="btn btn-primary" id="save-btn" type="button">Save changes</button>
+    <button class="btn btn-ghost" id="reset-btn" type="button">Discard</button>
+    <span class="save-status" id="save-status" aria-live="polite"></span>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/settings.js?v={{ version }}"></script>
+{% endblock %}

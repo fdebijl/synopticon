@@ -19,7 +19,7 @@ import hashlib
 import json
 import logging
 import sqlite3
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -27,6 +27,7 @@ import numpy as np
 
 from ..config import Settings
 from ..db import store
+from ..progress import get_emitter
 from . import align, restore
 from .detect.base import Detection
 from .detect.merge import union
@@ -217,8 +218,9 @@ def run_extract(
     crops_dir = settings.storage.crops_dir
     stats = ExtractStats()
     rows = _fetch_work(conn, space, version, limit, photo_id)
+    emitter = get_emitter()
 
-    for row in tqdm(rows, desc="extract", unit="photo"):
+    for i, row in enumerate(tqdm(rows, desc="extract", unit="photo")):
         try:
             _process_photo(
                 conn, settings, row, space, version, detector, ensemble,
@@ -231,7 +233,10 @@ def run_extract(
             stats.skipped += 1
             stats.errors += 1
             log.warning("Skipping photo %s (space=%s): %s", row["id"], space, exc)
+            emitter.log("warning", f"skipped photo {row['id']} (space={space}): {exc}", phase="extract")
+        emitter.progress("extract", i + 1, len(rows), space=space)
 
+    emitter.result(ok=True, stats=asdict(stats))
     return stats
 
 

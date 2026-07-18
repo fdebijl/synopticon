@@ -19,6 +19,36 @@ from typing import Any
 
 MANIFEST_NAME = "manifest.json"
 
+# Canonical set of model keys the pipeline needs before it can run extract,
+# mapped to the on-disk filename each one is stored under. This is the single
+# source of truth for "is the install ready?" — it does NOT depend on what the
+# manifest happens to list, because a partial download registers only the
+# models it fetched while extraction needs all five. Filenames mirror the
+# ``file`` entries in ``scripts/download_models.py``'s KNOWN_MODELS registry; a
+# consistency guard in that script asserts the two never drift.
+REQUIRED_MODELS: dict[str, str] = {
+    "scrfd_10g_bnkps": "scrfd_10g_bnkps.onnx",
+    "yolov8l-face": "yolov8l-face.onnx",
+    "glintr100": "glintr100.onnx",
+    "adaface_ir101_webface12m": "adaface_ir101_webface12m.onnx",
+    "magface_iresnet100": "magface_iresnet100.onnx",
+}
+
+
+def missing_models(models_dir: Path | str) -> list[str]:
+    """Return the REQUIRED_MODELS keys whose weight file is absent on disk.
+
+    Pure ``pathlib`` — checks file presence only (not manifest registration,
+    not sha256). An empty list means every required model is present, i.e. the
+    install is ready for extraction.
+    """
+    models_dir = Path(models_dir)
+    return [
+        key
+        for key, filename in REQUIRED_MODELS.items()
+        if not (models_dir / filename).is_file()
+    ]
+
 
 class ModelIntegrityError(RuntimeError):
     """Raised when a model file's sha256 does not match the manifest."""

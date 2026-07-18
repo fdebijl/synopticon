@@ -36,9 +36,11 @@ from pathlib import Path
 # the on-disk contract and sha256 semantics.
 try:
     from synopticon.pipeline import manifest as mf
+    from synopticon.progress import get_emitter
 except ImportError:  # pragma: no cover - allow running from a source checkout
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
     from synopticon.pipeline import manifest as mf
+    from synopticon.progress import get_emitter
 
 ANTELOPEV2_URL = (
     "https://github.com/deepinsight/insightface/releases/download/v0.7/antelopev2.zip"
@@ -106,32 +108,46 @@ KNOWN_MODELS: dict[str, dict] = {
     },
 }
 
+# The pipeline's canonical required-models set and this download registry must
+# describe the same keys/filenames, or a "download everything" run could leave
+# the install short of what extraction needs. Fail loudly at import if they drift.
+assert {k: v["file"] for k, v in KNOWN_MODELS.items()} == mf.REQUIRED_MODELS, (
+    "KNOWN_MODELS and manifest.REQUIRED_MODELS disagree: "
+    f"{ {k: v['file'] for k, v in KNOWN_MODELS.items()} } != {mf.REQUIRED_MODELS}"
+)
 
-def _download(url: str, dest: Path) -> None:
-    """Stream a URL to dest atomically."""
+
+def _download(url: str, dest: Path, phase: str | None = None) -> None:
+    """Stream a URL to dest atomically, emitting byte-level progress for ``phase``."""
     import httpx
 
+    emitter = get_emitter()
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkstemp(dir=dest.parent, suffix=".part")[1])
     try:
         with httpx.stream("GET", url, follow_redirects=True, timeout=None) as resp:
             resp.raise_for_status()
+            total = int(resp.headers.get("content-length") or 0) or None
+            done = 0
             with open(tmp, "wb") as fh:
                 for chunk in resp.iter_bytes(1 << 20):
                     fh.write(chunk)
+                    done += len(chunk)
+                    if phase is not None:
+                        emitter.progress(phase, done, total)
         tmp.replace(dest)
     finally:
         if tmp.exists():
             tmp.unlink()
 
 
-def _ensure_archive(models_dir: Path, url: str, archive_name: str) -> Path:
+def _ensure_archive(models_dir: Path, url: str, archive_name: str, phase: str | None = None) -> Path:
     archive = models_dir / archive_name
     if archive.is_file():
         print(f"  using cached {archive.name}")
         return archive
     print(f"  downloading {archive.name} ...")
-    _download(url, archive)
+    _download(url, archive, phase=phase)
     return archive
 
 
@@ -171,38 +187,46 @@ def _register(models_dir: Path, key: str, spec: dict, allow_record_hash: bool) -
 
 def _handle(models_dir: Path, key: str, spec: dict, allow_record_hash: bool) -> None:
     print(f"[{key}]")
+    phase = f"models.{key}"
+    get_emitter().phase(phase)
     dest = models_dir / spec["file"]
 
     if spec.get("local_export"):
         if dest.is_file():
             _register(models_dir, key, spec, allow_record_hash)
         else:
+            msg = f"{key} is not downloadable and must be exported manually. {spec['export_hint']}"
             print(f"  not present (local export). {spec['export_hint']}")
+            get_emitter().log("warning", msg, phase=phase)
         return
 
     if spec.get("optional") and not spec.get("archive"):
         if not dest.is_file() and spec["source_url"].endswith(".onnx"):
             print(f"  downloading {spec['file']} ...")
             try:
-                _download(spec["source_url"], dest)
+                _download(spec["source_url"], dest, phase=phase)
             except Exception as exc:  # optional: a dead link must not abort the run
                 dest.unlink(missing_ok=True)
+                msg = f"{key} download failed ({exc}). {spec['export_hint']}"
                 print(f"  download failed ({exc}). {spec['export_hint']}")
+                get_emitter().log("warning", msg, phase=phase)
                 return
         if dest.is_file():
             _register(models_dir, key, spec, allow_record_hash)
         else:
+            msg = f"{key} is optional and not present. {spec['export_hint']}"
             print(f"  optional, not present. {spec['export_hint']}")
+            get_emitter().log("warning", msg, phase=phase)
         return
 
     if not dest.is_file():
         if "archive" in spec:
-            archive = _ensure_archive(models_dir, spec["source_url"], spec["archive"])
+            archive = _ensure_archive(models_dir, spec["source_url"], spec["archive"], phase=phase)
             print(f"  extracting {spec['member']} ...")
             _extract_member(archive, spec["member"], dest)
         else:
             print(f"  downloading {spec['file']} ...")
-            _download(spec["source_url"], dest)
+            _download(spec["source_url"], dest, phase=phase)
     _register(models_dir, key, spec, allow_record_hash)
 
 
@@ -228,8 +252,13 @@ def main() -> None:
         except (mf.ModelIntegrityError, SystemExit, OSError) as exc:
             failures += 1
             print(f"  ERROR: {exc}", file=sys.stderr)
+            get_emitter().log("error", f"{key}: {exc}", phase=f"models.{key}")
 
     print(f"\nManifest: {mf.manifest_path(models_dir)}")
+    get_emitter().result(
+        ok=failures == 0,
+        stats={"requested": len(keys), "failures": failures},
+    )
     if failures:
         sys.exit(1)
 

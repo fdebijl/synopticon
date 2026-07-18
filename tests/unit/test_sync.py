@@ -10,6 +10,7 @@ import pytest
 from synopticon.db import store
 from synopticon.sync import items as sync_items_mod
 from synopticon.sync import persons as sync_persons_mod
+from synopticon.syno import foto
 from synopticon.syno.client import SynoClient
 from tests.unit.conftest import NAS_BASE_URL
 
@@ -19,6 +20,7 @@ API_INFO = {
         "SYNO.API.Auth": {"minVersion": 1, "maxVersion": 6, "path": "auth.cgi"},
         "SYNO.Foto.Browse.Item": {"minVersion": 1, "maxVersion": 7, "path": "entry.cgi"},
         "SYNO.Foto.Browse.Person": {"minVersion": 1, "maxVersion": 3, "path": "entry.cgi"},
+        "SYNO.Foto.Browse.SimilarItem": {"minVersion": 1, "maxVersion": 2, "path": "entry.cgi"},
     },
 }
 LOGIN_OK = {"success": True, "data": {"sid": "sid-1", "synotoken": "tok-1", "did": "did-1"}}
@@ -283,3 +285,128 @@ def test_sync_faces_excludes_tags_for_deleted_photos(respx_mock, client, nas_con
     # The deleted photo is never listed; no skip needed because it was excluded up front.
     assert calls == [1]
     assert stats == {"photos_processed": 1, "faces_upserted": 0, "faces_skipped": 0}
+
+
+# -- similar photo groups (stacking) ------------------------------------------
+
+
+def _similar_row(item_id: int, similar: dict | None = None) -> dict:
+    row = {"id": item_id, "filename": f"photo-{item_id}.jpg", "time": 1700000000, "type": "photo"}
+    if similar is not None:
+        row["similar"] = similar
+    return row
+
+
+def test_list_similar_groups_skips_ungrouped_and_paginates(respx_mock, client, nas_conn):
+    _bootstrap(respx_mock)
+    group_a = {"id": 1, "count": 3, "top_pick": 101, "item_id": [101, 102, 103]}
+    group_b = {"id": 2, "count": 2, "top_pick": 201, "item_id": [201, 202]}
+    # Page 1: a full page (2 rows) -- one grouped, one ungrouped -- so pagination continues.
+    # Page 2: a short page (1 row) -- the second group -- so pagination stops.
+    pages = [
+        [_similar_row(101, group_a), _similar_row(999)],
+        [_similar_row(201, group_b)],
+    ]
+    calls: list[int] = []
+
+    def _handler(request):
+        offset = int(_form(request)["offset"])
+        calls.append(offset)
+        page = pages[len(calls) - 1]
+        return httpx.Response(200, json={"success": True, "data": {"list": page}})
+
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(side_effect=_handler)
+
+    groups = list(foto.list_similar_groups(client, "personal", page_size=2))
+    assert calls == [0, 2]
+    assert [(g.id, g.top_pick, g.item_ids) for g in groups] == [
+        (1, 101, [101, 102, 103]),
+        (2, 201, [201, 202]),
+    ]
+
+
+def test_sync_similar_sets_and_clears_top_pick(respx_mock, client, nas_conn):
+    """Members (incl. the top pick) get similar_top_pick set; a photo that leaves its
+    group on a later pass is cleared back to NULL; unknown member ids don't crash."""
+    _bootstrap(respx_mock)
+    now = store.now()
+    for pid in (101, 102, 103, 999):
+        nas_conn.execute(
+            "INSERT INTO photos (id, space, synced_at) VALUES (?, 'personal', ?)", (pid, now)
+        )
+    nas_conn.commit()
+
+    route = respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi")
+    group = {"id": 1, "count": 3, "top_pick": 101, "item_id": [101, 102, 103]}
+    # 104 is not (yet) a known photo row -- must be a no-op, not a crash.
+    route.mock(return_value=_page([_similar_row(101, group)]))
+
+    stats = sync_items_mod.sync_similar(nas_conn, client, "personal")
+    assert stats == {"groups": 1, "members": 3}
+
+    rows = {
+        int(r["id"]): r["similar_top_pick"]
+        for r in nas_conn.execute(
+            "SELECT id, similar_top_pick FROM photos WHERE space = 'personal'"
+        ).fetchall()
+    }
+    assert rows == {101: 101, 102: 101, 103: 101, 999: None}
+
+    # Next pass: 103 has left the group entirely (ungrouped now).
+    smaller_group = {"id": 1, "count": 2, "top_pick": 101, "item_id": [101, 102]}
+    route.mock(return_value=_page([_similar_row(101, smaller_group)]))
+    stats2 = sync_items_mod.sync_similar(nas_conn, client, "personal")
+    assert stats2 == {"groups": 1, "members": 2}
+
+    rows2 = {
+        int(r["id"]): r["similar_top_pick"]
+        for r in nas_conn.execute(
+            "SELECT id, similar_top_pick FROM photos WHERE space = 'personal'"
+        ).fetchall()
+    }
+    assert rows2 == {101: 101, 102: 101, 103: None, 999: None}
+
+
+def test_sync_similar_unknown_member_id_is_noop(respx_mock, client, nas_conn):
+    """A group referencing a photo id we've never synced must not raise."""
+    _bootstrap(respx_mock)
+    group = {"id": 1, "count": 2, "top_pick": 555, "item_id": [555, 556]}
+    respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(
+        return_value=_page([_similar_row(555, group)])
+    )
+    stats = sync_items_mod.sync_similar(nas_conn, client, "personal")
+    assert stats == {"groups": 1, "members": 2}
+    assert nas_conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"] == 0
+
+
+# -- link_photo_id -------------------------------------------------------------
+
+
+def test_link_photo_id_resolves_group_ungrouped_and_missing(nas_conn):
+    now = store.now()
+    nas_conn.execute(
+        "INSERT INTO photos (id, space, synced_at, similar_top_pick) VALUES (101, 'personal', ?, 101)",
+        (now,),
+    )
+    nas_conn.execute(
+        "INSERT INTO photos (id, space, synced_at, similar_top_pick) VALUES (102, 'personal', ?, 101)",
+        (now,),
+    )
+    nas_conn.execute(
+        "INSERT INTO photos (id, space, synced_at, similar_top_pick) VALUES (200, 'personal', ?, NULL)",
+        (now,),
+    )
+    nas_conn.commit()
+
+    assert store.link_photo_id(nas_conn, "personal", 102) == 101  # grouped -> top pick
+    assert store.link_photo_id(nas_conn, "personal", 101) == 101  # top pick itself -> itself
+    assert store.link_photo_id(nas_conn, "personal", 200) == 200  # ungrouped -> itself
+    assert store.link_photo_id(nas_conn, "personal", 9999) == 9999  # missing row -> itself
+
+
+# -- migration -----------------------------------------------------------------
+
+
+def test_migration_adds_similar_top_pick_column(nas_conn):
+    cols = {r["name"] for r in nas_conn.execute("PRAGMA table_info(photos)")}
+    assert "similar_top_pick" in cols

@@ -88,6 +88,41 @@ def sync_items(
     return {"seen": len(seen), "upserted": upserted, "deleted": deleted}
 
 
+def sync_similar(
+    conn: sqlite3.Connection,
+    client: SynoClient,
+    space: Space,
+    progress: Progress | None = None,
+) -> dict:
+    """Record Synology's "similar photo group" (stacking) membership.
+
+    Every member of a group (including the top pick itself) gets
+    `photos.similar_top_pick` set to the group's top_pick item id; a photo
+    that has left its group since the last pass is cleared back to NULL.
+    One transaction: the whole space's grouping is stale/fresh together, not
+    partially-applied if interrupted mid-pass.
+    """
+    groups = list(foto.list_similar_groups(client, space))
+    total = len(groups)
+    members = 0
+
+    conn.execute("UPDATE photos SET similar_top_pick = NULL WHERE space = ?", (space,))
+    for i, group in enumerate(groups, start=1):
+        for member_id in group.item_ids:
+            conn.execute(
+                "UPDATE photos SET similar_top_pick = ? WHERE space = ? AND id = ?",
+                (group.top_pick, space, member_id),
+            )
+        members += len(group.item_ids)
+        if progress and i % _PROGRESS_EVERY == 0:
+            progress(i, total)
+    if progress:
+        progress(total, total)
+    conn.commit()
+
+    return {"groups": total, "members": members}
+
+
 def stale_photo_ids(conn: sqlite3.Connection, space: Space) -> list[int]:
     """Photo ids with no rows at all in `faces` for this space.
 

@@ -22,6 +22,7 @@ from typing import Iterable, Protocol
 from synopticon import audit
 from synopticon.config import Space
 from synopticon.db import store
+from synopticon.progress import EventLogHandler, get_emitter
 from synopticon.syno import foto
 from synopticon.syno.client import QuotedString, SynoApiError, SynoClient
 from synopticon.syno.models import WriteResult
@@ -61,8 +62,16 @@ def configure_apply_logging(logfile: str | Path, level: int = logging.INFO) -> P
     """
     logfile = Path(logfile)
     resolved = logfile.expanduser().resolve()
+
+    # Bridge apply-logger records into the structured progress stream as `log`
+    # events (idempotent, like the file handler below). This covers both this
+    # module and dedupe_writeback, which share the `synopticon.apply` logger.
+    if not any(isinstance(h, EventLogHandler) for h in log.handlers):
+        log.addHandler(EventLogHandler())
+
     for handler in log.handlers:
         if isinstance(handler, logging.FileHandler) and Path(handler.baseFilename) == resolved:
+            log.setLevel(level)
             return resolved
     resolved.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(resolved, encoding="utf-8")
@@ -454,6 +463,7 @@ def apply_reviewed(
     writer_space = getattr(writer, "space", None)
     dry_run = getattr(writer, "dry_run", False)
     consecutive_failures = 0
+    emitter = get_emitter()
 
     log.info(
         "apply_reviewed start: %s approved row(s) kinds=%s person_id=%s "
@@ -469,7 +479,8 @@ def apply_reviewed(
         if not dry_run:
             _mark(conn, item_id, status)
 
-    for row in rows:
+    for idx, row in enumerate(rows):
+        emitter.progress("apply", idx + 1, len(rows))
         payload = json.loads(row["payload_json"])
         kind = row["kind"]
 
@@ -597,5 +608,15 @@ def apply_reviewed(
         "apply_reviewed done: considered=%s applied=%s skipped=%s failed=%s%s",
         stats.considered, stats.applied, stats.skipped, stats.failed,
         " (dry-run)" if dry_run else "",
+    )
+    emitter.result(
+        ok=stats.failed == 0,
+        stats={
+            "considered": stats.considered,
+            "applied": stats.applied,
+            "skipped": stats.skipped,
+            "failed": stats.failed,
+            "dry_run": dry_run,
+        },
     )
     return stats

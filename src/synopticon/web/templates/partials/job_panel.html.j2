@@ -1,0 +1,17 @@
+{# Shared live job panel. job-panel.js binds JobPanel(el) to .job-panel. #}
+{% macro job_panel(id='job-panel') -%}
+<section class="job-panel" id="{{ id }}" aria-label="Job progress">
+  <div class="job-panel-head">
+    <span class="job-panel-title" data-job-title>Idle</span>
+    <span class="job-state badge" data-job-state hidden></span>
+    <div class="job-panel-spacer"></div>
+    <button type="button" class="btn btn-sm btn-danger" data-job-cancel hidden>Cancel</button>
+  </div>
+  <div class="phase-chips" data-job-phases aria-label="Phases"></div>
+  <div class="progress" role="progressbar" aria-live="polite" data-job-progress hidden
+       aria-valuemin="0" aria-valuemax="100">
+    <div class="progress-bar" data-job-progress-bar></div>
+  </div>
+  <pre class="job-log" data-job-log tabindex="0" aria-label="Job log"></pre>
+</section>
+{%- endmacro %}

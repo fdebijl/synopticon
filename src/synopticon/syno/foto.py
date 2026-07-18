@@ -10,7 +10,7 @@ from typing import Iterable, Iterator
 
 from synopticon.config import Space
 from synopticon.syno.client import QuotedString, SynoClient
-from synopticon.syno.models import ItemSummary, Person, SynoFace
+from synopticon.syno.models import ItemSummary, Person, SimilarGroup, SynoFace
 
 DEFAULT_ITEM_ADDITIONAL: tuple[str, ...] = ("thumbnail", "resolution", "orientation", "person")
 DEFAULT_PERSON_ADDITIONAL: tuple[str, ...] = ("thumbnail",)
@@ -105,6 +105,23 @@ def list_item_faces(
     version = client.version_for(api, 7)
     data = client.call(api, "list_face", version=version, id_item=item_id, additional=list(additional))
     return [SynoFace.from_api(space, item_id, raw) for raw in (data.get("list") or [])]
+
+
+def list_similar_groups(
+    client: SynoClient, space: Space, page_size: int = 500
+) -> Iterator[SimilarGroup]:
+    """Paginated "similar photo group" (stacking) listing (Browse.SimilarItem.list).
+
+    Non-top-pick group members are omitted from the response entirely; only
+    the top-pick row of each group carries a `similar` key, which is what this
+    yields one `SimilarGroup` per. Rows without it (ungrouped photos) are
+    skipped -- there is nothing to record for them.
+    """
+    api = client.api_name(space, "Browse.SimilarItem")
+    version = client.version_for(api, 2)
+    for raw in client.paginate(api, "list", page_size=page_size, version=version):
+        if "similar" in raw:
+            yield SimilarGroup.from_api(raw)
 
 
 def download_original(client: SynoClient, space: Space, unit_id: int, cache_key: str) -> Iterator[bytes]:

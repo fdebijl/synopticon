@@ -27,6 +27,7 @@ from typing import Iterable
 
 from synopticon import audit
 from synopticon.config import Space
+from synopticon.progress import get_emitter
 from synopticon.syno import foto
 from synopticon.syno.client import SynoApiError, SynoClient
 
@@ -83,10 +84,12 @@ def delete_items(
     assert client is not None, "delete_items requires a client unless dry_run"
 
     # Idempotency pre-check: only delete ids the NAS still has.
+    emitter = get_emitter()
     live: list[int] = []
     skipped = 0
     failed = 0
-    for item_id in ids:
+    for idx, item_id in enumerate(ids):
+        emitter.progress("dedupe.delete", idx + 1, len(ids), space=space)
         try:
             foto.get_item(client, space, item_id)
             live.append(item_id)

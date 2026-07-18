@@ -140,7 +140,8 @@ def sync_faces(
             store.set_state(conn, cursor_key, photo_id)
             conn.commit()
             if on_skip is not None:
-                on_skip(photo_id, exc.code, _item_web_url(client.settings, space, photo_id))
+                linked_id = store.link_photo_id(conn, space, photo_id)
+                on_skip(photo_id, exc.code, _item_web_url(client.settings, space, linked_id))
             continue
         conn.execute("DELETE FROM syno_faces WHERE space = ? AND photo_id = ?", (space, photo_id))
         for face in faces:

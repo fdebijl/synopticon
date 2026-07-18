@@ -18,6 +18,7 @@ import numpy as np
 
 from ..config import Settings
 from ..db import store
+from ..progress import get_emitter
 from . import chinese_whispers, graph, hdbscan_alt
 
 PersonKey = tuple[str, int]  # (space, person_id)
@@ -554,10 +555,18 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
 
     Deterministic given ``settings.clustering.seed``.
     """
+    emitter = get_emitter()
+
+    emitter.phase("cluster.load")
     face_ids, X = graph.load_fused(conn, settings)
+
+    emitter.phase("cluster.graph")
     indices, sims = graph.build_or_load_graph(settings, face_ids, X)
+
+    emitter.phase("cluster.labels")
     labels = _cluster_labels(indices, sims, settings)
 
+    emitter.phase("cluster.crossref")
     all_labels, all_syno_ids = label_faces_with_ids(conn, settings)
     present = set(int(f) for f in face_ids.tolist())
     label_map = {fid: pk for fid, pk in all_labels.items() if fid in present}
@@ -571,6 +580,7 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
         syno_face_ids=syno_face_ids,
     )
 
+    emitter.phase("cluster.persist")
     names = _load_person_names(conn)
 
     def name_of(pk: PersonKey) -> str | None:
@@ -676,5 +686,15 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
             (run_id, kind, json.dumps(payload), None, ts),
         )
 
+    queue_inserts = conn.execute(
+        "SELECT COUNT(*) FROM review_queue WHERE run_id = ?", (run_id,)
+    ).fetchone()[0]
     conn.commit()
+    emitter.result(
+        stats={
+            "run_id": run_id,
+            "clusters": len(result.clusters),
+            "queue_inserts": int(queue_inserts),
+        }
+    )
     return run_id

@@ -46,6 +46,7 @@ review = [
     "fastapi>=0.111",
     "uvicorn>=0.29",
     "python-multipart>=0.0.9",
+    "tomlkit>=0.12",
 ]
 faiss = ["faiss-cpu>=1.8"]
 # Needed only to run scripts/export_*_onnx.py once.

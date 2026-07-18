@@ -13,6 +13,7 @@ import typer
 
 from synopticon.config import Settings, load_settings
 from synopticon.db import store
+from synopticon.progress import get_emitter
 
 app = typer.Typer(help=__doc__, no_args_is_help=True)
 models_app = typer.Typer(help="Model weight management.", no_args_is_help=True)
@@ -73,34 +74,54 @@ def models_download(
 @app.command()
 def check():
     """Verify NAS connectivity and credentials (read-only, fast)."""
-    from synopticon.syno.client import SynoClient, SynoError
+    from synopticon.syno.probe import probe
 
     settings = _settings()
     conn = _conn(settings)
+    emitter = get_emitter()
     typer.echo(f"NAS url:  {settings.nas.url or '<not set>'}")
     typer.echo(f"account:  {settings.nas.account or '<not set>'}")
-    try:
-        with SynoClient(settings, conn) as client:
-            info = client.api_info
-            typer.echo(f"reachable: yes ({len(info)} APIs discovered)")
-            client._ensure_auth()
-            session = client.session
-            typer.echo(f"login:     OK (synotoken={'yes' if session.synotoken else 'no'}, "
-                       f"2FA device token {'stored' if session.device_id else 'not needed/absent'})")
-            person_api = client.api_name("personal", "Browse.Person")
-            v = client.version_for(person_api, 3)
-            typer.echo(f"photos:    {person_api} available at v{v}")
-    except SynoError as exc:
-        typer.echo(f"\nFAILED: {exc}", err=True)
+    result = probe(settings, conn)
+    # Render each step that completed, in order — on failure this reproduces the
+    # partial progress the inline version used to print before raising.
+    passed = {step.name for step in result.steps if step.ok}
+    if "reachable" in passed:
+        typer.echo(f"reachable: yes ({result.api_count} APIs discovered)")
+    if "login" in passed:
+        typer.echo(
+            f"login:     OK (synotoken={'yes' if result.synotoken else 'no'}, "
+            f"2FA device token "
+            f"{'stored' if result.device_token else 'not needed/absent'})"
+        )
+    if "photos" in passed:
+        typer.echo(f"photos:    {result.person_api} available at v{result.person_api_version}")
+    if not result.ok:
+        emitter.error(result.error or "")
+        emitter.result(ok=False)
+        typer.echo(f"\nFAILED: {result.error}", err=True)
         raise typer.Exit(1)
+    emitter.result(
+        stats={
+            "apis": result.api_count,
+            "person_api": result.person_api,
+            "person_api_version": result.person_api_version,
+        }
+    )
     typer.echo("all good — you can run: synopticon sync")
 
 
 def _progress(space: str, label: str):
-    """Render a sync progress callback: a live line on a tty, periodic lines otherwise."""
+    """Render a sync progress callback: a live line on a tty, periodic lines otherwise.
+
+    Also emits a structured `sync.<label>` progress event when the progress
+    protocol is enabled (SYNOPTICON_PROGRESS_FILE set); a no-op otherwise, so
+    terminal output is unchanged.
+    """
     is_tty = sys.stdout.isatty()
+    emitter = get_emitter()
 
     def cb(done: int, total: int | None):
+        emitter.progress(f"sync.{label}", done, total, space=space)
         suffix = f"{done}/{total}" if total is not None else str(done)
         if is_tty:
             typer.echo(f"\r[{space}] {label}: {suffix}", nl=False)
@@ -171,19 +192,39 @@ def sync(
 ):
     """Pull photos, persons, and ground-truth labels from the NAS (read-only)."""
     from synopticon.sync import downloads, hashes, items, persons
-    from synopticon.syno.client import SynoClient
+    from synopticon.syno.client import SynoApiError, SynoClient
 
     settings = _settings()
     conn = _conn(settings)
+    emitter = get_emitter()
+    result_stats: dict[str, dict] = {}
     with SynoClient(settings, conn) as client:
         for sp in _spaces(settings, space):
+            emitter.phase("sync.items", space=sp)
             stats = items.sync_items(conn, client, sp, progress=_progress(sp, "items"))
             _finish_line()
             typer.echo(f"[{sp}] items: {stats}")
+            result_stats[f"{sp}.items"] = dict(stats)
+            emitter.phase("sync.persons", space=sp)
             stats = persons.sync_persons(conn, client, sp, progress=_progress(sp, "persons"))
             _finish_line()
             typer.echo(f"[{sp}] persons: {stats}")
+            result_stats[f"{sp}.persons"] = dict(stats)
+            emitter.phase("sync.similar", space=sp)
+            try:
+                stats = items.sync_similar(conn, client, sp, progress=_progress(sp, "similar"))
+                _finish_line()
+                typer.echo(f"[{sp}] similar: {stats}")
+                result_stats[f"{sp}.similar"] = dict(stats)
+            except SynoApiError as exc:
+                _finish_line()
+                typer.secho(
+                    f"[{sp}] similar: skipped (feature may be unavailable on this space: {exc})",
+                    fg="yellow",
+                    err=True,
+                )
             if not skip_faces:
+                emitter.phase("sync.faces", space=sp)
                 stats = persons.sync_faces(
                     conn, client, sp, only_tagged=not all_faces, resume=resume,
                     progress=_progress(sp, "faces"),
@@ -191,16 +232,21 @@ def sync(
                 )
                 _finish_line()
                 typer.echo(f"[{sp}] faces: {stats}")
+                result_stats[f"{sp}.faces"] = dict(stats)
             if hash_:
+                emitter.phase("sync.hashes", space=sp)
+
                 def fetch(row: sqlite3.Row) -> Path:
                     return downloads.ensure_original(conn, client, settings, row)
 
                 stats = hashes.sync_hashes(conn, fetch, sp, progress=_progress(sp, "hashes"))
                 _finish_line()
                 typer.echo(f"[{sp}] hashes: {stats}")
+                result_stats[f"{sp}.hashes"] = dict(stats)
     if hash_ and not settings.storage.keep_originals:
         evicted = downloads.evict_originals(settings)
         typer.echo(f"evicted: {evicted}")
+    emitter.result(stats=result_stats)
 
 
 @app.command()
@@ -216,8 +262,11 @@ def extract(
 
     settings = _settings()
     conn = _conn(settings)
+    emitter = get_emitter()
     with SynoClient(settings, conn) as client:
         for sp in _spaces(settings, space):
+            emitter.phase("extract", space=sp)
+
             def fetch(row: sqlite3.Row) -> Path:
                 return downloads.ensure_original(conn, client, settings, row)
 
@@ -416,8 +465,12 @@ def regen_crops_cmd(
 
     settings = _settings()
     conn = _conn(settings)
+    emitter = get_emitter()
+    result_stats: dict[str, dict] = {}
     with SynoClient(settings, conn) as client:
         for sp in _spaces(settings, space):
+            emitter.phase("crops.regen", space=sp)
+
             def fetch(row: sqlite3.Row) -> Path:
                 return downloads.ensure_original(conn, client, settings, row)
 
@@ -427,9 +480,11 @@ def regen_crops_cmd(
             )
             _finish_line()
             typer.echo(f"[{sp}] {stats}")
+            result_stats[sp] = dict(stats)
     if not settings.storage.keep_originals:
         evicted = downloads.evict_originals(settings)
         typer.echo(f"evicted: {evicted}")
+    emitter.result(stats=result_stats)
 
 
 @app.command("delete-crops")
@@ -475,6 +530,23 @@ def report(run_id: int = typer.Option(None, help="Cluster run to report on (defa
         run_id = row["r"]
     path = generate(conn, settings, run_id)
     typer.echo(f"report: {path}")
+    get_emitter().result(stats={"run_id": run_id, "path": str(path)})
+
+
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", help="Interface to bind (default: localhost)."),
+    port: int = typer.Option(8686, help="Port to listen on."),
+):
+    """Serve the full web GUI: setup wizard, pipeline jobs, review, apply, maintenance.
+
+    Requires the [review] extra (fastapi/uvicorn). Login is mandatory; the first
+    boot walks you through creating an admin account. Put a reverse proxy in
+    front for TLS.
+    """
+    from synopticon.web.app import serve
+
+    serve(_settings(), host=host, port=port)
 
 
 @app.command()
@@ -482,9 +554,15 @@ def review(
     host: str = typer.Option("127.0.0.1"),
     port: int = typer.Option(8686),
 ):
-    """Serve the interactive review UI (approve/reject queue items)."""
-    from synopticon.review.app import serve
+    """[deprecated] Alias for `web` — opens the same server at its /review page."""
+    from synopticon.web.app import serve
 
+    typer.secho(
+        "note: `synopticon review` is deprecated; use `synopticon web`.",
+        fg="yellow",
+        err=True,
+    )
+    typer.echo(f"review UI: http://{host}:{port}/review")
     serve(_settings(), host=host, port=port)
 
 
@@ -529,6 +607,7 @@ def apply(
     logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
     typer.echo(f"logging apply operations to {logfile}")
 
+    get_emitter().phase("apply")
     if apply_:
         with SynoClient(settings, conn) as client:
             writer = SynoWriter(client, conn, space)
@@ -646,6 +725,7 @@ def apply_all(
     logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
     typer.echo(f"logging apply operations to {logfile}")
 
+    get_emitter().phase("apply")
     with SynoClient(settings, conn) as client:
         writer = SynoWriter(client, conn, space)
         stats = apply_reviewed(
@@ -703,14 +783,15 @@ def dedupe(
         typer.echo(f"\n[{sp}] {len(groups)} duplicate group(s):")
         unique_drop: dict[int, sqlite3.Row] = {}
         for grp in groups:
-            keep, kurl = grp.keep, _item_web_url(settings, sp, grp.keep["id"])
+            keep = grp.keep
+            kurl = _item_web_url(settings, sp, store.link_photo_id(conn, sp, keep["id"]))
             typer.echo(
                 f"  {grp.kind}: keep {keep['id']} ({keep['filename']}, "
                 f"{keep['width']}x{keep['height']}){' -> ' + kurl if kurl else ''}"
             )
             for d in grp.drop:
                 unique_drop.setdefault(d["id"], d)
-                url = _item_web_url(settings, sp, d["id"])
+                url = _item_web_url(settings, sp, store.link_photo_id(conn, sp, d["id"]))
                 typer.echo(
                     f"      drop {d['id']} ({d['filename']}, {_human_bytes(d['filesize'])})"
                     f"{' -> ' + url if url else ''}"
@@ -730,16 +811,20 @@ def dedupe(
     )
 
     logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
+    emitter = get_emitter()
 
     if not apply_:
         typer.echo("\nDRY RUN — pass --apply to delete these photos from the NAS")
+        emitter.phase("dedupe.delete", dry_run=True)
         for sp, ids in drop_ids_by_space.items():
             delete_items(conn, None, sp, ids, dry_run=True)
+        emitter.result(stats={"groups": total_groups, "drop": total_drop}, dry_run=True)
         return
 
     if not yes:
         typer.confirm(f"delete {total_drop} photo(s) from the NAS?", abort=True)
     typer.echo(f"logging delete operations to {logfile}")
+    emitter.phase("dedupe.delete")
     agg = {"deleted": 0, "skipped": 0, "failed": 0}
     with SynoClient(settings, conn) as client:
         for sp, ids in drop_ids_by_space.items():
@@ -747,6 +832,7 @@ def dedupe(
             for k in agg:
                 agg[k] += stats[k]
     typer.echo(f"{agg}")
+    emitter.result(stats=agg)
 
 
 @eval_app.command("holdout")

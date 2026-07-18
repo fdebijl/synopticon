@@ -55,7 +55,7 @@ docker compose run synopticon sync
 docker compose run synopticon extract          # the long pass; resumable, re-runnable (see GPU acceleration below)
 docker compose run synopticon cluster
 docker compose run synopticon report           # static HTML in ./data/report/<run>/
-docker compose run --service-ports synopticon review   # http://127.0.0.1:8686
+docker compose run --service-ports synopticon web      # full GUI at http://127.0.0.1:8686 (review lives at /review)
 docker compose run synopticon apply            # dry-run; add --apply to write
 ```
 
@@ -69,6 +69,67 @@ docker compose run synopticon dedupe --exact     # dry-run; add --apply to delet
 **Where state lives:** everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
 
 Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12).
+
+**Prefer a GUI?** `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
+
+## Web GUI
+
+`synopticon web` serves a full browser GUI over the whole lifecycle — first-run setup, editing `config.toml`, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections — styled to sit comfortably next to Synology Photos. It's the recommended way to drive Synopticon day to day; the CLI stays fully supported for scripting and headless runs.
+
+```bash
+uv sync --extra cpu --extra review --extra faiss   # the review extra ships every GUI dep (fastapi, uvicorn, jinja2, tomlkit)
+uv run synopticon web                               # http://127.0.0.1:8686
+# Docker: docker compose run --service-ports synopticon web
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--host TEXT` | `127.0.0.1` | Bind address. Keep it on loopback and put a reverse proxy in front for anything but local access (see [Reverse proxy / TLS](#reverse-proxy--tls)). |
+| `--port INTEGER` | `8686` | Bind port. |
+
+It serves a **Dashboard** (library stats, a sync→extract→cluster→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report), **Apply** (dry-run preview then consent-gated writes), **Maintenance** (the destructive housekeeping commands behind typed-phrase confirmations), and **Settings** (edit every `config.toml` section, manage API keys, change your password). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
+
+### First-run setup wizard
+
+On a fresh install the GUI redirects to a setup wizard, resumable at each step:
+
+1. **Account** — create the single admin username/password (first boot only; there is no default login).
+2. **NAS** — enter your Synology URL, account, password, and optional OTP; a live *Test connection* runs the same read-only probe as `synopticon check` and stores the 2FA device token so later logins skip the OTP. Saving writes the credentials into `config.toml`.
+3. **Storage** — confirm the data/model directories are writable and check free disk.
+4. **Models** — download and verify the model weights (a job with live progress). Two embedders, **AdaFace** and **MagFace**, can't be downloaded automatically (their weights aren't redistributed) — export them manually first (see [Models](#models)). If they're missing, the step surfaces which models still need exporting and offers **Continue anyway**: the first sync works without any models, but running `extract` later requires all five.
+5. **First sync** — kick off an initial `sync` (skippable), then hand off to the dashboard.
+
+### Authentication
+
+- **Admin account** — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from **Settings → Access**.
+- **API keys** — create named, revocable keys under **Settings → Access** (shown once, then stored hashed). Send them as `Authorization: Bearer syn_...` on `/api/*` requests — the intended path for automation and planned sidecars (e.g. a browser extension). Cookie endpoints are CSRF-hardened (JSON-only + SameSite); the bearer path is immune by construction.
+
+```bash
+curl -H "Authorization: Bearer syn_xxxxxxxxxxxxxxxx" http://127.0.0.1:8686/api/stats
+```
+
+### Reverse proxy / TLS
+
+Synopticon does **not** terminate TLS itself. Bind it to loopback (the default `127.0.0.1`) and put nginx, Caddy, or Traefik in front for HTTPS. uvicorn runs with proxy headers enabled, so it honours `X-Forwarded-Proto` from the proxy — the session cookie's `Secure` flag then follows the effective scheme automatically. A minimal Caddy example:
+
+```
+photos.example.com {
+    reverse_proxy 127.0.0.1:8686
+}
+```
+
+### Structured progress events
+
+Every command can emit machine-readable progress. Set `SYNOPTICON_PROGRESS_FILE=<path>` and each run appends newline-delimited JSON events to that file (unset → no-op; terminal output is byte-identical either way). This is how the GUI's job runner tracks live progress, and it's equally usable from your own tooling. The v1 schema is one JSON object per line, consumers ignoring unknown fields:
+
+```jsonl
+{"v":1,"ts":1699999999.1,"event":"phase","phase":"extract"}
+{"v":1,"ts":1699999999.2,"event":"progress","phase":"extract","done":842,"total":12290}
+{"v":1,"ts":1699999999.3,"event":"log","level":"warning","message":"skipped photo 123"}
+{"v":1,"ts":1699999999.4,"event":"result","ok":true,"stats":{"photos_processed":412}}
+```
+
+The process **exit code is authoritative** for success/failure; the `result`/`error` events are advisory niceties.
 
 ## CLI reference
 
@@ -115,6 +176,8 @@ Pull photos, persons, and ground-truth labels from the NAS. Prints live progress
 
 The faces pass is checkpointed per-photo, so it resumes cleanly after an interruption. The items and persons passes are idempotent but restart from the top.
 
+`sync` also records Synology's "similar photo" (stacking) grouping, so review and dedupe deep links point at the group's visible cover photo instead of a non-top-pick member the grouped timeline hides. A failure here (e.g. the feature being unavailable on a space) is logged as a warning and never aborts the rest of `sync`.
+
 `--hash` downloads every image original (videos are skipped), so the first pass is slow on a large library; it commits per photo and skips already-hashed photos on re-runs, re-hashing only photos whose Synology `cache_key` changed (i.e. edited/replaced). Cached originals are evicted afterward unless `storage.keep_originals` is set. Compare `phash` values by hamming distance, not equality — byte-identical duplicates are the `sha256` column's job.
 
 ### Face recognition
@@ -145,13 +208,16 @@ Generate the static HTML review report.
 |---|---|---|
 | `--run-id INTEGER` | latest | Cluster run to report on. |
 
-#### `review`
-Serve the interactive review UI (approve/reject queue items). Under Docker, add `--service-ports`.
+#### `web`
+Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports`. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
 
 | Option | Default | Description |
 |---|---|---|
 | `--host TEXT` | `127.0.0.1` | Bind address. |
 | `--port INTEGER` | `8686` | Bind port. |
+
+#### `review` *(deprecated alias)*
+Deprecated alias of `web`, kept for one release. Serves the same app and prints the `/review` URL; new usage should call `synopticon web`. Same `--host`/`--port` options.
 
 #### `apply`
 Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**

@@ -1,0 +1,79 @@
+{# Server-side card markup, ported from review/templates/app.html.j2.
+   review.js mirrors this shape when appending pages fetched from
+   /api/review/items — keep the two in sync (class names + data-* attrs are the
+   contract the keyboard flow and filters rely on). #}
+{% macro hidden_badge(cls='') -%}
+<span class="hidden-badge {{ cls }}" title="Hidden on Synology Photos" aria-label="Person hidden on Synology Photos">
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>
+</span>
+{%- endmacro %}
+
+{% macro review_card(it) -%}
+<div class="card" data-id="{{ it.item_id }}"{% if it.unnamed_target %} data-unnamed-target="1"{% endif %}{% if it.unnamed_merge %} data-unnamed-merge="1"{% endif %}{% if it.named_merge %} data-named-merge="1"{% endif %} tabindex="0">
+  {% if it.crop and it.kind != 'reassign' %}
+    {% if it.item_url %}<a href="{{ it.item_url }}" target="_blank" rel="noopener" title="open photo in Synology Photos"><img src="{{ it.crop }}" alt="face crop"></a>
+    {% else %}<img src="{{ it.crop }}" alt="face crop">{% endif %}
+  {% endif %}
+  {% if it.kind == 'new_person' %}
+    <div class="thumbs">{% for c in it.new_person_crops %}{% if c %}<img src="{{ c }}" alt="">{% endif %}{% endfor %}</div>
+    <input class="name-input" placeholder="suggested name" value="{{ it.payload.suggested_name or '' }}"
+           data-name-input="{{ it.item_id }}" aria-label="Suggested name">
+  {% elif it.kind in ('merge', 'merge_named') %}
+    {% if it.named_merge %}
+    <div class="danger-banner" title="Both people are already named — merging is irreversible and destroys a human label">
+      &#9888; named &harr; named — irreversible, destroys a human label
+    </div>
+    {% endif %}
+    <div class="merge">
+      <div class="merge-side">
+        <div class="merge-name"><strong>
+          {% if it.person_a_url %}<a href="{{ it.person_a_url }}" target="_blank" rel="noopener">{{ it.payload.person_a.name or it.payload.person_a.person_id }}</a>
+          {% else %}{{ it.payload.person_a.name or it.payload.person_a.person_id }}{% endif %}
+        </strong></div>
+        <div class="thumb-group">{% if it.person_a_hidden %}{{ hidden_badge() }}{% endif %}<div class="thumbs">{% for c in it.merge_crops_a %}{% if c %}<img src="{{ c }}" alt="">{% endif %}{% endfor %}</div></div>
+      </div>
+      <div class="merge-arrow" aria-hidden="true">&harr;</div>
+      <div class="merge-side">
+        <div class="merge-name"><strong>
+          {% if it.person_b_url %}<a href="{{ it.person_b_url }}" target="_blank" rel="noopener">{{ it.payload.person_b.name or it.payload.person_b.person_id }}</a>
+          {% else %}{{ it.payload.person_b.name or it.payload.person_b.person_id }}{% endif %}
+        </strong></div>
+        <div class="thumb-group">{% if it.person_b_hidden %}{{ hidden_badge() }}{% endif %}<div class="thumbs">{% for c in it.merge_crops_b %}{% if c %}<img src="{{ c }}" alt="">{% endif %}{% endfor %}</div></div>
+      </div>
+    </div>
+  {% elif it.kind == 'reassign' %}
+    <div class="merge">
+      <div class="merge-side">
+        <div class="merge-name"><strong>
+          {% if it.from_person_url %}<a href="{{ it.from_person_url }}" target="_blank" rel="noopener">{{ it.payload.from_person_name or it.payload.from_person_id }}</a>
+          {% else %}{{ it.payload.from_person_name or it.payload.from_person_id }}{% endif %}
+        </strong></div>
+        {% if it.crop %}
+          {% if it.item_url %}<a href="{{ it.item_url }}" target="_blank" rel="noopener" title="open photo in Synology Photos"><img src="{{ it.crop }}" alt="face crop"></a>
+          {% else %}<img src="{{ it.crop }}" alt="face crop">{% endif %}
+        {% endif %}
+      </div>
+      <div class="merge-arrow" aria-hidden="true">&rarr;</div>
+      <div class="merge-side">
+        <div class="merge-name"><strong>
+          {% if it.person_url %}<a href="{{ it.person_url }}" target="_blank" rel="noopener">{{ it.payload.person_name or it.payload.person_id }}</a>
+          {% else %}{{ it.payload.person_name or it.payload.person_id }}{% endif %}
+        </strong></div>
+        <div class="thumb-group">{% if it.target_hidden %}{{ hidden_badge() }}{% endif %}<div class="thumbs">{% for c in it.target_crops %}<img src="{{ c }}" alt="">{% endfor %}</div></div>
+      </div>
+    </div>
+    <div class="muted">to-sim {{ '%.3f'|format(it.confidence or 0) }}{% if it.payload.from_similarity is not none %} · from-sim {{ '%.3f'|format(it.payload.from_similarity) }}{% endif %}</div>
+  {% else %}
+    <div class="merge-name"><strong>{{ it.payload.person_name or it.payload.person_id }}</strong>{% if it.target_hidden %}{{ hidden_badge('name-hidden') }}{% endif %}</div>
+    <div class="muted">conf {{ '%.3f'|format(it.confidence or 0) }}</div>
+  {% endif %}
+  <div class="muted card-kind">{{ it.kind }} · {{ it.status }}</div>
+  <div class="card-actions">
+    <button class="btn btn-sm btn-primary" data-decide="approve" data-id="{{ it.item_id }}">&check; <kbd>y</kbd></button>
+    <button class="btn btn-sm btn-ghost" data-decide="reject" data-id="{{ it.item_id }}">&cross; <kbd>n</kbd></button>
+  </div>
+</div>
+{%- endmacro %}

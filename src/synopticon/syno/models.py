@@ -123,6 +123,28 @@ class SynoFace:
 
 
 @dataclass(frozen=True)
+class SimilarGroup:
+    """A Synology "similar photo group" (stacking), from Browse.SimilarItem.list.
+
+    Only the top_pick row of a group carries the `similar` key on the wire;
+    `item_ids` is the full membership (including the top pick itself).
+    """
+
+    id: int
+    top_pick: int
+    item_ids: list[int]
+
+    @classmethod
+    def from_api(cls, raw: dict[str, Any]) -> SimilarGroup:
+        similar = raw["similar"]
+        return cls(
+            id=similar["id"],
+            top_pick=similar["top_pick"],
+            item_ids=list(similar["item_id"]),
+        )
+
+
+@dataclass(frozen=True)
 class WriteResult:
     success: bool
     api: str

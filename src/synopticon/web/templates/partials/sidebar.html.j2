@@ -1,0 +1,28 @@
+{% set nav = [
+  ("dashboard", "/", "Dashboard"),
+  ("pipeline", "/pipeline", "Pipeline"),
+  ("review", "/review", "Review"),
+  ("apply", "/apply", "Apply"),
+  ("maintenance", "/maintenance", "Maintenance"),
+  ("settings", "/settings", "Settings"),
+] %}
+<nav class="sidebar" role="navigation" aria-label="Primary">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">Synopticon</span>
+  </div>
+  <ul class="nav">
+    {% for id, href, label in nav %}
+    <li>
+      <a href="{{ href }}" class="nav-item{% if active == id %} active{% endif %}"
+         {% if active == id %}aria-current="page"{% endif %}>
+        <span class="nav-label">{{ label }}</span>
+        {% if id == "review" and pending_review %}
+        <span class="nav-badge" aria-label="{{ pending_review }} pending">{{ pending_review }}</span>
+        {% endif %}
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+</nav>
+<div class="nav-scrim" onclick="document.body.classList.remove('nav-open')" aria-hidden="true"></div>

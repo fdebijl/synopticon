@@ -8,7 +8,7 @@ import json
 import pytest
 from typer.testing import CliRunner
 
-from synopticon import cli
+from synopticon import cli, progress
 from synopticon.db import store
 
 
@@ -146,3 +146,70 @@ def test_apply_all_yes_with_flag_applies_named_merges(apply_all_named_env):
     result = CliRunner().invoke(cli.app, ["apply-all", "-Y", "--apply-merges-named"])
     assert result.exit_code == 0, result.output
     assert apply_all_named_env["apply_merges_named"] is True
+
+
+# -- progress protocol wiring ----------------------------------------------
+
+
+def test_sync_emits_progress_events_when_env_set(
+    monkeypatch, tmp_path, tmp_settings
+):
+    """`synopticon sync` with SYNOPTICON_PROGRESS_FILE set emits sync.* progress
+    events (proving the _progress wiring) plus a final result event; terminal
+    output is otherwise unchanged."""
+    from synopticon.sync import items as items_mod
+    from synopticon.sync import persons as persons_mod
+    from synopticon.syno import client as client_mod
+
+    conn = store.connect(tmp_path / "synopticon.db")
+
+    def fake_sync_items(conn, client, space, progress=None):
+        if progress:
+            progress(1, 2)
+            progress(2, 2)
+        return {"seen": 2, "upserted": 2, "deleted": 0}
+
+    def fake_sync_persons(conn, client, space, progress=None):
+        if progress:
+            progress(1, 1)
+        return {"seen": 1, "upserted": 1, "deleted": 0}
+
+    def fake_sync_similar(conn, client, space, progress=None):
+        if progress:
+            progress(0, 0)
+        return {"groups": 0, "members": 0}
+
+    class DummyClient:
+        def __init__(self, *a, **k): ...
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(items_mod, "sync_items", fake_sync_items)
+    monkeypatch.setattr(items_mod, "sync_similar", fake_sync_similar)
+    monkeypatch.setattr(persons_mod, "sync_persons", fake_sync_persons)
+    monkeypatch.setattr(client_mod, "SynoClient", DummyClient)
+    monkeypatch.setattr(cli, "_settings", lambda: tmp_settings)
+    monkeypatch.setattr(cli, "_conn", lambda s: conn)
+
+    events_file = tmp_path / "events.jsonl"
+    monkeypatch.setenv(progress.ENV_VAR, str(events_file))
+
+    result = CliRunner().invoke(cli.app, ["sync", "--space", "personal", "--skip-faces"])
+    assert result.exit_code == 0, result.output
+
+    events = [json.loads(line) for line in events_file.read_text().splitlines()]
+    phases = {e["phase"] for e in events if e["event"] == "phase"}
+    assert {"sync.items", "sync.persons"} <= phases
+    progress_phases = {e["phase"] for e in events if e["event"] == "progress"}
+    assert {"sync.items", "sync.persons"} <= progress_phases
+    # Each sync.* progress event carries the space it belongs to.
+    assert all(
+        e.get("space") == "personal"
+        for e in events
+        if e["event"] == "progress"
+    )
+    results = [e for e in events if e["event"] == "result"]
+    assert len(results) == 1
+    assert results[0]["stats"]["personal.items"] == {"seen": 2, "upserted": 2, "deleted": 0}

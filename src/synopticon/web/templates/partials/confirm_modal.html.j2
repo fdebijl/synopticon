@@ -1,0 +1,15 @@
+{# Reusable confirm dialog. Syn.confirm(...) / Syn.confirmPhrase(...) drive it. #}
+<dialog id="confirm-modal" class="modal" aria-labelledby="confirm-title">
+  <form method="dialog" class="modal-body">
+    <h2 id="confirm-title" class="modal-title">Confirm</h2>
+    <p class="modal-message" id="confirm-message"></p>
+    <div class="modal-phrase" id="confirm-phrase-wrap" hidden>
+      <label for="confirm-phrase-input" id="confirm-phrase-label"></label>
+      <input type="text" id="confirm-phrase-input" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="modal-actions">
+      <button type="submit" value="cancel" class="btn btn-ghost" id="confirm-cancel">Cancel</button>
+      <button type="submit" value="ok" class="btn btn-danger" id="confirm-ok">Confirm</button>
+    </div>
+  </form>
+</dialog>

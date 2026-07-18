@@ -1,0 +1,203 @@
+{% extends "base.html.j2" %}
+{% from "partials/job_panel.html.j2" import job_panel %}
+{% block head %}
+<style>
+  .cmd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: var(--sp-3); }
+  .cmd-card { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .cmd-head { display: flex; align-items: flex-start; gap: var(--sp-2); }
+  .cmd-head .cmd-title { font-weight: 600; font-size: var(--fs-lg); }
+  .cmd-head .cmd-desc { color: var(--text-2); font-size: var(--fs-sm); margin-top: 2px; }
+  .cmd-head-spacer { flex: 1; }
+  .cmd-opts { border-top: 1px solid var(--border-soft); padding-top: var(--sp-2); display: none; flex-direction: column; gap: var(--sp-2); }
+  .cmd-card.open .cmd-opts { display: flex; }
+  .opt-row { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+  .opt-row label { font-size: var(--fs-sm); color: var(--text-2); min-width: 72px; }
+  .opt-check { display: inline-flex; align-items: center; gap: var(--sp-1); font-size: var(--fs-sm); color: var(--text); min-width: 0; }
+  .kv-editor { display: flex; flex-direction: column; gap: var(--sp-1); }
+  .kv-row { display: flex; gap: var(--sp-2); align-items: center; }
+  .kv-row .input { flex: 1; }
+  .cmd-actions { display: flex; gap: var(--sp-2); align-items: center; }
+  .disclosure { background: transparent; border: none; color: var(--action); cursor: pointer; font: inherit; font-size: var(--fs-sm); padding: 0; }
+  .history-table td, .history-table th { white-space: nowrap; }
+  .history-table td.hist-name { font-weight: 600; }
+  .run-note { font-size: var(--fs-sm); color: var(--text-2); }
+</style>
+{% endblock %}
+{% block content %}
+{% set spaces = [('', 'both (default)'), ('personal', 'personal'), ('shared', 'shared')] %}
+<div class="page">
+  {{ job_panel() }}
+
+  <div class="cmd-grid" style="margin-top: var(--sp-4)">
+
+    {# ---- sync ---- #}
+    <section class="card cmd-card" data-cmd="sync">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Sync</div>
+          <div class="cmd-desc">Pull the photo library, persons and faces from the NAS.</div>
+        </div>
+        <div class="cmd-head-spacer"></div>
+        <button type="button" class="disclosure" data-toggle>Options</button>
+      </div>
+      <div class="cmd-opts">
+        <div class="opt-row">
+          <label>Space</label>
+          <select class="select" data-param="space">
+            {% for v, l in spaces %}<option value="{{ v }}">{{ l }}</option>{% endfor %}
+          </select>
+        </div>
+        <label class="opt-check"><input type="checkbox" data-param="hash"> compute content hashes (--hash)</label>
+        <label class="opt-check"><input type="checkbox" data-param="skip_faces"> skip faces (--skip-faces)</label>
+        <label class="opt-check"><input type="checkbox" data-param="all_faces"> all faces (--all-faces)</label>
+        <label class="opt-check"><input type="checkbox" data-param="resume" checked> resume from last sync</label>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+    {# ---- extract ---- #}
+    <section class="card cmd-card" data-cmd="extract">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Extract</div>
+          <div class="cmd-desc">Detect, align and embed faces for synced photos.</div>
+        </div>
+        <div class="cmd-head-spacer"></div>
+        <button type="button" class="disclosure" data-toggle>Options</button>
+      </div>
+      <div class="cmd-opts">
+        <div class="opt-row">
+          <label>Space</label>
+          <select class="select" data-param="space">
+            {% for v, l in spaces %}<option value="{{ v }}">{{ l }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="opt-row"><label>Limit</label><input class="input input-sm" type="number" min="1" data-param="limit" placeholder="all"></div>
+        <div class="opt-row"><label>Photo id</label><input class="input input-sm" type="number" min="1" data-param="photo_id" placeholder="—"></div>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+    {# ---- cluster ---- #}
+    <section class="card cmd-card" data-cmd="cluster">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Cluster</div>
+          <div class="cmd-desc">Build the kNN graph, cluster faces and cross-reference labels.</div>
+        </div>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+    {# ---- recluster ---- #}
+    <section class="card cmd-card" data-cmd="recluster">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Recluster</div>
+          <div class="cmd-desc">Re-run clustering offline with parameter overrides.</div>
+        </div>
+        <div class="cmd-head-spacer"></div>
+        <button type="button" class="disclosure" data-toggle>Overrides</button>
+      </div>
+      <div class="cmd-opts">
+        <p class="muted">Only <code>clustering.*</code> / <code>crossref.*</code> keys are accepted (the server validates too). Values are JSON: <code>0.55</code>, <code>true</code>, <code>"cw"</code>.</p>
+        <div class="kv-editor" data-kv></div>
+        <button type="button" class="btn btn-sm" data-kv-add>+ add override</button>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+    {# ---- report ---- #}
+    <section class="card cmd-card" data-cmd="report">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Report</div>
+          <div class="cmd-desc">Regenerate the static HTML review report.</div>
+        </div>
+        <div class="cmd-head-spacer"></div>
+        <button type="button" class="disclosure" data-toggle>Options</button>
+      </div>
+      <div class="cmd-opts">
+        <div class="opt-row"><label>Run id</label><input class="input input-sm" type="number" min="1" data-param="run_id" placeholder="latest"></div>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+    {# ---- regen-crops ---- #}
+    <section class="card cmd-card" data-cmd="regen-crops">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Regenerate crops</div>
+          <div class="cmd-desc">Rebuild face crop images from stored bboxes.</div>
+        </div>
+        <div class="cmd-head-spacer"></div>
+        <button type="button" class="disclosure" data-toggle>Options</button>
+      </div>
+      <div class="cmd-opts">
+        <div class="opt-row">
+          <label>Space</label>
+          <select class="select" data-param="space">
+            {% for v, l in spaces %}<option value="{{ v }}">{{ l }}</option>{% endfor %}
+          </select>
+        </div>
+        <label class="opt-check"><input type="checkbox" data-param="only_missing" checked> only missing crops</label>
+        <div class="opt-row"><label>Limit</label><input class="input input-sm" type="number" min="1" data-param="limit" placeholder="all"></div>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+    {# ---- benchmark ---- #}
+    <section class="card cmd-card" data-cmd="benchmark">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Benchmark</div>
+          <div class="cmd-desc">Time the detection/embedding pipeline on a sample.</div>
+        </div>
+        <div class="cmd-head-spacer"></div>
+        <button type="button" class="disclosure" data-toggle>Options</button>
+      </div>
+      <div class="cmd-opts">
+        <div class="opt-row">
+          <label>Space</label>
+          <select class="select" data-param="space">
+            {% for v, l in spaces %}<option value="{{ v }}">{{ l }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="opt-row"><label>Limit</label><input class="input input-sm" type="number" min="1" data-param="limit" placeholder="default"></div>
+        <div class="opt-row"><label>Warmup</label><input class="input input-sm" type="number" min="0" data-param="warmup" placeholder="default"></div>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+    {# ---- models download ---- #}
+    <section class="card cmd-card" data-cmd="models-download">
+      <div class="cmd-head">
+        <div>
+          <div class="cmd-title">Download models</div>
+          <div class="cmd-desc">Fetch and verify model weights from the manifest.</div>
+        </div>
+        <div class="cmd-head-spacer"></div>
+        <button type="button" class="disclosure" data-toggle>Options</button>
+      </div>
+      <div class="cmd-opts">
+        <div class="opt-row"><label>Only</label><input class="input" type="text" data-param="only" placeholder="comma-separated keys (blank = all)"></div>
+      </div>
+      <div class="cmd-actions"><button type="button" class="btn btn-action" data-run>Run</button></div>
+    </section>
+
+  </div>
+
+  <div class="card" style="margin-top: var(--sp-4)">
+    <h3>Job history</h3>
+    <p class="run-note" id="pipeline-run-note" hidden>A job is running — Run buttons are disabled until it finishes.</p>
+    <table class="data history-table">
+      <thead><tr><th>Job</th><th>State</th><th>Duration</th><th></th></tr></thead>
+      <tbody id="job-history"><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/job-panel.js?v={{ version }}"></script>
+<script src="/static/js/pipeline.js?v={{ version }}"></script>
+{% endblock %}
