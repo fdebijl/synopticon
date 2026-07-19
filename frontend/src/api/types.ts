@@ -74,6 +74,32 @@ export interface Job {
   seq?: number
 }
 
+// GET /api/config (web/configio.py::read_config). Secrets in `values` are masked
+// to {secret:true, set:bool}; `schema` is Settings.model_json_schema();
+// `env_overrides` are dotted `section.key` names shadowed by a SYNOPTICON_* var.
+export interface MaskedSecret {
+  secret: true
+  set: boolean
+}
+
+export interface ConfigDoc {
+  path: string
+  exists: boolean
+  values: Record<string, Record<string, unknown>>
+  schema: Record<string, unknown>
+  env_overrides: string[]
+}
+
+// GET /api/auth/keys (web/auth.py::list_api_keys).
+export interface ApiKey {
+  id: number
+  name: string
+  key_prefix: string
+  created_at: number | null
+  last_used_at: number | null
+  revoked: boolean
+}
+
 export type JobEventKind =
   | 'phase'
   | 'progress'
