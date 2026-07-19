@@ -172,6 +172,9 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
                 path == "/setup"
                 or path.startswith("/api/setup")
                 or path == "/api/auth/create-account"
+                # /api/auth/me must answer during first boot so the SPA router
+                # guard can detect the claim flow (returns first_boot: true).
+                or path == "/api/auth/me"
             )
             if allowed:
                 return await call_next(request)
@@ -183,6 +186,13 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
 
         # Users exist. Login/logout live outside the auth gate.
         if path == "/login" or (path == "/logout" and method == "POST"):
+            return await call_next(request)
+        # SPA auth endpoints reachable without a session: /api/auth/me reports
+        # auth state (always 200), and the JSON login accepts credentials. Both
+        # still pass the CSRF Content-Type gate above (login is a mutating POST).
+        if path == "/api/auth/me":
+            return await call_next(request)
+        if path == "/api/auth/login" and method == "POST":
             return await call_next(request)
         if path == "/api/auth/create-account":
             return JSONResponse({"error": "account already exists"}, status_code=403)
@@ -226,6 +236,22 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
         if target and target.startswith("/") and not target.startswith("//"):
             return target
         return "/"
+
+    def _set_session_cookie(resp, token: str, request: Request) -> None:
+        """Attach the session cookie (HttpOnly, SameSite=Lax, 30d).
+
+        ``Secure`` follows the effective scheme so a TLS-terminating reverse
+        proxy (uvicorn ``--proxy-headers``) gets a Secure cookie over https.
+        """
+        resp.set_cookie(
+            SESSION_COOKIE,
+            token,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+            max_age=30 * 86400,
+            path="/",
+        )
 
     def render(name: str, request: Request, active: str, title: str, **ctx):
         base = _base_ctx(request, active, title)
@@ -352,15 +378,7 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
         finally:
             c.close()
         resp = RedirectResponse(next_url or "/", status_code=302)
-        resp.set_cookie(
-            SESSION_COOKIE,
-            token,
-            httponly=True,
-            samesite="lax",
-            secure=request.url.scheme == "https",
-            max_age=30 * 86400,
-            path="/",
-        )
+        _set_session_cookie(resp, token, request)
         return resp
 
     @app.post("/logout")
@@ -399,16 +417,72 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
         finally:
             c.close()
         resp = JSONResponse({"ok": True, "user_id": uid}, status_code=201)
-        resp.set_cookie(
-            SESSION_COOKIE,
-            token,
-            httponly=True,
-            samesite="lax",
-            secure=request.url.scheme == "https",
-            max_age=30 * 86400,
-            path="/",
-        )
+        _set_session_cookie(resp, token, request)
         return resp
+
+    # -- auth: JSON login / logout / me (SPA) ------------------------------- #
+    @app.post("/api/auth/login")
+    async def api_login(request: Request):
+        body = await request.json()
+        username = (body.get("username") or "").strip()
+        password = body.get("password") or ""
+        ip = request.client.host if request.client else "?"
+        if not limiter.check(ip, username):
+            return JSONResponse(
+                {"error": "Too many attempts — try again shortly."}, status_code=429
+            )
+        c = conn()
+        try:
+            uid = auth.verify_password(c, username, password)
+            if uid is None:
+                limiter.record_failure(ip, username)
+                return JSONResponse(
+                    {"error": "Invalid username or password."}, status_code=401
+                )
+            limiter.record_success(ip, username)
+            token = auth.create_session(c, uid)
+        finally:
+            c.close()
+        resp = JSONResponse({"ok": True, "username": username})
+        _set_session_cookie(resp, token, request)
+        return resp
+
+    @app.post("/api/auth/logout")
+    def api_logout(request: Request):
+        token = request.cookies.get(SESSION_COOKIE)
+        if token:
+            c = conn()
+            try:
+                auth.delete_session(c, token)
+            finally:
+                c.close()
+        resp = JSONResponse({"ok": True})
+        resp.delete_cookie(SESSION_COOKIE, path="/")
+        return resp
+
+    @app.get("/api/auth/me")
+    def api_me(request: Request):
+        """Auth state for the SPA router guard. Always 200 (even unauthenticated
+        and during first boot) — allowlisted in both middleware branches."""
+        first_boot = bool(getattr(request.state, "first_boot", False))
+        ident = getattr(request.state, "ident", None)
+        username = None
+        authenticated = ident is not None
+        if ident and ident[0] == "user":
+            c = conn()
+            try:
+                row = c.execute(
+                    "SELECT username FROM web_users WHERE id = ?", (ident[1],)
+                ).fetchone()
+                username = row["username"] if row else None
+            finally:
+                c.close()
+        return {
+            "authenticated": authenticated,
+            "username": username,
+            "first_boot": first_boot,
+            "version": asset_version,
+        }
 
     # -- API: stats / audit ------------------------------------------------- #
     @app.get("/api/stats")

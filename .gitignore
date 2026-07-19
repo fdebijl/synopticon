@@ -5,6 +5,8 @@ docker/models/
 data/
 models/
 dist/
+src/synopticon/web/dist/
+frontend/node_modules/
 .pytest_cache/
 har/
 
