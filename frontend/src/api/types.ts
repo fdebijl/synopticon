@@ -33,6 +33,82 @@ export interface ClusterStats {
 // queue_counts() -> { pending: {kind: n}, approved: {...}, ... }
 export type ReviewCounts = Record<string, Record<string, number>>
 
+// ---------------------------------------------------------------------------
+// Review queue (web/review/queries.py::load_review_items item shape). The six
+// kinds and every derived field the card renderer / filters rely on. The single
+// source of truth ReviewCard.vue renders — replacing the old Jinja macro +
+// review.js renderCard() duplication.
+export type ReviewKind =
+  | 'assign'
+  | 'low_confidence'
+  | 'reassign'
+  | 'merge'
+  | 'merge_named'
+  | 'new_person'
+
+export type ReviewDecision = 'approve' | 'reject'
+
+export interface ReviewPerson {
+  person_id?: number | string | null
+  name?: string | null
+  space?: string | null
+}
+
+// payload_json is loosely shaped — only the fields the UI reads are typed.
+export interface ReviewPayload {
+  person_id?: number | string | null
+  person_name?: string | null
+  from_person_id?: number | string | null
+  from_person_name?: string | null
+  from_similarity?: number | null
+  suggested_name?: string | null
+  person_a?: ReviewPerson | null
+  person_b?: ReviewPerson | null
+  space?: string | null
+  photo_id?: number | string | null
+  face_id?: number | null
+  face_ids?: number[]
+  [k: string]: unknown
+}
+
+export interface ReviewItem {
+  item_id: number
+  kind: ReviewKind | string
+  confidence: number | null
+  status: string
+  payload: ReviewPayload
+  crop: string | null
+  item_url: string | null
+  person_a_url: string | null
+  person_b_url: string | null
+  person_url: string | null
+  from_person_url: string | null
+  new_person_crops: (string | null)[]
+  merge_crops_a: string[]
+  merge_crops_b: string[]
+  unnamed_target: boolean
+  unnamed_merge: boolean
+  named_merge: boolean
+  target_crops: string[]
+  target_hidden: boolean
+  person_a_hidden: boolean
+  person_b_hidden: boolean
+}
+
+// Client-side augmentation: a session-local decision (null until acted on) drives
+// the decided/dimmed state and the "<kind> · <status>" footer without another
+// round-trip. `status` stays the server-loaded value.
+export interface ClientReviewItem extends ReviewItem {
+  decision: ReviewDecision | null
+}
+
+export interface ReviewItemsResponse {
+  items: ReviewItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
 export interface Stats {
   photos: Record<string, PhotoSpaceStats>
   faces: number
