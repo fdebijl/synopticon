@@ -16,12 +16,24 @@ RUN uv sync --frozen --no-install-project --no-dev --extra "${ORT_EXTRA}" --extr
 COPY . .
 RUN uv sync --frozen --no-dev --extra "${ORT_EXTRA}" --extra review --extra faiss
 
+# Frontend build stage: compiles the Vue 3 SPA. `npm run build` runs
+# `vue-tsc -b && vite build`; Vite's outDir is `../src/synopticon/web/dist`
+# relative to frontend/, so WORKDIR must be /app/frontend for the bundle to land
+# at /app/src/synopticon/web/dist (copied into the runtime stages below).
+FROM node:22-alpine AS frontend
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.11-slim-bookworm AS cpu
 # libgl/libglib needed by opencv-python-headless's transitive loaders on some distros
 RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/src /app/src
+COPY --from=frontend /app/src/synopticon/web/dist /app/src/synopticon/web/dist
 COPY --from=builder /app/scripts /app/scripts
 ENV PATH="/opt/venv/bin:$PATH" \
     SYNOPTICON_STORAGE__DATA_DIR=/data \
@@ -41,6 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/src /app/src
+COPY --from=frontend /app/src/synopticon/web/dist /app/src/synopticon/web/dist
 COPY --from=builder /app/scripts /app/scripts
 ENV PATH="/opt/venv/bin:$PATH" \
     SYNOPTICON_STORAGE__DATA_DIR=/data \

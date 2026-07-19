@@ -45,7 +45,6 @@ restore = [
 review = [
     "fastapi>=0.111",
     "uvicorn>=0.29",
-    "python-multipart>=0.0.9",
     "tomlkit>=0.12",
 ]
 faiss = ["faiss-cpu>=1.8"]
@@ -78,6 +77,11 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/synopticon"]
+# The Vue SPA is built into src/synopticon/web/dist (gitignored). Hatchling
+# excludes VCS-ignored files by default, so without this the wheel would ship
+# without the frontend. Build the SPA (cd frontend && npm run build) before
+# building the wheel.
+artifacts = ["src/synopticon/web/dist"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

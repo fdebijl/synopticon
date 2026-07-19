@@ -1,0 +1,23 @@
+# The image builds the SPA in its own Node stage and installs Python deps from
+# pyproject/uv.lock -- none of the host-local build output or state is needed by
+# the builder's `COPY . .`, and copying it only busts the layer cache.
+.git
+.venv
+frontend/node_modules
+frontend/.vite
+frontend/*.tsbuildinfo
+# dist is produced by the frontend build stage, not copied from the host.
+src/synopticon/web/dist
+data
+models
+docker/data
+docker/models
+har
+__pycache__
+*.pyc
+.pytest_cache
+*.db
+*.db-wal
+*.db-shm
+*.log
+.env
