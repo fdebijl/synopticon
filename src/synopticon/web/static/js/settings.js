@@ -151,6 +151,7 @@
       desc.textContent = propSchema.description;
       control.appendChild(desc);
     }
+
     if (envOverrides[dotted]) {
       var chip = document.createElement("span");
       chip.className = "env-chip";
@@ -158,6 +159,7 @@
       chip.textContent = "overridden by " + varName + " — saved value has no effect";
       control.appendChild(chip);
     }
+    
     var errSlot = document.createElement("div");
     errSlot.className = "field-error";
     control.appendChild(errSlot);
