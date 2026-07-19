@@ -80,7 +80,9 @@ def _seed_user(settings, username="admin", password="password123"):
 
 
 def _login(client, username="admin", password="password123"):
-    return client.post("/login", data={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 # --------------------------------------------------------------------------- #

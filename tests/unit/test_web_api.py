@@ -50,9 +50,9 @@ def _trivial_builder(argv):
 
 
 @pytest.fixture
-def app(settings, tmp_path):
+def app(settings, tmp_path, stub_dist):
     jm = JobManager(tmp_path / "jobs", command_builder=_trivial_builder)
-    application = create_app(settings, job_manager=jm)
+    application = create_app(settings, job_manager=jm, dist_dir=stub_dist)
     yield application
     jm.shutdown()
 
@@ -79,7 +79,7 @@ def _add_item(db, kind, payload, confidence=None, status="pending"):
 
 def _login(client, username="admin", password="password123"):
     return client.post(
-        "/login", data={"username": username, "password": password}
+        "/api/auth/login", json={"username": username, "password": password}
     )
 
 
@@ -126,16 +126,16 @@ def test_create_account_requires_fields(client):
 # --------------------------------------------------------------------------- #
 # Login / logout / rate limit
 # --------------------------------------------------------------------------- #
-def test_login_success_and_logout(app, db):
+def test_login_success_page_shell_and_logout(app, db):
     _seed_user(db)
     with TestClient(app, follow_redirects=False) as c:
-        r = _login(c)
-        assert r.status_code == 302
-        assert r.headers["location"] == "/"
-        # authenticated pages work
-        assert c.get("/review").status_code == 200
-        # logout clears the session
-        assert c.post("/logout").status_code == 302
+        assert _login(c).status_code == 200
+        # authenticated page requests get the SPA shell
+        r = c.get("/review")
+        assert r.status_code == 200
+        assert '<div id="app">' in r.text
+        # logout clears the session -> pages redirect to login again
+        assert c.post("/api/auth/logout", json={}).status_code == 200
         assert c.get("/", follow_redirects=False).status_code == 302
 
 
@@ -318,43 +318,94 @@ def test_review_bulk_and_name(app, db):
 
 
 # --------------------------------------------------------------------------- #
-# Review page — Grid / Focus layout toggle (?view=)
+# SPA serving: catch-all, dist root files, traversal, missing dist, pre-flight
 # --------------------------------------------------------------------------- #
-def test_review_page_defaults_to_grid(app, db):
+def test_authenticated_page_serves_spa_shell(app, db):
     _seed_user(db)
     with TestClient(app, follow_redirects=False) as c:
         _login(c)
-        r = c.get("/review")
-        assert r.status_code == 200
-        body = r.text
-        assert "view-focus" not in body
-        assert 'data-view="grid" aria-pressed="true"' in body
-        assert 'view: "grid"' in body
+        # any SPA route (review, apply, /jobs/x, deep links) gets index.html
+        for path in ("/", "/review?view=focus", "/apply", "/jobs/abc"):
+            r = c.get(path)
+            assert r.status_code == 200, path
+            assert '<div id="app">' in r.text, path
 
 
-def test_review_page_focus_view(app, db):
+def test_unknown_api_path_returns_json_404_not_html(app, db):
     _seed_user(db)
     with TestClient(app, follow_redirects=False) as c:
         _login(c)
-        r = c.get("/review?view=focus")
+        r = c.get("/api/definitely-not-an-endpoint")
+        assert r.status_code == 404
+        assert r.headers["content-type"].startswith("application/json")
+        assert r.json() == {"error": "not found"}
+
+
+def test_dist_root_file_served_unauthenticated(app, db):
+    # favicon.ico is a dist-root file — public like /static was (login needs it).
+    _seed_user(db)  # users exist, but this client has no session
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.get("/favicon.ico")
         assert r.status_code == 200
-        body = r.text
-        assert "view-focus" in body
-        assert 'id="focus-view"' in body
-        assert 'data-view="focus" aria-pressed="true"' in body
-        assert 'view: "focus"' in body
 
 
-def test_review_page_bogus_view_sanitized_to_grid(app, db):
+def test_hashed_asset_served_unauthenticated(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.get("/assets/index-stub.js")
+        assert r.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["/../pyproject.toml", "/..%2f..%2fpyproject.toml", "/assets/../../pyproject.toml"],
+)
+def test_traversal_attempt_never_escapes_dist(app, db, attack):
     _seed_user(db)
     with TestClient(app, follow_redirects=False) as c:
         _login(c)
-        r = c.get("/review?view=bogus")
-        assert r.status_code == 200
-        body = r.text
-        assert "view-focus" not in body
-        assert 'data-view="grid" aria-pressed="true"' in body
-        assert 'view: "grid"' in body
+        r = c.get(attack)
+        # Never leaks a repo file: either the shell (path collapsed inside dist)
+        # or a redirect/404 — but never 200 with pyproject contents.
+        assert "[project]" not in r.text
+        assert "[build-system]" not in r.text
+
+
+def test_missing_dist_returns_503_with_hint(settings, tmp_path):
+    jm = JobManager(tmp_path / "jobs2", command_builder=_trivial_builder)
+    try:
+        no_dist = create_app(settings, job_manager=jm, dist_dir=tmp_path / "absent")
+        c = store.connect(settings.storage.db_path)
+        try:
+            auth.create_user(c, "admin", "password123")
+        finally:
+            c.close()
+        with TestClient(no_dist, follow_redirects=False) as client:
+            client.post(
+                "/api/auth/login", json={"username": "admin", "password": "password123"}
+            )
+            r = client.get("/")
+            assert r.status_code == 503
+            body = r.json()
+            assert body["error"] == "frontend not built"
+            assert "npm run build" in body["hint"]
+    finally:
+        jm.shutdown()
+
+
+def test_serve_preflight_raises_when_dist_missing(tmp_path):
+    from synopticon.web.app import _check_dist_built
+
+    with pytest.raises(SystemExit) as exc:
+        _check_dist_built(tmp_path / "no-such-dist")
+    assert "npm run build" in str(exc.value)
+
+
+def test_serve_preflight_passes_with_built_dist(stub_dist):
+    from synopticon.web.app import _check_dist_built
+
+    # a present index.html must NOT raise
+    _check_dist_built(stub_dist)
 
 
 # --------------------------------------------------------------------------- #

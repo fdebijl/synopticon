@@ -1,6 +1,6 @@
 """The Synopticon web GUI: ``create_app(settings)`` + ``serve(...)``.
 
-fastapi/uvicorn/jinja2 are imported lazily behind :func:`_require_fastapi` so the
+fastapi/uvicorn are imported lazily behind :func:`_require_fastapi` so the
 package (and the ``synopticon`` CLI) imports without the ``[review]`` extra. The
 app is a thin FastAPI wrapper over the framework-free building blocks landed in
 Wave 1:
@@ -17,16 +17,20 @@ Auth model (see the web-GUI plan §7):
   https — honoured behind a reverse proxy via uvicorn ``--proxy-headers``).
 * ``Authorization: Bearer syn_...`` API-key path for ``/api`` (immune to CSRF by
   construction — no cookie involved).
-* First boot (no users yet): only ``/setup`` pages, ``/api/setup/*`` and
+* First boot (no users yet): only ``/setup``, ``/api/setup/*`` and
   ``/api/auth/create-account`` are reachable; everything else 302s to ``/setup``.
 * Unauthenticated page -> 302 ``/login``; unauthenticated ``/api`` -> 401 JSON.
 * CSRF hardening: mutating ``/api`` endpoints require ``Content-Type:
-  application/json`` (the login/logout form endpoints live outside ``/api``).
+  application/json`` (the JSON login/logout endpoints live under ``/api`` and
+  pass that gate naturally).
 
-Static-asset policy: ``/static`` (our own css/js, no user data) is served
-*publicly* so the login and setup pages can style themselves before a session
-exists. ``/crops`` are personal photos and require a session like every other
-page. This is the simplest correct split; revisit if static ever holds user data.
+SPA serving: the frontend is a Vue 3 SPA built by Vite into ``web/dist``
+(``index.html`` + content-hashed ``assets/*`` + favicons/manifest at the dist
+root). ``/assets`` is served *publicly* (hashed, no user data) so the login and
+setup views can load their bundle before a session exists; the dist-root files
+(favicons, ``site.webmanifest``, ``img/``) are likewise public. Everything else
+routes through the catch-all, which returns ``index.html`` to authenticated page
+requests. ``/crops`` are personal photos and require a session like every page.
 """
 
 import json
@@ -40,8 +44,7 @@ from urllib.parse import quote
 from ..config import Settings
 from ..db import store
 
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
-_STATIC_DIR = Path(__file__).parent / "static"
+_DIST_DIR = Path(__file__).parent / "dist"
 
 SESSION_COOKIE = "synopticon_session"
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -51,7 +54,6 @@ _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"}
 def _require_fastapi():
     try:
         import fastapi  # noqa: F401
-        import jinja2  # noqa: F401
         import uvicorn  # noqa: F401
     except ImportError as exc:  # pragma: no cover - trivial guard
         raise ImportError(
@@ -59,7 +61,7 @@ def _require_fastapi():
         ) from exc
 
 
-def _asset_version() -> str:
+def _package_version() -> str:
     try:
         from importlib.metadata import version
 
@@ -68,22 +70,43 @@ def _asset_version() -> str:
         return "dev"
 
 
-def create_app(settings: Settings, *, job_manager: Any | None = None):
+def _check_dist_built(dist_dir: Path) -> None:
+    """Fail fast (``SystemExit``) if the SPA bundle is missing.
+
+    Called by :func:`serve`; the API-only tests bypass it via the ``dist_dir``
+    seam + the 503 catch-all fallback, so pytest never needs a built bundle.
+    """
+    if not (dist_dir / "index.html").is_file():
+        raise SystemExit(
+            "The web GUI frontend is not built. Build the Docker image, or run:\n"
+            "  cd frontend && npm ci && npm run build\n"
+            f"(expected {dist_dir / 'index.html'})"
+        )
+
+
+def create_app(
+    settings: Settings,
+    *,
+    job_manager: Any | None = None,
+    dist_dir: Path | None = None,
+):
     """Build the web GUI FastAPI app. Requires the [review] extra.
 
     ``job_manager`` is an injection seam for tests (pass a :class:`JobManager`
     built with fake specs / a stub command builder so no real subprocess runs).
+    ``dist_dir`` overrides the built-SPA location (defaults to :data:`_DIST_DIR`)
+    so tests can inject a stub bundle — ``create_app`` works even when the dir is
+    absent (the catch-all then returns a 503).
     """
     _require_fastapi()
     from fastapi import FastAPI, Request
     from fastapi.responses import (
-        HTMLResponse,
+        FileResponse,
         JSONResponse,
         RedirectResponse,
         StreamingResponse,
     )
     from fastapi.staticfiles import StaticFiles
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
 
     from . import auth
     from ..review import queries
@@ -104,11 +127,9 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
     jobs_dir = Path(settings.storage.data_dir) / "jobs"
     jm = job_manager if job_manager is not None else JobManager(jobs_dir)
 
-    env = Environment(
-        loader=FileSystemLoader(str(_TEMPLATE_DIR)),
-        autoescape=select_autoescape(["html", "j2"]),
-    )
-    asset_version = _asset_version()
+    dist = Path(dist_dir) if dist_dir is not None else _DIST_DIR
+    dist_root = dist.resolve()
+    app_version = _package_version()
     limiter = auth.LoginRateLimiter()
 
     @asynccontextmanager
@@ -117,12 +138,30 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
         jm.shutdown()
 
     app = FastAPI(title="Synopticon", lifespan=lifespan)
-    # /static public (own assets); /crops guarded by the auth middleware.
-    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+    # /assets public (hashed SPA bundle, no user data); mount only if the built
+    # dist exists so create_app works without a build. /crops is guarded by auth.
+    assets_dir = dist / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
     app.mount("/crops", StaticFiles(directory=str(crops_dir)), name="crops")
 
     def conn() -> sqlite3.Connection:
         return store.connect(db_path)
+
+    def _resolve_dist_file(path: str) -> Path | None:
+        """Resolve ``path`` to a real file inside the dist root, or ``None``.
+
+        Hardened against traversal: the candidate is ``resolve()``d and must stay
+        under ``dist_root``. Returns ``None`` when the dist is absent, the path is
+        empty/``/``, escapes the root, or does not name an existing file.
+        """
+        rel = path.lstrip("/")
+        if not rel:
+            return None
+        candidate = (dist / rel).resolve()
+        if not candidate.is_relative_to(dist_root):
+            return None
+        return candidate if candidate.is_file() else None
 
     # -- auth helpers ------------------------------------------------------- #
     def _authenticate(request: Request, c: sqlite3.Connection):
@@ -143,8 +182,14 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
         method = request.method
-        # Own css/js: public so /login and /setup can style themselves.
-        if path.startswith("/static/"):
+        # Hashed SPA bundle: public so /login and /setup can load before a
+        # session exists (mirrors the old /static bypass).
+        if path.startswith("/assets/"):
+            return await call_next(request)
+        # Dist-root files (favicons, site.webmanifest, img/…) are public too —
+        # the login view needs them unauthenticated. index.html is NOT bypassed:
+        # it follows the page auth rules below (only /login and /setup unauth'd).
+        if path != "/index.html" and _resolve_dist_file(path) is not None:
             return await call_next(request)
 
         c = conn()
@@ -184,8 +229,9 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
                 )
             return RedirectResponse("/setup", status_code=302)
 
-        # Users exist. Login/logout live outside the auth gate.
-        if path == "/login" or (path == "/logout" and method == "POST"):
+        # Users exist. /login serves the SPA shell without a session so the
+        # LoginView can render (its client-side guard handles the rest).
+        if path == "/login":
             return await call_next(request)
         # SPA auth endpoints reachable without a session: /api/auth/me reports
         # auth state (always 200), and the JSON login accepts credentials. Both
@@ -205,38 +251,7 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
             return RedirectResponse(f"/login?next={quote(path)}", status_code=302)
         return await call_next(request)
 
-    # -- rendering ---------------------------------------------------------- #
-    def _base_ctx(request: Request, active: str, title: str) -> dict:
-        pending = 0
-        username = None
-        c = conn()
-        try:
-            counts = queries.queue_counts(c)
-            pending = sum((counts.get("pending") or {}).values())
-            ident = getattr(request.state, "ident", None)
-            if ident and ident[0] == "user":
-                row = c.execute(
-                    "SELECT username FROM web_users WHERE id = ?", (ident[1],)
-                ).fetchone()
-                username = row["username"] if row else None
-        finally:
-            c.close()
-        running = [j for j in jm.list_jobs() if j["state"] in ("queued", "running")]
-        return {
-            "active": active,
-            "title": title,
-            "version": asset_version,
-            "pending_review": pending,
-            "username": username,
-            "running_job": running[0] if running else None,
-        }
-
-    def _safe_next(target: str | None) -> str:
-        """Only allow same-site relative redirects (defeat open-redirect via ?next)."""
-        if target and target.startswith("/") and not target.startswith("//"):
-            return target
-        return "/"
-
+    # -- auth helpers ------------------------------------------------------- #
     def _set_session_cookie(resp, token: str, request: Request) -> None:
         """Attach the session cookie (HttpOnly, SameSite=Lax, 30d).
 
@@ -253,147 +268,7 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
             path="/",
         )
 
-    def render(name: str, request: Request, active: str, title: str, **ctx):
-        base = _base_ctx(request, active, title)
-        base.update(ctx)
-        return HTMLResponse(env.get_template(name).render(**base))
-
-    # -- pages -------------------------------------------------------------- #
-    @app.get("/", response_class=HTMLResponse)
-    def page_dashboard(request: Request):
-        from .. import audit
-
-        c = conn()
-        try:
-            stats = gather_stats(c, settings)
-            audit_rows = [dict(r) for r in audit.tail(c, limit=20)]
-        finally:
-            c.close()
-        synced = sum(
-            int(p.get("synced", 0)) for p in (stats.get("photos") or {}).values()
-        )
-        empty = synced == 0 and int(stats.get("faces", 0)) == 0
-        return render(
-            "index.html.j2",
-            request,
-            "dashboard",
-            "Dashboard",
-            stats=stats,
-            audit=audit_rows,
-            empty=empty,
-        )
-
-    @app.get("/pipeline", response_class=HTMLResponse)
-    def page_pipeline(request: Request):
-        return render("pipeline.html.j2", request, "pipeline", "Pipeline")
-
-    @app.get("/review", response_class=HTMLResponse)
-    def page_review(
-        request: Request, kind: str = "", status: str = "pending", view: str = "grid"
-    ):
-        first_page = 100
-        # Sanitize the view param: only "grid" or "focus" are meaningful; anything
-        # else (including a shared link with a stale value) falls back to grid.
-        view = view if view == "focus" else "grid"
-        c = conn()
-        try:
-            items = queries.load_review_items(
-                c, settings, kind=kind, status=status, limit=first_page, offset=0
-            )
-            total = queries.count_review_items(c, kind=kind, status=status)
-        finally:
-            c.close()
-        return render(
-            "review.html.j2",
-            request,
-            "review",
-            "Review",
-            kind=kind,
-            status=status,
-            view=view,
-            items=items,
-            total=total,
-            page_size=first_page,
-        )
-
-    @app.get("/apply", response_class=HTMLResponse)
-    def page_apply(request: Request):
-        return render("apply.html.j2", request, "apply", "Apply")
-
-    @app.get("/maintenance", response_class=HTMLResponse)
-    def page_maintenance(request: Request):
-        return render("maintenance.html.j2", request, "maintenance", "Maintenance")
-
-    @app.get("/settings", response_class=HTMLResponse)
-    def page_settings(request: Request):
-        return render("settings.html.j2", request, "settings", "Settings")
-
-    @app.get("/setup", response_class=HTMLResponse)
-    def page_setup(request: Request):
-        return render(
-            "setup.html.j2",
-            request,
-            "setup",
-            "Setup",
-            first_boot=getattr(request.state, "first_boot", False),
-        )
-
-    @app.get("/jobs/{job_id}", response_class=HTMLResponse)
-    def page_job(request: Request, job_id: str):
-        return render("job.html.j2", request, "", "Job", job_id=job_id)
-
-    # -- auth: login / logout / create-account ------------------------------ #
-    @app.get("/login", response_class=HTMLResponse)
-    def page_login(request: Request, next: str = "/"):
-        next = _safe_next(next)
-        if getattr(request.state, "ident", None) is not None:
-            return RedirectResponse(next, status_code=302)
-        return render("login.html.j2", request, "", "Sign in", next=next, error=None)
-
-    @app.post("/login")
-    async def do_login(request: Request):
-        form = await request.form()
-        username = (form.get("username") or "").strip()
-        password = form.get("password") or ""
-        next_url = _safe_next(form.get("next"))
-        ip = request.client.host if request.client else "?"
-
-        def login_error(msg: str, code: int):
-            base = _base_ctx(request, "", "Sign in")
-            base.update(next=next_url, error=msg)
-            return HTMLResponse(
-                env.get_template("login.html.j2").render(**base), status_code=code
-            )
-
-        if not limiter.check(ip, username):
-            return login_error("Too many attempts — try again shortly.", 429)
-        c = conn()
-        try:
-            uid = auth.verify_password(c, username, password)
-            if uid is None:
-                limiter.record_failure(ip, username)
-                return login_error("Invalid username or password.", 401)
-            limiter.record_success(ip, username)
-            token = auth.create_session(c, uid)
-        finally:
-            c.close()
-        resp = RedirectResponse(next_url or "/", status_code=302)
-        _set_session_cookie(resp, token, request)
-        return resp
-
-    @app.post("/logout")
-    def do_logout(request: Request):
-        token = request.cookies.get(SESSION_COOKIE)
-        if token:
-            c = conn()
-            try:
-                auth.delete_session(c, token)
-            finally:
-                c.close()
-        resp = RedirectResponse("/login", status_code=302)
-        resp.delete_cookie(SESSION_COOKIE, path="/")
-        return resp
-
+    # -- auth: create-account / JSON login / logout / me (SPA) -------------- #
     @app.post("/api/auth/create-account")
     async def api_create_account(request: Request):
         # Reachable only during first boot (middleware blocks it afterwards).
@@ -481,7 +356,7 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
             "authenticated": authenticated,
             "username": username,
             "first_boot": first_boot,
-            "version": asset_version,
+            "version": app_version,
         }
 
     # -- API: stats / audit ------------------------------------------------- #
@@ -704,6 +579,34 @@ def create_app(settings: Settings, *, job_manager: Any | None = None):
 
     register_config_routes(app, settings, conn, jm)
 
+    # -- SPA shell (catch-all, registered LAST) ----------------------------- #
+    @app.get("/{path:path}")
+    def spa_catch_all(request: Request, path: str):
+        """Serve the built Vue SPA.
+
+        Ordering matters: every real API/mount/route is registered above, so
+        this only fires for unmatched paths. An unknown ``/api/...`` path must
+        never fall through to ``index.html`` (a typo'd API call gets JSON 404,
+        not HTML). Otherwise a real dist file (favicon, manifest, img/…) is
+        served directly, else the SPA shell; a missing bundle is a 503 so the
+        API-only test suite runs without a Node build.
+        """
+        if path.startswith("api/"):
+            return JSONResponse({"error": "not found"}, status_code=404)
+        real = _resolve_dist_file(path)
+        if real is not None:
+            return FileResponse(real)
+        index = dist / "index.html"
+        if index.is_file():
+            return FileResponse(index)
+        return JSONResponse(
+            {
+                "error": "frontend not built",
+                "hint": "cd frontend && npm ci && npm run build",
+            },
+            status_code=503,
+        )
+
     app.state.job_manager = jm
     return app
 
@@ -718,6 +621,7 @@ def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8686) -> None
     _require_fastapi()
     import uvicorn
 
+    _check_dist_built(_DIST_DIR)
     app = create_app(settings)
     uvicorn.run(
         app,

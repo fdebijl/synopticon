@@ -1,8 +1,10 @@
-"""Dashboard page render-smoke tests.
+"""Dashboard route serving tests.
 
-Authed GET / renders the stat-tiles container + pipeline strip on a seeded DB,
-and the empty-state CTA on a fresh DB. Hermetic (no NAS, stubbed job manager),
-mirroring the fixtures in test_web_api.py.
+The dashboard is now a Vue view (``DashboardView``) that fetches ``/api/stats``
++ ``/api/audit`` client-side — the server no longer renders stat tiles / the
+pipeline strip / an empty-state CTA. What the backend still owes here is: serve
+the SPA shell to an authenticated ``GET /`` and redirect an unauthenticated one
+to login. Hermetic (no NAS, stubbed job manager, injected stub dist).
 """
 
 from __future__ import annotations
@@ -42,9 +44,9 @@ def _trivial_builder(argv):
 
 
 @pytest.fixture
-def app(settings, tmp_path):
+def app(settings, tmp_path, stub_dist):
     jm = JobManager(tmp_path / "jobs", command_builder=_trivial_builder)
-    application = create_app(settings, job_manager=jm)
+    application = create_app(settings, job_manager=jm, dist_dir=stub_dist)
     yield application
     jm.shutdown()
 
@@ -53,53 +55,25 @@ def _seed_user(db, username="admin", password="password123"):
     return auth.create_user(db, username, password)
 
 
-def _seed_photos(db, space="personal", n=3):
-    for i in range(n):
-        db.execute(
-            "INSERT INTO photos (id, space, synced_at, deleted) VALUES (?,?,?,0)",
-            (i + 1, space, store.now()),
-        )
-    db.commit()
-
-
 def _login(client):
-    return client.post("/login", data={"username": "admin", "password": "password123"})
+    return client.post(
+        "/api/auth/login", json={"username": "admin", "password": "password123"}
+    )
 
 
-def test_dashboard_empty_state_on_fresh_db(app, db):
+def test_dashboard_serves_spa_shell_when_authenticated(app, db):
     _seed_user(db)
     with TestClient(app, follow_redirects=False) as c:
         _login(c)
         r = c.get("/")
         assert r.status_code == 200
-        # empty-DB CTA is rendered; the tiles/strip containers are not.
-        assert 'id="dash-empty"' in r.text
-        assert "Run your first sync" in r.text
-        assert 'id="stat-tiles"' not in r.text
+        # the SPA shell is served; the Vue app mounts into #app and fetches data.
+        assert '<div id="app">' in r.text
 
 
-def test_dashboard_tiles_and_strip_on_seeded_db(app, db):
-    _seed_user(db)
-    _seed_photos(db, "personal", 3)
+def test_dashboard_redirects_to_login_when_unauthenticated(app, db):
+    _seed_user(db)  # users exist, no session on this client
     with TestClient(app, follow_redirects=False) as c:
-        _login(c)
         r = c.get("/")
-        assert r.status_code == 200
-        # stat tiles + pipeline strip containers are rendered; no empty CTA.
-        assert 'id="stat-tiles"' in r.text
-        assert 'id="pipeline-strip"' in r.text
-        assert 'id="dash-empty"' not in r.text
-        # dashboard.js and its embedded initial stats are wired up.
-        assert "dashboard.js" in r.text
-        assert "SYN_STATS" in r.text
-
-
-def test_dashboard_embeds_audit_and_stats_json(app, db):
-    _seed_user(db)
-    _seed_photos(db, "personal", 1)
-    with TestClient(app, follow_redirects=False) as c:
-        _login(c)
-        r = c.get("/")
-        assert r.status_code == 200
-        assert "window.SYN_AUDIT" in r.text
-        assert "window.SYN_RUNNING" in r.text
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/login")
