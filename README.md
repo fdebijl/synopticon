@@ -1,14 +1,10 @@
-# Synopticon
+![Synopticon logo](assets/Synopticon%20Hero.png)
 
-A quality-first **toolkit for Synology Photos** — a set of standalone, batch-oriented utilities that run alongside your library and take on the jobs DSM does poorly or doesn't do at all. They share one local SQLite cache, one hardened Synology API layer, and one safety model: **read-only toward the NAS until you explicitly opt into a write**, every write audit-logged and (where possible) reversible, and runtime treated as a non-issue — batch runs of hours or days are expected and fully resumable.
-
-It runs anywhere Docker or Python runs (a homelab box is ideal; running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available.
+A quality-first **toolkit for Synology Photos**, consisting of a set of standalone, batch-oriented utilities that run alongside your library and take on the jobs DSM currently does poorly or doesn't do at all. They share one local SQLite cache, one hardened Synology API layer, and one safety model: **read-only toward the NAS until you explicitly want to make a change**, every write is logged and (where possible) reversible, and the operations can be ran on any hardware, even very slow machines - batch runs of hours or days are expected and fully resumable. Synopticon runs anywhere Docker or Python runs (a homelab box is ideal; running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available.
 
 ## What's in the box
 
-Two tools ship today, with more planned:
-
-- **Face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
+- **Enhanced face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
 - **Deduplication** — finds duplicate photos (byte-identical *or* visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API (dry-run by default).
 
 Both build on the same foundation, so new tools slot in without new plumbing: a resumable NAS sync into SQLite, a rate-limited API client that discovers endpoint versions at runtime, and a dry-run-first write path.

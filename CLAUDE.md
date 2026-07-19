@@ -111,3 +111,4 @@ The GUI is a **Vue 3 + TypeScript SPA** (Vite) served by a lazy-imported FastAPI
 - New CLI commands go in `cli.py` with lazy imports inside the command function (keeps CLI startup fast), and must also be documented in README.md.
 - The README is the FOSS onboarding path — keep its quickstart honest when changing CLI, config, or Docker layout.
 - When adding new commands or when changing the data model, do a pass on CLAUDE.md as well to ensure the content is up to date
+- Don't add comments unless you're doing something arcane
