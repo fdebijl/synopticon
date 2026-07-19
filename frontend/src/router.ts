@@ -85,8 +85,10 @@ router.beforeEach(async (to) => {
   if (!me.authenticated) {
     return to.name === 'login' ? true : { name: 'login', query: { next: to.fullPath } }
   }
-  // Authenticated: keep users out of the auth/setup shells.
-  if (to.name === 'login' || to.name === 'setup') {
+  // Authenticated: keep users out of the login shell. /setup stays reachable —
+  // the old GET /setup page was a normal authenticated route too, so re-running
+  // the wizard while signed in must keep working (its account step self-skips).
+  if (to.name === 'login') {
     return { path: '/' }
   }
   return true

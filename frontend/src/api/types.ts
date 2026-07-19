@@ -176,6 +176,56 @@ export interface ApiKey {
   revoked: boolean
 }
 
+// GET /api/setup/status (web/setup_routes.py::_status). Drives the wizard's
+// resume logic and prefills the NAS + storage steps (no secrets).
+export interface SetupStatus {
+  config_file: string | null
+  nas_configured: boolean
+  models_ready: boolean
+  models_missing: string[]
+  db_exists: boolean
+  photos_synced: number
+  extract_done: number
+  cluster_runs: number
+  account_created: boolean
+  nas: {
+    url: string
+    account: string
+    verify_tls: boolean
+    spaces: string[]
+  }
+  storage: {
+    data_dir: string
+    models_dir: string
+    keep_originals: boolean
+    originals_cache_gb: number
+  }
+}
+
+// POST /api/setup/test-connection (syno/probe.py::ProbeResult.to_dict).
+export interface ProbeStep {
+  name: string
+  ok: boolean
+  detail: string
+}
+export interface ProbeResult {
+  ok: boolean
+  steps: ProbeStep[]
+  error: string | null
+  [k: string]: unknown
+}
+
+// POST /api/setup/check-storage (web/setup_routes.py::_check_storage).
+export interface StorageDir {
+  ok: boolean
+  detail: string
+  free_gb: number | null
+}
+export interface StorageCheckResult {
+  ok: boolean
+  dirs: Record<string, StorageDir>
+}
+
 export type JobEventKind =
   | 'phase'
   | 'progress'
