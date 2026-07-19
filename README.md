@@ -1,14 +1,10 @@
-# Synopticon
+![Synopticon logo](assets/Synopticon%20Hero.png)
 
-A quality-first **toolkit for Synology Photos** — a set of standalone, batch-oriented utilities that run alongside your library and take on the jobs DSM does poorly or doesn't do at all. They share one local SQLite cache, one hardened Synology API layer, and one safety model: **read-only toward the NAS until you explicitly opt into a write**, every write audit-logged and (where possible) reversible, and runtime treated as a non-issue — batch runs of hours or days are expected and fully resumable.
-
-It runs anywhere Docker or Python runs (a homelab box is ideal; running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available.
+A quality-first **toolkit for Synology Photos**, consisting of a set of standalone, batch-oriented utilities that run alongside your library and take on the jobs DSM currently does poorly or doesn't do at all. They share one local SQLite cache, one hardened Synology API layer, and one safety model: **read-only toward the NAS until you explicitly want to make a change**, every write is logged and (where possible) reversible, and the operations can be ran on any hardware, even very slow machines - batch runs of hours or days are expected and fully resumable. Synopticon runs anywhere Docker or Python runs (a homelab box is ideal; running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available.
 
 ## What's in the box
 
-Two tools ship today, with more planned:
-
-- **Face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
+- **Enhanced face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
 - **Deduplication** — finds duplicate photos (byte-identical *or* visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API (dry-run by default).
 
 Both build on the same foundation, so new tools slot in without new plumbing: a resumable NAS sync into SQLite, a rate-limited API client that discovers endpoint versions at runtime, and a dry-run-first write path.
@@ -68,7 +64,7 @@ docker compose run synopticon dedupe --exact     # dry-run; add --apply to delet
 
 **Where state lives:** everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
 
-Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12).
+Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12). The browser GUI additionally needs the frontend built once — `cd frontend && npm ci && npm run build` (Node 22+); see [Web GUI](#web-gui). The CLI itself needs no Node.
 
 **Prefer a GUI?** `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
 
@@ -76,11 +72,23 @@ Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU ac
 
 `synopticon web` serves a full browser GUI over the whole lifecycle — first-run setup, editing `config.toml`, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections — styled to sit comfortably next to Synology Photos. It's the recommended way to drive Synopticon day to day; the CLI stays fully supported for scripting and headless runs.
 
+The GUI is a Vue 3 single-page app served by the backend. **Docker is the recommended path — the image builds the frontend itself, no Node needed on the host:**
+
 ```bash
-uv sync --extra cpu --extra review --extra faiss   # the review extra ships every GUI dep (fastapi, uvicorn, jinja2, tomlkit)
-uv run synopticon web                               # http://127.0.0.1:8686
-# Docker: docker compose run --service-ports synopticon web
+docker compose run --service-ports synopticon web   # http://127.0.0.1:8686
 ```
+
+From a source checkout you build the SPA once (Node 22+), then the same `uv run synopticon web` serves it:
+
+```bash
+uv sync --extra cpu --extra review --extra faiss   # backend GUI deps (fastapi, uvicorn, tomlkit)
+cd frontend && npm ci && npm run build             # builds the SPA into src/synopticon/web/dist (Node 22+)
+cd .. && uv run synopticon web                     # http://127.0.0.1:8686
+```
+
+If you start `synopticon web` without a built frontend it exits with instructions rather than serving a blank page — run the `npm run build` step above (or use Docker).
+
+**Contributing to the GUI?** Run the two dev servers side by side: `uv run synopticon web` (backend on :8686) and, in another terminal, `cd frontend && npm run dev` (Vite on :5173, hot-reload). Vite proxies `/api` and `/crops` to the backend, so open the app at `http://127.0.0.1:5173` and the session cookie works same-origin. The built assets are gitignored — never commit `src/synopticon/web/dist`.
 
 | Option | Default | Description |
 |---|---|---|
@@ -390,9 +398,10 @@ Works against any NAS running Synology Photos (DSM 7.x). API versions are discov
 ```bash
 uv sync --extra cpu --extra review --extra faiss   # or --extra gpu instead of cpu
 uv run pytest            # unit tests; fully mocked, never touch a NAS
+cd frontend && npm ci && npm run build   # GUI only: build the Vue SPA (Node 22+); npm run dev for hot-reload
 ```
 
-(`--all-extras` no longer works: the `cpu`/`gpu` extras are mutually exclusive, so pick one explicitly.)
+(`--all-extras` no longer works: the `cpu`/`gpu` extras are mutually exclusive, so pick one explicitly.) The Python test suite needs no Node — the frontend build (typechecked by `vue-tsc`) runs as its own CI job. See [Web GUI](#web-gui) for the two-server dev loop.
 
 Layout: `syno/` (API client + write-back) · `sync/` (extraction/caching + content hashing) · `pipeline/` (detect/align/embed) · `cluster/` (graph, Chinese Whispers, cross-reference) · `dedupe.py` (hash-based duplicate detection) · `eval/` (hold-out tuning) · `review/` (report + UI). The `cluster/` and `dedupe` layers deliberately import nothing from `syno/`/`pipeline/` — clustering and duplicate *detection* can never touch the network; only the write-back halves do.
 

@@ -5,6 +5,10 @@ docker/models/
 data/
 models/
 dist/
+src/synopticon/web/dist/
+frontend/node_modules/
+frontend/*.tsbuildinfo
+frontend/.vite/
 .pytest_cache/
 har/
 

@@ -32,3 +32,25 @@ jobs:
 
       - name: Run test suite
         run: uv run --extra cpu --extra review --extra faiss pytest tests/unit/ -q
+
+  # Builds the Vue SPA: `npm run build` runs `vue-tsc -b` (strict typecheck) then
+  # `vite build`. Independent of the Node-free `unit` job.
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend

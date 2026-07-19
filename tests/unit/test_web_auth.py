@@ -267,3 +267,156 @@ def test_rate_limiter_isolated_per_pair(conn):
     assert rl.check("ip1", "alice") is False
     assert rl.check("ip2", "alice") is True
     assert rl.check("ip1", "bob") is True
+
+
+# -- JSON auth endpoints (SPA): /api/auth/{login,logout,me} ------------------
+#
+# These exercise the FastAPI app end-to-end (fully hermetic — no NAS, no real
+# subprocesses; jobs stubbed via the command_builder seam).
+
+fastapi = pytest.importorskip("fastapi")
+import sys  # noqa: E402
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from synopticon.config import load_settings  # noqa: E402
+from synopticon.web.app import create_app  # noqa: E402
+from synopticon.web.jobs import JobManager  # noqa: E402
+
+
+def _trivial_builder(argv):
+    return [sys.executable, "-c", "import sys; sys.exit(0)"]
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return load_settings(
+        storage={"data_dir": tmp_path},
+        nas={"url": "https://nas.test", "account": "svc", "password": "pw"},
+    )
+
+
+@pytest.fixture
+def db(settings):
+    c = store.connect(settings.storage.db_path)
+    yield c
+    c.close()
+
+
+@pytest.fixture
+def app(settings, tmp_path):
+    jm = JobManager(tmp_path / "jobs", command_builder=_trivial_builder)
+    application = create_app(settings, job_manager=jm)
+    yield application
+    jm.shutdown()
+
+
+def _seed_user(db, username="admin", password="password123"):
+    return auth.create_user(db, username, password)
+
+
+def test_api_login_success_sets_cookie_and_authenticates(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.post(
+            "/api/auth/login", json={"username": "admin", "password": "password123"}
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "username": "admin"}
+        assert "synopticon_session" in r.cookies
+        # the session cookie now authorizes a subsequent /api call
+        assert c.get("/api/stats").status_code == 200
+
+
+def test_api_login_wrong_password_401(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.post("/api/auth/login", json={"username": "admin", "password": "nope"})
+        assert r.status_code == 401
+        assert r.json()["error"]
+        # no session established
+        assert c.get("/api/stats").status_code == 401
+
+
+def test_api_login_rate_limited_429(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        assert (
+            c.post(
+                "/api/auth/login", json={"username": "admin", "password": "nope"}
+            ).status_code
+            == 401
+        )
+        # same (ip, user) is now locked out -> 429 without waiting
+        assert (
+            c.post(
+                "/api/auth/login", json={"username": "admin", "password": "nope"}
+            ).status_code
+            == 429
+        )
+
+
+def test_api_login_requires_json_content_type_415(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        # form-encoded body -> the CSRF Content-Type gate rejects it
+        r = c.post(
+            "/api/auth/login", data={"username": "admin", "password": "password123"}
+        )
+        assert r.status_code == 415
+        # and no session was created
+        assert c.get("/api/stats").status_code == 401
+
+
+def test_api_logout_clears_session(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        c.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        assert c.get("/api/stats").status_code == 200
+        # logout is a mutating /api call -> must carry the JSON content type
+        # (client.ts always does). A body-less call still sends {}.
+        r = c.post("/api/auth/logout", json={})
+        assert r.status_code == 200
+        assert r.json() == {"ok": True}
+        # session is gone -> API now 401
+        assert c.get("/api/stats").status_code == 401
+
+
+def test_api_me_unauthenticated_returns_200(app, db):
+    _seed_user(db)  # users exist, but no session on this client
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.get("/api/auth/me")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["authenticated"] is False
+        assert data["first_boot"] is False
+        assert data["username"] is None
+        assert data["version"]
+
+
+def test_api_me_authenticated_reports_username(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        c.post("/api/auth/login", json={"username": "admin", "password": "password123"})
+        data = c.get("/api/auth/me").json()
+        assert data["authenticated"] is True
+        assert data["username"] == "admin"
+        assert data["first_boot"] is False
+
+
+def test_api_me_first_boot_returns_200(app):
+    # No users seeded -> first boot. /api/auth/me is allowlisted in that branch.
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.get("/api/auth/me")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["first_boot"] is True
+        assert data["authenticated"] is False
+
+
+def test_api_login_blocked_during_first_boot(app):
+    # Login is NOT allowlisted during first boot; it 403s (setup required).
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.post("/api/auth/login", json={"username": "x", "password": "y"})
+        assert r.status_code == 403
+        assert r.json().get("setup") is True

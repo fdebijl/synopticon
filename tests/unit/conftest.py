@@ -34,6 +34,25 @@ def isolate_ambient_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def stub_dist(tmp_path):
+    """A minimal built-SPA dist for web tests (the ``create_app(dist_dir=...)``
+    seam). Holds ``index.html`` (the shell), a root file (favicon.ico) and a
+    hashed asset so the catch-all / mount / root-file paths can be exercised
+    without a real Node build."""
+    d = tmp_path / "dist"
+    (d / "assets").mkdir(parents=True)
+    (d / "index.html").write_text(
+        '<!doctype html><html><head><title>Synopticon</title></head>'
+        '<body><div id="app"></div>'
+        '<script type="module" src="/assets/index-stub.js"></script>'
+        "</body></html>"
+    )
+    (d / "favicon.ico").write_bytes(b"\x00\x00stub-favicon")
+    (d / "assets" / "index-stub.js").write_text("/* stub bundle */")
+    return d
+
+
+@pytest.fixture
 def tmp_settings(tmp_path):
     return load_settings(storage={"data_dir": tmp_path})
 

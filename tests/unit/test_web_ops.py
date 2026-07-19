@@ -50,9 +50,9 @@ def _trivial_builder(argv):
 
 
 @pytest.fixture
-def app(settings, tmp_path):
+def app(settings, tmp_path, stub_dist):
     jm = JobManager(tmp_path / "jobs", command_builder=_trivial_builder)
-    application = create_app(settings, job_manager=jm)
+    application = create_app(settings, job_manager=jm, dist_dir=stub_dist)
     yield application
     jm.shutdown()
 
@@ -68,7 +68,9 @@ def _seed_user(db, username="admin", password="password123"):
 
 
 def _login(client, username="admin", password="password123"):
-    return client.post("/login", data={"username": username, "password": password})
+    return client.post(
+        "/api/auth/login", json={"username": username, "password": password}
+    )
 
 
 def _add_item(db, kind, payload, confidence=None, status="pending"):
@@ -102,24 +104,17 @@ def _job_argv(client, job_id):
 
 
 # --------------------------------------------------------------------------- #
-# Pages render authed with their key affordances
+# Pages serve the SPA shell when authenticated (Vue Router owns the content).
+# The affordances themselves now live in the Vue views, not server templates.
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(
-    "path,needles",
-    [
-        ("/pipeline", ['data-cmd="sync"', 'data-cmd="recluster"', "Job history"]),
-        ("/apply", ["merge-named-dialog", "Preview (dry run)", "Apply to NAS"]),
-        ("/maintenance", ["Delete duplicates", "Clear review queue", "Reset local database"]),
-    ],
-)
-def test_pages_render_with_affordances(app, db, path, needles):
+@pytest.mark.parametrize("path", ["/pipeline", "/apply", "/maintenance"])
+def test_authed_pages_serve_spa_shell(app, db, path):
     _seed_user(db)
     with TestClient(app, follow_redirects=False) as c:
         _login(c)
         r = c.get(path)
         assert r.status_code == 200
-        for n in needles:
-            assert n in r.text, f"{n!r} missing from {path}"
+        assert '<div id="app">' in r.text
 
 
 # --------------------------------------------------------------------------- #
