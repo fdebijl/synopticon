@@ -297,6 +297,20 @@ body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
 .scroll-sentinel { height: 1px; }
 .end-note { text-align: center; padding: var(--sp-4); }
 
+/* Loading skeletons: placeholder cards/thumbs while a page of items is in
+   flight. Same .card chrome as real cards so the swap-in doesn't reflow. */
+.skeleton {
+  background: var(--bg-sunken); border-radius: var(--radius);
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-pulse { 50% { opacity: .5; } }
+.card-skeleton { pointer-events: none; }
+.skeleton-img { width: 96px; height: 96px; }
+.skeleton-line { height: 12px; margin-top: var(--sp-2); width: 70%; }
+.skeleton-line + .skeleton-line { width: 45%; }
+.skeleton-btn { width: 72px; height: 26px; }
+.carousel-thumb.skeleton { border-color: var(--border-soft); }
+
 /* ----------------------------- FOCUS VIEW ------------------------------ */
 /* Segmented Grid|Focus control lives in the toolbar. */
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
@@ -316,6 +330,7 @@ body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
 
 /* Big card: the cloned grid .card scaled up for a single-item focus. */
 .focus-current { display: flex; justify-content: center; margin-bottom: var(--sp-4); }
+.focus-current .skeleton-img { width: 224px; height: 224px; }
 .focus-current .card {
   max-width: 720px; width: 100%; padding: var(--sp-5); font-size: var(--fs-lg);
 }
@@ -368,6 +383,7 @@ body.hide-unnamed-merges .carousel-thumb[data-unnamed-merge] { display: none; }
   .nav-toggle { display: inline-flex; }
   .focus-current .card { padding: var(--sp-3); }
   .focus-current .card img { width: 160px; height: 160px; }
+  .focus-current .skeleton-img { width: 160px; height: 160px; }
 }
 
 /* --------------------- REDUCED MOTION ---------------------------------- */

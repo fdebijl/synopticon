@@ -14,12 +14,17 @@ import type {
   ReviewDecision,
 } from '../../api/types'
 import ReviewCard from './ReviewCard.vue'
+import ReviewCardSkeleton from './ReviewCardSkeleton.vue'
 
 const props = defineProps<{
   items: ClientReviewItem[]
   currentId: number | null
   emptyMessage: string
+  loading: boolean
 }>()
+
+// Initial-load skeleton: nothing loaded yet and a fetch is in flight.
+const showSkeleton = computed(() => props.loading && !props.items.length)
 
 const emit = defineEmits<{
   (e: 'decide', payload: { item: ClientReviewItem; decision: ReviewDecision }): void
@@ -123,7 +128,12 @@ watch(
 
 <template>
   <div class="focus-view" id="focus-view">
-    <div class="focus-current" id="focus-current" aria-live="polite">
+    <div
+      class="focus-current"
+      id="focus-current"
+      aria-live="polite"
+      :aria-busy="showSkeleton || undefined"
+    >
       <ReviewCard
         v-if="current"
         :item="current"
@@ -131,9 +141,18 @@ watch(
         @decide="(d) => emit('decide', { item: current!, decision: d })"
         @name="(v) => emit('name', { item: current!, value: v })"
       />
+      <ReviewCardSkeleton v-else-if="showSkeleton" />
     </div>
-    <p v-if="!current" class="muted focus-empty">{{ emptyMessage }}</p>
+    <p v-if="!current && !showSkeleton" class="muted focus-empty">{{ emptyMessage }}</p>
     <div class="carousel" ref="carouselEl" aria-label="Review queue">
+      <template v-if="showSkeleton">
+        <div
+          v-for="n in 12"
+          :key="`sk-${n}`"
+          class="carousel-thumb skeleton"
+          aria-hidden="true"
+        ></div>
+      </template>
       <button
         v-for="it in items"
         :key="it.item_id"

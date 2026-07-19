@@ -4,15 +4,23 @@
 // `load-more`; the parent guards loading/exhausted). Selection highlight (.sel)
 // follows `selectedId`, and the selected card is scrolled into view like the
 // legacy review.js select() did (block: "nearest").
-import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import type { ClientReviewItem, ReviewDecision } from '../../api/types'
 import ReviewCard from './ReviewCard.vue'
+import ReviewCardSkeleton from './ReviewCardSkeleton.vue'
 
 const props = defineProps<{
   items: ClientReviewItem[]
   selectedId: number | null
   exhausted: boolean
+  loading: boolean
 }>()
+
+// Skeleton placeholders while a page is in flight: a full grid's worth on the
+// initial (empty) load, a small tail when infinite scroll fetches more.
+const skeletonCount = computed(() =>
+  props.loading ? (props.items.length ? 3 : 8) : 0,
+)
 
 const emit = defineEmits<{
   (e: 'decide', payload: { item: ClientReviewItem; decision: ReviewDecision }): void
@@ -61,7 +69,7 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <div class="grid review-grid" ref="gridEl">
+    <div class="grid review-grid" ref="gridEl" :aria-busy="loading || undefined">
       <ReviewCard
         v-for="it in items"
         :key="it.item_id"
@@ -71,6 +79,7 @@ onUnmounted(() => {
         @decide="(d) => emit('decide', { item: it, decision: d })"
         @name="(v) => emit('name', { item: it, value: v })"
       />
+      <ReviewCardSkeleton v-for="n in skeletonCount" :key="`sk-${n}`" />
     </div>
     <div ref="sentinel" class="scroll-sentinel" aria-hidden="true"></div>
     <p v-if="exhausted" class="muted end-note">End of queue.</p>
