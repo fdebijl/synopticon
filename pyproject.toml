@@ -20,7 +20,7 @@ dependencies = [
     "scipy>=1.12",
     "hdbscan>=0.8.33",
     "jinja2>=3.1",
-    "tqdm>=4.69.0",
+    "tqdm>=4.69.1",
 ]
 
 [project.optional-dependencies]
