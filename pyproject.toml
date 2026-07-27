@@ -43,7 +43,7 @@ restore = [
     "facexlib>=0.3.0",
 ]
 review = [
-    "fastapi>=0.139.2",
+    "fastapi>=0.140.7",
     "uvicorn>=0.29",
     "tomlkit>=0.12",
 ]
