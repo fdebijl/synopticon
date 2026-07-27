@@ -67,30 +67,34 @@ class StorageConfig(BaseModel):
 class InferenceConfig(BaseModel):
     device: Literal["auto", "cpu", "cuda"] = Field(
         default="auto",
+        title="Device",
         description=(
-            "ONNX Runtime execution provider for all detection/embedding models. "
-            "'auto' uses the GPU when a working CUDAExecutionProvider is present and "
-            "silently falls back to CPU otherwise 'cuda' forces GPU (still falls back "
-            "to CPU with a warning if unavailable); 'cpu' is CPU-only and portable. "
+            "ONNX Runtime execution provider for all detection/embedding models.\n\n"
+            "'auto' uses the GPU when a working CUDAExecutionProvider is present and silently falls back to CPU otherwise\n"
+            "'cuda' forces GPU (still falls back to CPU with a warning if unavailable)\n"
+            "'cpu' is CPU-only and portable.\n\n"
             "Confirm the effective device in the extract startup log ('running on "
-            "GPU/CPU') and via `synopticon diagnostics` — if you set 'cuda' but see CPU, "
+            "GPU/CPU') and via `synopticon hwinfo`, if you set 'cuda' but see CPU, "
             "CUDA fell back, usually because a CPU-only onnxruntime wheel is installed."
         ),
     )
     device_id: int = Field(
         default=0,
+        title="CUDA Device Ordinal",
         description=(
             "CUDA device ordinal to pin the session to on multi-GPU hosts (0 = first "
-            "GPU, matching nvidia-smi indices). Ignored on CPU. There is no built-in "
-            "multi-GPU sharding — one run uses one GPU. An out-of-range ordinal makes "
-            "CUDA init fail and silently fall back to CPU, so verify the intended GPU "
+            "GPU, matching nvidia-smi indices). Ignored on CPU. Note that there is no built-in "
+            "multi-GPU sharding, one run uses one GPU. For the twelve people that still run SLI, you can "
+            "run multiple instances of Synopticon with this value incremented for parallelization. "
+            "An out-of-range ordinal makes CUDA init fail and silently fall back to CPU, so verify the intended GPU "
             "shows load in nvidia-smi during an extract/benchmark run."
         ),
     )
     batch_size: int = Field(
         default=16,
+        title="Embedding Batch Size",
         description=(
-            "Number of aligned face crops sent to each embedder per inference call "
+            "Number of faces/crops sent to each embedder per inference call "
             "(embedding stage only; detectors run one image at a time). The effective "
             "batch per photo is capped at the faces found in that photo, so raising it "
             "only helps crowded/group shots. Typical 8-64 (default 16): larger improves "
@@ -101,13 +105,14 @@ class InferenceConfig(BaseModel):
     )
     intra_op_threads: int | None = Field(
         default=None,
+        title="ONNX Runtime Intra-Op Threads",
         description=(
-            "ONNX Runtime intra-op thread count (parallelism within a single operator) "
-            "— the main CPU-throughput knob. Leave blank to use the physical core count "
-            "(hyperthreads are deliberately excluded, as they rarely help compute-bound "
+            "ONNX Runtime intra-op thread count (parallelism within a single operator).\n"
+            "This the main CPU-throughput knob, leave blank to use the physical core count "
+            "(note that hyperthreads are deliberately excluded, as they rarely help compute-bound "
             "ops). Set an explicit lower value (e.g. 2-4) to leave headroom or when "
             "running several extract processes at once, to avoid oversubscription with "
-            "BLAS/OMP threads; going above the physical core count rarely helps. Tune by "
+            "BLAS/OMP threads. Going above the physical core count rarely helps. Tune by "
             "comparing `synopticon benchmark` stage times across values."
         ),
     )
@@ -116,36 +121,40 @@ class InferenceConfig(BaseModel):
 class DetectionConfig(BaseModel):
     scales: list[float] = Field(
         default_factory=lambda: [1.0, 2.0],
+        title="SCRFD Scales",
         description=(
             "Image-pyramid factors for the SCRFD detector (does not affect YOLO): the "
             "full frame is resized by each factor and re-inferenced, so faces are seen "
             "at multiple resolutions. [1.0] is a single fast pass, weak on small faces; "
-            "[1.0, 2.0] (default) adds a 2× upscale to recover small/distant faces. Each "
-            "extra scale is a full forward pass — a 2.0 factor is ~4× the "
-            "pixels/compute/memory — and large factors are clamped by max_long_side. Add "
-            "a bigger factor if small faces are missed; drop 2.0 if runtime or memory "
+            "[1.0, 2.0] (default) adds a 2× upscale to recover small/distant faces.\nEach "
+            "extra scale is a full forward pass, so a 2.0 factor would be ~4× the "
+            "pixels/compute/memory, and large factors are clamped by max_long_side.\nAdd "
+            "a bigger factor if small faces are frequently missed, or drop the 2.0 factor if runtime or memory "
             "blows up on large images."
         ),
     )
     scrfd_score: float = Field(
         default=0.30,
+        title="SCRFD Score",
         description=(
             "Confidence threshold (0-1) for the primary SCRFD detector, whose boxes are "
-            "the ones that keep facial landmarks. Typical 0.2-0.5; default 0.30 leans "
-            "toward recall. Lower it to recover profile/occluded/blurry faces at the "
-            "cost of more false positives feeding clustering; raise it if textured "
-            "backgrounds are being detected as faces."
+            "the ones that keep facial landmarks. Typical values between 0.2 - 0.5, the default 0.30 leans "
+            "toward better recall. Lower it to recover profile/occluded/blurry faces at the "
+            "cost of more false positives feeding clustering, raise it if textured "
+            "backgrounds are being detected as faces. Re-run the extract stage to evaluate the effect."
         ),
     )
     yolo_score: float = Field(
         default=0.35,
+        title="YOLO Score",
         description=(
             "Confidence threshold (0-1) for the secondary, recall-oriented YOLOv8-face "
             "detector, whose unmatched boxes add faces SCRFD missed. Typical 0.25-0.5; "
             "default 0.35, kept slightly above scrfd_score so its extra detections stay "
             "trustworthy. Lower it to have YOLO contribute more novel faces (more false "
             "positives); raise it if YOLO adds spurious boxes. Evaluate on the delta — "
-            "faces present only because YOLO fired. No effect if the YOLO model is absent."
+            "faces present only because YOLO fired. No effect if the YOLO model is absent. "
+            "Re-run the extract stage to evaluate the effect."
         ),
     )
     nms_iou: float = Field(

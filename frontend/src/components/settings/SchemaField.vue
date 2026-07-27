@@ -135,6 +135,7 @@ const envMessage = computed(
 .field-desc {
   font-size: var(--fs-sm);
   color: var(--text-2);
+  white-space: pre-wrap;
 }
 .field-error {
   font-size: var(--fs-sm);

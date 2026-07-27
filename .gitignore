@@ -1,5 +1,6 @@
 __pycache__/
 .venv/
+.pytest_cache/
 docker/data/
 docker/models/
 data/
@@ -9,7 +10,6 @@ src/synopticon/web/dist/
 frontend/node_modules/
 frontend/*.tsbuildinfo
 frontend/.vite/
-.pytest_cache/
 har/
 
 config.toml
