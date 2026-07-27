@@ -168,7 +168,13 @@ watch(
         :aria-label="thumbAria(it)"
         @click="emit('select', it)"
       >
-        <img v-if="thumbSrc(it)" :src="thumbSrc(it)!" alt="" />
+        <img
+          v-if="thumbSrc(it)"
+          :src="thumbSrc(it)!"
+          alt=""
+          loading="lazy"
+          decoding="async"
+        />
         <template v-else>{{ kindAbbrev(it.kind) }}</template>
       </button>
     </div>

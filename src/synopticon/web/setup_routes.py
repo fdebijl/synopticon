@@ -38,6 +38,7 @@ def register_setup_routes(
     is :mod:`synopticon.web.auth` (for ``has_users``).
     """
     from fastapi import Request
+    from starlette.concurrency import run_in_threadpool
 
     from ..config import load_settings
     from ..syno.probe import probe
@@ -53,18 +54,25 @@ def register_setup_routes(
     @app.post("/api/setup/test-connection")
     async def api_setup_test_connection(request: Request):
         body = await request.json()
-        candidate = load_settings(nas=_nas_overrides(body))
-        c = conn()
-        try:
-            result = probe(candidate, c)
-        finally:
-            c.close()
+
+        def work():
+            candidate = load_settings(nas=_nas_overrides(body))
+            c = conn()
+            try:
+                return probe(candidate, c)
+            finally:
+                c.close()
+
+        # A blocking HTTPS round-trip to the NAS. On the event loop an
+        # unreachable host would freeze the whole GUI for the full timeout.
+        result = await run_in_threadpool(work)
         return result.to_dict()
 
     @app.post("/api/setup/check-storage")
     async def api_setup_check_storage(request: Request):
         body = await request.json()
-        return _check_storage(body)
+        # Touches the filesystem (mkdir / free-space probe).
+        return await run_in_threadpool(_check_storage, body)
 
 
 # --------------------------------------------------------------------------- #

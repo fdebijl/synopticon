@@ -10,11 +10,13 @@ The functions here shape ``review_queue`` rows into the item dicts the UI needs
 crops, derived booleans) and mutate only ``review_queue``. Applying decisions to
 the NAS is a separate concern (``syno/writeback.py``).
 
-Caching note: ``hidden_persons`` and ``person_faces`` describe data that is
-static while a review session runs, but they are *not* cached here — each call
-rebuilds from the DB. Callers that want per-lifetime caching (as the legacy app
-does) build them once and pass them back into :func:`load_review_items` via the
-``hidden`` / ``person_face_map`` parameters.
+Caching note: ``face_crops``, ``hidden_persons`` and ``person_faces`` each scan
+the *whole* library, so rebuilding them per call makes
+:func:`load_review_items` O(library) rather than O(page). They are deliberately
+not cached here — callers pass precomputed copies back in via the ``crops`` /
+``hidden`` / ``person_face_map`` parameters. The web GUI does exactly that
+through :mod:`synopticon.review.lookups`, which owns the cache and its
+invalidation.
 """
 
 from __future__ import annotations
@@ -61,11 +63,35 @@ def crop_url(crop_path: str | None, crops_dir: Path) -> str | None:
     return "/crops/" + rel.replace(os.sep, "/")
 
 
+def crop_url_mapper(crops_dir: Path):
+    """A ``crop_path -> /crops/... URL`` function that avoids a syscall per crop.
+
+    :func:`crop_url` calls ``Path.resolve()`` on both sides, i.e. a ``realpath``
+    syscall for *every* crop. Mapping a whole library (tens of thousands of
+    faces) that way costs seconds. Here the root is resolved once and the common
+    case — a stored path that is lexically under it — is pure string work. A
+    path that does not match lexically (symlinked crops dir, ``..`` segments)
+    falls back to the exact :func:`crop_url` semantics, so output is unchanged.
+    """
+    root = str(crops_dir.resolve())
+    prefix = root + os.sep
+
+    def to_url(crop_path: str | None) -> str | None:
+        if not crop_path:
+            return None
+        absolute = os.path.abspath(crop_path)
+        if absolute.startswith(prefix):
+            return "/crops/" + absolute[len(prefix) :].replace(os.sep, "/")
+        return crop_url(crop_path, crops_dir)
+
+    return to_url
+
+
 def face_crops(conn: sqlite3.Connection, settings: Settings) -> dict[int, str | None]:
     """Map every ``face_id`` to its ``/crops/...`` URL (or ``None``)."""
-    crops_dir = Path(settings.storage.crops_dir)
+    to_url = crop_url_mapper(Path(settings.storage.crops_dir))
     return {
-        int(r["face_id"]): crop_url(r["crop_path"], crops_dir)
+        int(r["face_id"]): to_url(r["crop_path"])
         for r in conn.execute("SELECT face_id, crop_path FROM faces")
     }
 
@@ -96,18 +122,35 @@ def item_url(base: str | None, space: str | None, photo_id: Any) -> str | None:
     )
 
 
-def _linked_photo_id(conn: sqlite3.Connection, payload: dict) -> Any:
-    """`payload["photo_id"]` resolved through its similar-group top pick, if any.
+def _link_map(
+    conn: sqlite3.Connection, payloads: list[dict]
+) -> dict[tuple[str, int], int]:
+    """``(space, photo_id) -> similar-group top pick`` for a whole page.
 
-    A grouped photo's own timeline item never resolves (Synology's grouped
-    view only surfaces the top pick), so ``item_url`` must be built against
-    the top pick instead. Passes through unchanged (including ``None``) for
-    ungrouped photos or when ``space``/``photo_id`` is missing.
+    A grouped photo's own timeline item never resolves (Synology's grouped view
+    only surfaces the top pick), so ``item_url`` must be built against the top
+    pick instead — the same resolution :func:`store.link_photo_id` does, but as
+    one query per space rather than a round-trip per row. Photos that are
+    ungrouped (or missing) are simply absent from the result, so callers fall
+    back to the id they already have.
     """
-    space, photo_id = payload.get("space"), payload.get("photo_id")
-    if not space or photo_id is None:
-        return photo_id
-    return store.link_photo_id(conn, space, photo_id)
+    by_space: dict[str, set[int]] = {}
+    for payload in payloads:
+        space, photo_id = payload.get("space"), payload.get("photo_id")
+        if space and photo_id is not None:
+            by_space.setdefault(str(space), set()).add(int(photo_id))
+    out: dict[tuple[str, int], int] = {}
+    for space, ids in by_space.items():
+        id_list = list(ids)
+        placeholders = ",".join("?" * len(id_list))
+        for row in conn.execute(
+            f"SELECT id, similar_top_pick FROM photos "
+            f"WHERE space = ? AND id IN ({placeholders})",
+            [space, *id_list],
+        ):
+            if row["similar_top_pick"] is not None:
+                out[(space, int(row["id"]))] = int(row["similar_top_pick"])
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -247,12 +290,20 @@ def load_review_items(
         [*args, int(limit), int(offset)],
     ).fetchall()
 
+    payloads = [json.loads(r["payload_json"]) for r in rows]
+    links = _link_map(conn, payloads)
+
     items = []
-    for r in rows:
-        payload = json.loads(r["payload_json"])
+    for r, payload in zip(rows, payloads):
         exemplars = (payload.get("evidence") or {}).get("exemplars", {})
         person_a = payload.get("person_a") or {}
         person_b = payload.get("person_b") or {}
+        space, photo_id = payload.get("space"), payload.get("photo_id")
+        linked_photo_id = (
+            links.get((str(space), int(photo_id)), photo_id)
+            if space and photo_id is not None
+            else photo_id
+        )
         items.append(
             {
                 "item_id": r["item_id"],
@@ -263,9 +314,7 @@ def load_review_items(
                 "crop": crops.get(int(payload["face_id"]))
                 if payload.get("face_id") is not None
                 else None,
-                "item_url": item_url(
-                    web_base, payload.get("space"), _linked_photo_id(conn, payload)
-                ),
+                "item_url": item_url(web_base, space, linked_photo_id),
                 "person_a_url": person_url(
                     web_base, person_a.get("space"), person_a.get("person_id")
                 ),

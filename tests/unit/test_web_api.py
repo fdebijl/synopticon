@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -389,6 +390,104 @@ def test_hashed_asset_served_unauthenticated(app, db):
     with TestClient(app, follow_redirects=False) as c:
         r = c.get("/assets/index-stub.js")
         assert r.status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# Browser caching + compression
+# --------------------------------------------------------------------------- #
+def test_hashed_assets_are_cached_forever(app, db):
+    """Vite content-hashes /assets, so a rebuild changes the URL — the browser
+    must never revalidate them."""
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        r = c.get("/assets/index-stub.js")
+        assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+
+
+def test_spa_shell_is_never_cached(app, db):
+    """index.html names the hashed bundle; caching it would pin an open tab to
+    a stale deploy."""
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        assert c.get("/review").headers["cache-control"] == "no-cache"
+
+
+def test_dist_root_files_are_cached_briefly(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        assert c.get("/favicon.ico").headers["cache-control"] == "public, max-age=3600"
+
+
+def test_api_responses_are_never_stored(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        assert c.get("/api/stats").headers["cache-control"] == "no-store"
+        # ...including the ones the auth middleware short-circuits.
+    with TestClient(app, follow_redirects=False) as c2:
+        assert c2.get("/api/stats").headers["cache-control"] == "no-store"
+
+
+def test_sse_stream_keeps_its_own_cache_header_and_is_not_gzipped(app, db):
+    """GZip must not buffer the job stream, and no-store must not clobber the
+    stream's own no-cache."""
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        job_id = c.post("/api/jobs", json={"name": "report", "params": {}}).json()[
+            "job_id"
+        ]
+        with c.stream(
+            "GET",
+            f"/api/jobs/{job_id}/stream",
+            headers={"Accept-Encoding": "gzip"},
+        ) as r:
+            assert r.status_code == 200
+            assert r.headers["cache-control"] == "no-cache"
+            assert "content-encoding" not in r.headers
+            r.close()
+
+
+def test_crop_images_are_cached_and_not_gzipped(app, db, settings):
+    """Crops are already-compressed bitmaps; gzipping them would burn CPU on the
+    event loop for nothing."""
+    _seed_user(db)
+    crop = Path(settings.storage.crops_dir) / "aa" / "1.jpg"
+    crop.parent.mkdir(parents=True, exist_ok=True)
+    crop.write_bytes(b"\xff\xd8\xff" + b"0" * 4096)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.get("/crops/aa/1.jpg", headers={"Accept-Encoding": "gzip"})
+        assert r.status_code == 200
+        assert r.headers["cache-control"] == "public, max-age=86400"
+        assert "content-encoding" not in r.headers
+
+
+def test_crops_still_require_authentication(app, db, settings):
+    """The caching/gzip fast paths must not have opened a hole: crops are
+    personal photos."""
+    _seed_user(db)
+    crop = Path(settings.storage.crops_dir) / "aa" / "1.jpg"
+    crop.parent.mkdir(parents=True, exist_ok=True)
+    crop.write_bytes(b"\xff\xd8\xff")
+    with TestClient(app, follow_redirects=False) as c:
+        assert c.get("/crops/aa/1.jpg").status_code == 302
+
+
+def test_logout_invalidates_the_cached_session_immediately(app, db):
+    """The auth middleware caches a validated cookie; logging out must take
+    effect on the very next request, not when the entry expires."""
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        assert c.get("/api/stats").status_code == 200
+        # Body-less mutations still carry the JSON content type (CSRF gate).
+        logout = c.post(
+            "/api/auth/logout", headers={"Content-Type": "application/json"}
+        )
+        assert logout.status_code == 200
+        assert c.get("/api/stats").status_code == 401
 
 
 @pytest.mark.parametrize(

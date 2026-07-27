@@ -16,6 +16,7 @@ ones.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import sqlite3
 from collections.abc import Callable
@@ -133,13 +134,27 @@ def regen_crops(
 
 
 def crops_disk_usage(crops_dir: Path) -> tuple[int, int]:
-    """Return (file count, total bytes) of the crop images currently on disk."""
+    """Return (file count, total bytes) of the crop images currently on disk.
+
+    Uses ``os.scandir`` rather than ``Path.rglob``: a populated library holds
+    >100k crops, and rglob builds a ``Path`` per entry then pays a *second*
+    stat for ``is_file()`` on top of the one for the size. ``DirEntry`` answers
+    both from the cached dirent.
+    """
     files = 0
     nbytes = 0
-    for p in crops_dir.rglob("*"):
-        if p.is_file():
-            files += 1
-            nbytes += p.stat().st_size
+    stack = [str(crops_dir)]
+    while stack:
+        try:
+            with os.scandir(stack.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        files += 1
+                        nbytes += entry.stat(follow_symlinks=False).st_size
+        except OSError:  # vanished or unreadable mid-walk; the figure is advisory
+            continue
     return files, nbytes
 
 

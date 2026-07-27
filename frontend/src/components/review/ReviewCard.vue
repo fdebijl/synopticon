@@ -71,16 +71,16 @@ function onName(e: Event): void {
         target="_blank"
         rel="noopener"
         title="open photo in Synology Photos"
-        ><img :src="item.crop" alt="face crop"
+        ><img :src="item.crop" alt="face crop" loading="lazy" decoding="async"
       /></a>
-      <img v-else :src="item.crop" alt="face crop" />
+      <img v-else :src="item.crop" alt="face crop" loading="lazy" decoding="async" />
     </template>
 
     <!-- new_person: exemplar thumbs + editable suggested name. -->
     <template v-if="item.kind === 'new_person'">
       <div class="thumbs">
         <template v-for="(c, i) in item.new_person_crops" :key="i">
-          <img v-if="c" :src="c" alt="" />
+          <img v-if="c" :src="c" alt="" loading="lazy" decoding="async" />
         </template>
       </div>
       <input
@@ -119,7 +119,7 @@ function onName(e: Event): void {
             <HiddenBadge v-if="item.person_a_hidden" />
             <div class="thumbs">
               <template v-for="(c, i) in item.merge_crops_a" :key="i">
-                <img v-if="c" :src="c" alt="" />
+                <img v-if="c" :src="c" alt="" loading="lazy" decoding="async" />
               </template>
             </div>
           </div>
@@ -142,7 +142,7 @@ function onName(e: Event): void {
             <HiddenBadge v-if="item.person_b_hidden" />
             <div class="thumbs">
               <template v-for="(c, i) in item.merge_crops_b" :key="i">
-                <img v-if="c" :src="c" alt="" />
+                <img v-if="c" :src="c" alt="" loading="lazy" decoding="async" />
               </template>
             </div>
           </div>
@@ -173,9 +173,15 @@ function onName(e: Event): void {
               target="_blank"
               rel="noopener"
               title="open photo in Synology Photos"
-              ><img :src="item.crop" alt="face crop"
+              ><img :src="item.crop" alt="face crop" loading="lazy" decoding="async"
             /></a>
-            <img v-else :src="item.crop" alt="face crop" />
+            <img
+              v-else
+              :src="item.crop"
+              alt="face crop"
+              loading="lazy"
+              decoding="async"
+            />
           </template>
         </div>
         <div class="merge-arrow" aria-hidden="true">&rarr;</div>
@@ -195,7 +201,14 @@ function onName(e: Event): void {
           <div class="thumb-group">
             <HiddenBadge v-if="item.target_hidden" />
             <div class="thumbs">
-              <img v-for="(c, i) in item.target_crops" :key="i" :src="c" alt="" />
+              <img
+                v-for="(c, i) in item.target_crops"
+                :key="i"
+                :src="c"
+                alt=""
+                loading="lazy"
+                decoding="async"
+              />
             </div>
           </div>
         </div>

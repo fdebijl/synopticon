@@ -36,6 +36,7 @@ requests. ``/crops`` are personal photos and require a session like every page.
 import asyncio
 import json
 import sqlite3
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -50,6 +51,27 @@ _DIST_DIR = Path(__file__).parent / "dist"
 SESSION_COOKIE = "synopticon_session"
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
+
+# Cache-Control for the three classes of static response. /assets filenames are
+# content-hashed by Vite, so they can be cached forever; a rebuild emits new
+# names. Crops are stable per face_id but `regen-crops` can rewrite one in
+# place, so they get a day rather than a year. index.html must always be
+# revalidated or a deploy never reaches an open tab.
+_ASSETS_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_CROPS_CACHE_CONTROL = "public, max-age=86400"
+_DIST_FILE_CACHE_CONTROL = "public, max-age=3600"
+_SHELL_CACHE_CONTROL = "no-cache"
+
+#: How long a validated *session cookie* stays trusted in memory. Every request
+#: — including each of the ~100 crop images a review grid pulls — otherwise
+#: opens its own SQLite connection just to resolve the cookie. API keys are
+#: never cached (see ``_credential``), so their revocation stays exact.
+#:
+#: Deliberately short. In-process revocation (logout, password change) clears
+#: the cache outright, so this window only ever applies to a session revoked by
+#: *another* process — ``synopticon reset-password``. Two seconds keeps that
+#: recovery path honest while still collapsing one page load's burst.
+_AUTH_CACHE_TTL = 2.0
 
 
 def _require_fastapi():
@@ -85,6 +107,32 @@ def _check_dist_built(dist_dir: Path) -> None:
         )
 
 
+def _add_gzip(app) -> None:
+    """Compress everything except ``/crops``.
+
+    A 100-item review page is ~97 KiB of JSON that gzips to ~11 KiB, and the SPA
+    bundle compresses similarly. Crops are already-compressed JPEG/PNG, so
+    running them through gzip would burn CPU on the event loop for no gain —
+    hence the path guard rather than a bare ``add_middleware``. Starlette's
+    GZipMiddleware already excludes ``text/event-stream``, so the job SSE stream
+    keeps flushing event by event.
+    """
+    from starlette.middleware.gzip import GZipMiddleware
+
+    class ConditionalGZip:
+        def __init__(self, app):
+            self.app = app
+            self.gzip = GZipMiddleware(app, minimum_size=1024, compresslevel=5)
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http" and not scope["path"].startswith("/crops/"):
+                await self.gzip(scope, receive, send)
+            else:
+                await self.app(scope, receive, send)
+
+    app.add_middleware(ConditionalGZip)
+
+
 def create_app(
     settings: Settings,
     *,
@@ -112,6 +160,7 @@ def create_app(
 
     from . import auth
     from ..review import queries
+    from ..review.lookups import LookupCache
     from .jobs import (
         ConsentError,
         JobManager,
@@ -119,6 +168,22 @@ def create_app(
         QueueFullError,
     )
     from .stats import gather_stats
+
+    class _CachedStatic(StaticFiles):
+        """``StaticFiles`` that stamps a fixed ``Cache-Control`` on every hit.
+
+        Without it the browser revalidates each asset and each crop on every
+        navigation: a full round-trip per file to be told "304 Not Modified".
+        """
+
+        def __init__(self, *args, cache_control: str, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self._cache_control = cache_control
+
+        def file_response(self, *args, **kwargs):
+            response = super().file_response(*args, **kwargs)
+            response.headers["Cache-Control"] = self._cache_control
+            return response
 
     db_path = Path(settings.storage.db_path)
     crops_dir = Path(settings.storage.crops_dir)
@@ -140,15 +205,30 @@ def create_app(
         jm.shutdown()
 
     app = FastAPI(title="Synopticon", lifespan=lifespan)
+    _add_gzip(app)
     # /assets public (hashed SPA bundle, no user data); mount only if the built
     # dist exists so create_app works without a build. /crops is guarded by auth.
     assets_dir = dist / "assets"
     if assets_dir.is_dir():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-    app.mount("/crops", StaticFiles(directory=str(crops_dir)), name="crops")
+        app.mount(
+            "/assets",
+            _CachedStatic(
+                directory=str(assets_dir), cache_control=_ASSETS_CACHE_CONTROL
+            ),
+            name="assets",
+        )
+    app.mount(
+        "/crops",
+        _CachedStatic(directory=str(crops_dir), cache_control=_CROPS_CACHE_CONTROL),
+        name="crops",
+    )
 
     def conn() -> sqlite3.Connection:
         return store.connect(db_path)
+
+    # Whole-library review lookups (crops / hidden persons / person->faces),
+    # cached on a DB fingerprint. See review/lookups.py for why this is not a TTL.
+    lookups = LookupCache()
 
     def _resolve_dist_file(path: str) -> Path | None:
         """Resolve ``path`` to a real file inside the dist root, or ``None``.
@@ -166,6 +246,21 @@ def create_app(
         return candidate if candidate.is_file() else None
 
     # -- auth helpers ------------------------------------------------------- #
+    # Session cookie -> (ident, monotonic deadline). A review grid issues one
+    # request per crop, and resolving the cookie from SQLite each time means a
+    # connection + query + occasional last_seen write per image. Only
+    # successfully validated credentials are stored, so a flood of bad cookies
+    # cannot grow this.
+    auth_cache: dict[str, tuple[Any, float]] = {}
+    auth_cache_lock = threading.Lock()
+
+    def _invalidate_auth_cache(credential: str | None = None) -> None:
+        with auth_cache_lock:
+            if credential is None:
+                auth_cache.clear()
+            else:
+                auth_cache.pop(credential, None)
+
     def _authenticate(request: Request, c: sqlite3.Connection):
         """Return ``("user", id)`` / ``("apikey", id)`` or ``None``."""
         header = request.headers.get("authorization", "")
@@ -180,6 +275,19 @@ def create_app(
                 return ("user", uid)
         return None
 
+    def _credential(request: Request) -> str | None:
+        """The session cookie to cache this request's verdict under, if any.
+
+        Session cookies only. The burst this cache exists for is a browser
+        fetching a page's worth of crops, and a browser never sends a Bearer
+        header — so API keys skip the cache entirely and keep exact revocation
+        semantics (revoke it in the DB by any means and the next call is 401).
+        """
+        if request.headers.get("authorization", "").startswith("Bearer "):
+            return None
+        token = request.cookies.get(SESSION_COOKIE)
+        return ("s:" + token) if token else None
+
     # Once an account exists it can never be removed (there is no delete-user
     # route), so first boot is a one-way latch: cache it and stop querying.
     have_users = False
@@ -193,13 +301,24 @@ def create_app(
         with it (a single slow query becomes a server-wide stall).
         """
         nonlocal have_users
+        credential = _credential(request)
+        if credential is not None and have_users:
+            now = time.monotonic()
+            with auth_cache_lock:
+                hit = auth_cache.get(credential)
+                if hit is not None and hit[1] > now:
+                    return hit[0], False
         c = conn()
         try:
             if not have_users:
                 have_users = auth.has_users(c)
-            return _authenticate(request, c), not have_users
+            ident = _authenticate(request, c)
         finally:
             c.close()
+        if credential is not None and have_users and ident is not None:
+            with auth_cache_lock:
+                auth_cache[credential] = (ident, time.monotonic() + _AUTH_CACHE_TTL)
+        return ident, not have_users
 
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
@@ -212,19 +331,23 @@ def create_app(
         # Dist-root files (favicons, site.webmanifest, img/…) are public too —
         # the login view needs them unauthenticated. index.html is NOT bypassed:
         # it follows the page auth rules below (only /login and /setup unauth'd).
-        # /api paths can never name a dist file, so skip the stat() for them.
+        # /api and /crops paths can never name a dist file, so skip the stat()
+        # for them — /crops in particular is one request per face crop.
+        is_api = path.startswith("/api/")
         if (
-            not path.startswith("/api/")
+            not is_api
+            and not path.startswith("/crops/")
             and path != "/index.html"
             and _resolve_dist_file(path) is not None
         ):
-            return await call_next(request)
+            response = await call_next(request)
+            response.headers.setdefault("Cache-Control", _DIST_FILE_CACHE_CONTROL)
+            return response
 
         ident, first_boot = await run_in_threadpool(_auth_lookup, request)
         request.state.ident = ident
         request.state.first_boot = first_boot
 
-        is_api = path.startswith("/api/")
         # CSRF: mutating API calls must be JSON (cookie is SameSite=Lax; a
         # cross-site form post cannot set application/json).
         if is_api and method in _MUTATING:
@@ -274,6 +397,17 @@ def create_app(
             return RedirectResponse(f"/login?next={quote(path)}", status_code=302)
         return await call_next(request)
 
+    # Registered after auth_middleware, so it wraps it: every API response,
+    # including the ones the auth middleware short-circuits, gets the header.
+    # Without it a browser is free to heuristically cache a GET /api/... reply
+    # and serve a stale review queue or job list back to the SPA.
+    @app.middleware("http")
+    async def no_store_api(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
     # -- auth helpers ------------------------------------------------------- #
     def _set_session_cookie(resp, token: str, request: Request) -> None:
         """Attach the session cookie (HttpOnly, SameSite=Lax, 30d).
@@ -302,18 +436,25 @@ def create_app(
             return JSONResponse(
                 {"error": "username and password are required"}, status_code=422
             )
-        c = conn()
+
+        def work():
+            c = conn()
+            try:
+                if auth.has_users(c):
+                    return None
+                uid = auth.create_user(c, username, password)
+                return uid, auth.create_session(c, uid)
+            finally:
+                c.close()
+
+        # scrypt is deliberately expensive; off the loop it must go.
         try:
-            if auth.has_users(c):
-                return JSONResponse(
-                    {"error": "account already exists"}, status_code=403
-                )
-            uid = auth.create_user(c, username, password)
-            token = auth.create_session(c, uid)
+            created = await run_in_threadpool(work)
         except auth.UsernameTakenError:
             return JSONResponse({"error": "username taken"}, status_code=409)
-        finally:
-            c.close()
+        if created is None:
+            return JSONResponse({"error": "account already exists"}, status_code=403)
+        uid, token = created
         resp = JSONResponse({"ok": True, "user_id": uid}, status_code=201)
         _set_session_cookie(resp, token, request)
         return resp
@@ -329,18 +470,27 @@ def create_app(
             return JSONResponse(
                 {"error": "Too many attempts — try again shortly."}, status_code=429
             )
-        c = conn()
-        try:
-            uid = auth.verify_password(c, username, password)
-            if uid is None:
-                limiter.record_failure(ip, username)
-                return JSONResponse(
-                    {"error": "Invalid username or password."}, status_code=401
-                )
-            limiter.record_success(ip, username)
-            token = auth.create_session(c, uid)
-        finally:
-            c.close()
+
+        def work():
+            c = conn()
+            try:
+                uid = auth.verify_password(c, username, password)
+                if uid is None:
+                    return None
+                return auth.create_session(c, uid)
+            finally:
+                c.close()
+
+        # verify_password runs scrypt (n=2**14) on both the hit and the miss
+        # path — ~100 ms of pure CPU. On the event loop that stalls every other
+        # in-flight request, so a login freezes the whole GUI.
+        token = await run_in_threadpool(work)
+        if token is None:
+            limiter.record_failure(ip, username)
+            return JSONResponse(
+                {"error": "Invalid username or password."}, status_code=401
+            )
+        limiter.record_success(ip, username)
         resp = JSONResponse({"ok": True, "username": username})
         _set_session_cookie(resp, token, request)
         return resp
@@ -354,6 +504,10 @@ def create_app(
                 auth.delete_session(c, token)
             finally:
                 c.close()
+            # The middleware trusts a validated token for _AUTH_CACHE_TTL; a
+            # logout must take effect on the very next request, not when the
+            # entry happens to expire.
+            _invalidate_auth_cache("s:" + token)
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
@@ -431,8 +585,11 @@ def create_app(
         if not isinstance(name, str) or not name:
             return JSONResponse({"error": "missing job name"}, status_code=422)
         try:
-            job_id = jm.submit(
-                name, params, confirm=confirm, confirm_phrase=confirm_phrase
+            # submit() takes the manager lock and writes job.json to disk.
+            job_id = await run_in_threadpool(
+                lambda: jm.submit(
+                    name, params, confirm=confirm, confirm_phrase=confirm_phrase
+                )
             )
         except ConsentError as exc:
             # 428 Precondition Required. Never leak the expected phrase text.
@@ -539,8 +696,20 @@ def create_app(
         offset = max(0, int(offset))
         c = conn()
         try:
+            # Without the shared cache these three lookups are rebuilt from the
+            # whole library on every scroll page — O(all faces) work for an
+            # O(page) response.
+            lk = lookups.get(c, settings)
             items = queries.load_review_items(
-                c, settings, kind=kind, status=status, limit=limit, offset=offset
+                c,
+                settings,
+                kind=kind,
+                status=status,
+                limit=limit,
+                offset=offset,
+                crops=lk.crops,
+                hidden=lk.hidden,
+                person_face_map=lk.person_face_map,
             )
             total = queries.count_review_items(c, kind=kind, status=status)
         finally:
@@ -559,22 +728,30 @@ def create_app(
     async def api_review_decide(request: Request, item_id: int):
         body = await request.json()
         decision = body.get("decision")
-        c = conn()
-        try:
-            if decision == "undo":
-                new_status = queries.undo_decision(c, item_id)
-                if new_status is None:
-                    return JSONResponse(
-                        {
-                            "error": "cannot undo: item is not in an "
-                            "approved/rejected state"
-                        },
-                        status_code=409,
-                    )
-                return {"item_id": item_id, "status": new_status}
-            new_status = queries.decide_item(c, item_id, decision)
-        finally:
-            c.close()
+
+        def work():
+            c = conn()
+            try:
+                if decision == "undo":
+                    return queries.undo_decision(c, item_id)
+                return queries.decide_item(c, item_id, decision)
+            finally:
+                c.close()
+
+        # A SQLite write can block on the DB lock for as long as a job holds it;
+        # on the loop that would stall every other request. Review decisions are
+        # one-per-keystroke, so this is the hottest write path in the GUI.
+        new_status = await run_in_threadpool(work)
+        if decision == "undo":
+            if new_status is None:
+                return JSONResponse(
+                    {
+                        "error": "cannot undo: item is not in an "
+                        "approved/rejected state"
+                    },
+                    status_code=409,
+                )
+            return {"item_id": item_id, "status": new_status}
         if new_status is None:
             return JSONResponse({"error": "bad decision"}, status_code=400)
         return {"item_id": item_id, "status": new_status}
@@ -591,22 +768,29 @@ def create_app(
             return JSONResponse(
                 {"error": "min_confidence must be a number"}, status_code=422
             )
-        c = conn()
-        try:
-            approved = queries.bulk_approve(c, kind, min_confidence=min_conf)
-        finally:
-            c.close()
-        return {"approved": approved}
+
+        def work():
+            c = conn()
+            try:
+                return queries.bulk_approve(c, kind, min_confidence=min_conf)
+            finally:
+                c.close()
+
+        return {"approved": await run_in_threadpool(work)}
 
     @app.post("/api/review/{item_id}/name")
     async def api_review_name(request: Request, item_id: int):
         body = await request.json()
         name = (body.get("name") or "").strip()
-        c = conn()
-        try:
-            ok = queries.set_suggested_name(c, item_id, name)
-        finally:
-            c.close()
+
+        def work():
+            c = conn()
+            try:
+                return queries.set_suggested_name(c, item_id, name)
+            finally:
+                c.close()
+
+        ok = await run_in_threadpool(work)
         if not ok:
             return JSONResponse({"error": "not a new_person item"}, status_code=400)
         return {"item_id": item_id, "suggested_name": name}
@@ -639,10 +823,14 @@ def create_app(
             return JSONResponse({"error": "not found"}, status_code=404)
         real = _resolve_dist_file(path)
         if real is not None:
-            return FileResponse(real)
+            return FileResponse(
+                real, headers={"Cache-Control": _DIST_FILE_CACHE_CONTROL}
+            )
         index = dist / "index.html"
         if index.is_file():
-            return FileResponse(index)
+            # The shell names the content-hashed bundle, so it must always be
+            # revalidated — ETag still makes that a 304 in the common case.
+            return FileResponse(index, headers={"Cache-Control": _SHELL_CACHE_CONTROL})
         return JSONResponse(
             {
                 "error": "frontend not built",
@@ -652,6 +840,10 @@ def create_app(
         )
 
     app.state.job_manager = jm
+    # Exposed so the routes that revoke a credential (API-key revoke, password
+    # change) can drop the middleware's cached verdict immediately instead of
+    # leaving it valid for the rest of the TTL.
+    app.state.invalidate_auth_cache = _invalidate_auth_cache
     return app
 
 

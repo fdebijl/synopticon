@@ -247,6 +247,7 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
     """
     from fastapi import Request
     from fastapi.responses import JSONResponse
+    from starlette.concurrency import run_in_threadpool
 
     from . import auth
 
@@ -254,6 +255,17 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
         return any(
             j.get("state") in ("queued", "running") for j in job_manager.list_jobs()
         )
+
+    def _drop_cached_auth() -> None:
+        """Make a credential change take effect on the very next request.
+
+        ``create_app``'s auth middleware caches validated credentials briefly;
+        without this, a revoked key or a changed password would keep working
+        until the entry expired.
+        """
+        invalidate = getattr(app.state, "invalidate_auth_cache", None)
+        if invalidate is not None:
+            invalidate()
 
     # -- config ------------------------------------------------------------- #
     @app.get("/api/config")
@@ -272,7 +284,8 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
             return JSONResponse(
                 {"error": "body must be a config object"}, status_code=422
             )
-        errors = write_config(settings, body)
+        # Rewrites config.toml (tomlkit round-trip + file write) — off the loop.
+        errors = await run_in_threadpool(write_config, settings, body)
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)
         return {"ok": True}
@@ -293,20 +306,32 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
             return JSONResponse(
                 {"error": "new_password is required"}, status_code=422
             )
-        c = conn()
-        try:
-            row = c.execute(
-                "SELECT username FROM web_users WHERE id = ?", (uid,)
-            ).fetchone()
-            if row is None:
-                return JSONResponse({"error": "unknown user"}, status_code=404)
-            if auth.verify_password(c, row["username"], current) is None:
-                return JSONResponse(
-                    {"error": "current password is incorrect"}, status_code=403
-                )
-            auth.change_password(c, uid, new)
-        finally:
-            c.close()
+
+        def work() -> str:
+            c = conn()
+            try:
+                row = c.execute(
+                    "SELECT username FROM web_users WHERE id = ?", (uid,)
+                ).fetchone()
+                if row is None:
+                    return "unknown"
+                if auth.verify_password(c, row["username"], current) is None:
+                    return "wrong"
+                auth.change_password(c, uid, new)
+                return "ok"
+            finally:
+                c.close()
+
+        # Two scrypt derivations (verify + rehash) — ~200 ms of CPU that must
+        # not run on the event loop.
+        outcome = await run_in_threadpool(work)
+        if outcome == "unknown":
+            return JSONResponse({"error": "unknown user"}, status_code=404)
+        if outcome == "wrong":
+            return JSONResponse(
+                {"error": "current password is incorrect"}, status_code=403
+            )
+        _drop_cached_auth()
         return {"ok": True}
 
     @app.get("/api/auth/keys")
@@ -323,11 +348,15 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
         name = (body.get("name") or "").strip()
         if not name:
             return JSONResponse({"error": "name is required"}, status_code=422)
-        c = conn()
-        try:
-            key = auth.create_api_key(c, name)
-        finally:
-            c.close()
+
+        def work():
+            c = conn()
+            try:
+                return auth.create_api_key(c, name)
+            finally:
+                c.close()
+
+        key = await run_in_threadpool(work)
         # The plaintext key is shown exactly once — only its hash is stored.
         return JSONResponse({"key": key, "name": name}, status_code=201)
 
@@ -338,4 +367,5 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
             auth.revoke_api_key(c, key_id)
         finally:
             c.close()
+        _drop_cached_auth()
         return {"ok": True}
