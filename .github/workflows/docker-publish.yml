@@ -1,0 +1,133 @@
+name: docker-publish
+
+# Builds the two image variants from docker/Dockerfile (targets `cpu` and `gpu`)
+# and publishes them to Docker Hub under one repository, distinguished by tag
+# suffix:
+#
+#   fdebijl/synopticon:latest        -> cpu   (version tags only)
+#   fdebijl/synopticon:cpu
+#   fdebijl/synopticon:gpu
+#   fdebijl/synopticon:0.1.0         -> cpu   (version tags only)
+#   fdebijl/synopticon:0.1.0-cpu
+#   fdebijl/synopticon:0.1.0-gpu
+#   fdebijl/synopticon:0.1           -> cpu   (version tags only)
+#   fdebijl/synopticon:0.1-cpu
+#   fdebijl/synopticon:0.1-gpu
+#   fdebijl/synopticon:sha-<short>-cpu
+#   fdebijl/synopticon:sha-<short>-gpu
+#
+# Pushes to main build both variants without publishing, purely as a smoke test
+# that the Dockerfile still works. Only `v*` tag pushes and manual dispatches
+# actually write to the registry, and `latest` / the unsuffixed semver aliases
+# move only on a version tag -- never from a manual run off an arbitrary commit.
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME  Docker Hub account (or org) name
+#   DOCKERHUB_TOKEN     Docker Hub access token with Read/Write scope
+#                       (Account Settings -> Personal access tokens)
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  IMAGE: fdebijl/synopticon
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  # Never cancel a publish mid-flight -- a half-pushed tag set is worse than a
+  # redundant build.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      # Publish both variants or neither: a failed gpu build shouldn't leave a
+      # lone cpu tag pointing at a release that never fully shipped.
+      fail-fast: true
+      matrix:
+        include:
+          - variant: cpu
+            ort_extra: cpu
+          - variant: gpu
+            ort_extra: gpu
+    steps:
+      - uses: actions/checkout@v4
+
+      # onnxruntime-gpu[cuda,cudnn] pulls several GB of NVIDIA runtime wheels,
+      # which overruns the default runner disk during the export step. Reclaim
+      # the preinstalled toolchains we don't use.
+      - name: Free disk space
+        if: matrix.variant == 'gpu'
+        # Pure optimization -- if any of this fails or the runner image changes
+        # its layout, the build should still get its chance to fit.
+        continue-on-error: true
+        run: |
+          for d in /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                   /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}"; do
+            if [ -n "$d" ] && [ -e "$d" ]; then
+              sudo rm -rf "$d" || echo "skipped $d"
+            fi
+          done
+          df -h /
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        # Skipped on build-only runs so the workflow stays green on forks and on
+        # main pushes without registry credentials configured.
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # `latest` is added explicitly below, gated on the cpu variant.
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ matrix.variant }}
+            type=sha,suffix=-${{ matrix.variant }}
+            type=semver,pattern={{version}},suffix=-${{ matrix.variant }}
+            type=semver,pattern={{major}}.{{minor}},suffix=-${{ matrix.variant }}
+            type=semver,pattern={{version}},enable=${{ matrix.variant == 'cpu' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ matrix.variant == 'cpu' }}
+            type=raw,value=latest,enable=${{ matrix.variant == 'cpu' && github.ref_type == 'tag' }}
+          labels: |
+            org.opencontainers.image.title=Synopticon (${{ matrix.variant }})
+            org.opencontainers.image.description=Ensemble face-recognition supplement for Synology Photos (${{ matrix.variant }} inference)
+            org.opencontainers.image.licenses=AGPL-3.0-or-later
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: ${{ matrix.variant }}
+          build-args: ORT_EXTRA=${{ matrix.ort_extra }}
+          # GPU is amd64-only regardless: NVIDIA ships no arm64 CUDA wheels. To
+          # add arm64 to the cpu image, make this conditional on matrix.variant
+          # -- expect a much slower job, since it builds under QEMU emulation.
+          platforms: linux/amd64
+          push: ${{ github.ref_type == 'tag' || github.event_name == 'workflow_dispatch' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Single-platform builds with provenance on produce an OCI index, which
+          # Docker Hub renders as a bogus "unknown/unknown" architecture row. Set
+          # to `mode=max` if you'd rather have the attestations.
+          provenance: false
+          # The frontend stage is byte-identical across variants; the builder
+          # stage differs by ORT_EXTRA, hence the per-variant scope.
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
