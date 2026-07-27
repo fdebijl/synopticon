@@ -33,7 +33,7 @@ cpu = ["onnxruntime>=1.17"]
 # the CUDA 12 line (<1.27): 1.27 switched to CUDA 13, whose nvidia-*-cu13 wheels
 # are still pre-releases uv won't resolve by default. create_session() calls
 # preload_dlls() so onnxruntime finds the wheel-provided libs.
-gpu = ["onnxruntime-gpu[cuda,cudnn]==1.26.0"]
+gpu = ["onnxruntime-gpu[cuda,cudnn]==1.28.0"]
 # Restoration is isolated behind pins: basicsr imports
 # torchvision.transforms.functional_tensor, removed in torchvision >= 0.17.
 restore = [
