@@ -566,6 +566,70 @@ def review(
     serve(_settings(), host=host, port=port)
 
 
+@app.command("reset-password")
+def reset_password(
+    username: str = typer.Argument(None, help="Account to reset (default: the only account)."),
+    password: str = typer.Option(
+        None, "--password", help="New password (prompted for, hidden, if omitted)."
+    ),
+    keep_sessions: bool = typer.Option(
+        False, "--keep-sessions", help="Leave that account's existing logins valid."
+    ),
+):
+    """Reset a web GUI account's password from the shell (local DB only, no NAS).
+
+    The recovery path when the admin password is lost: it rewrites the scrypt hash
+    in data/synopticon.db directly, so it needs filesystem access to the DB but no
+    login. All of that account's sessions are revoked unless --keep-sessions, so a
+    stolen cookie can't outlive the credential it was issued against. Deliberately
+    CLI-only — never exposed as a web job.
+    """
+    from synopticon.web import auth
+
+    settings = _settings()
+    conn = _conn(settings)
+    users = auth.list_users(conn)
+    if not users:
+        typer.echo(
+            "no web accounts exist yet — start the GUI (`synopticon web`) and create "
+            "one in the setup wizard",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    names = [u["username"] for u in users]
+    if username is None:
+        if len(users) > 1:
+            typer.echo(
+                f"several accounts exist ({', '.join(names)}) — name the one to reset",
+                err=True,
+            )
+            raise typer.Exit(1)
+        user = users[0]
+    else:
+        user = next((u for u in users if u["username"] == username), None)
+        if user is None:
+            typer.echo(
+                f"no such account: {username!r} (known: {', '.join(names)})", err=True
+            )
+            raise typer.Exit(1)
+
+    if password is None:
+        password = typer.prompt(
+            f"New password for {user['username']}", hide_input=True, confirmation_prompt=True
+        )
+    if not password:
+        typer.echo("password must not be empty", err=True)
+        raise typer.Exit(1)
+
+    auth.change_password(conn, user["id"], password)
+    revoked = 0 if keep_sessions else auth.delete_user_sessions(conn, user["id"])
+    typer.echo(f"password reset for {user['username']}")
+    if revoked:
+        typer.echo(f"revoked {revoked} active session(s) — log in again")
+    get_emitter().result(stats={"username": user["username"], "sessions_revoked": revoked})
+
+
 @app.command()
 def apply(
     kinds: str = typer.Option(

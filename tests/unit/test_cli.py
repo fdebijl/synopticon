@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -213,3 +214,77 @@ def test_sync_emits_progress_events_when_env_set(
     results = [e for e in events if e["event"] == "result"]
     assert len(results) == 1
     assert results[0]["stats"]["personal.items"] == {"seen": 2, "upserted": 2, "deleted": 0}
+
+
+# -- reset-password --------------------------------------------------------
+
+
+@pytest.fixture
+def pw_env(monkeypatch, tmp_path, tmp_settings):
+    """A temp DB wired into the CLI, holding one web account with a live session."""
+    from synopticon.web import auth
+
+    conn = store.connect(tmp_path / "synopticon.db")
+    uid = auth.create_user(conn, "admin", "old-pw")
+    token = auth.create_session(conn, uid)
+    monkeypatch.setattr(cli, "_settings", lambda: tmp_settings)
+    monkeypatch.setattr(cli, "_conn", lambda s: conn)
+    yield SimpleNamespace(conn=conn, auth=auth, uid=uid, token=token)
+    conn.close()
+
+
+def test_reset_password_sets_new_hash_and_revokes_sessions(pw_env):
+    result = CliRunner().invoke(
+        cli.app, ["reset-password", "--password", "new-pw"]
+    )
+    assert result.exit_code == 0, result.output
+    assert pw_env.auth.verify_password(pw_env.conn, "admin", "old-pw") is None
+    assert pw_env.auth.verify_password(pw_env.conn, "admin", "new-pw") == pw_env.uid
+    # The old cookie must not survive an out-of-band reset.
+    assert pw_env.auth.validate_session(pw_env.conn, pw_env.token) is None
+    assert "revoked 1 active session" in result.output
+
+
+def test_reset_password_keep_sessions_leaves_cookie_valid(pw_env):
+    result = CliRunner().invoke(
+        cli.app, ["reset-password", "--password", "new-pw", "--keep-sessions"]
+    )
+    assert result.exit_code == 0, result.output
+    assert pw_env.auth.validate_session(pw_env.conn, pw_env.token) == pw_env.uid
+
+
+def test_reset_password_prompts_when_password_omitted(pw_env):
+    result = CliRunner().invoke(
+        cli.app, ["reset-password"], input="typed-pw\ntyped-pw\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert pw_env.auth.verify_password(pw_env.conn, "admin", "typed-pw") == pw_env.uid
+
+
+def test_reset_password_unknown_username_errors(pw_env):
+    result = CliRunner().invoke(
+        cli.app, ["reset-password", "nobody", "--password", "x"]
+    )
+    assert result.exit_code == 1
+    assert pw_env.auth.verify_password(pw_env.conn, "admin", "old-pw") == pw_env.uid
+
+
+def test_reset_password_requires_explicit_name_with_several_accounts(pw_env):
+    pw_env.auth.create_user(pw_env.conn, "second", "pw")
+    result = CliRunner().invoke(cli.app, ["reset-password", "--password", "x"])
+    assert result.exit_code == 1
+    assert "several accounts" in result.output
+    # Naming one works.
+    ok = CliRunner().invoke(cli.app, ["reset-password", "second", "--password", "new-pw"])
+    assert ok.exit_code == 0, ok.output
+    assert pw_env.auth.verify_password(pw_env.conn, "second", "new-pw") is not None
+
+
+def test_reset_password_no_accounts_points_at_the_wizard(monkeypatch, tmp_path, tmp_settings):
+    conn = store.connect(tmp_path / "synopticon.db")
+    monkeypatch.setattr(cli, "_settings", lambda: tmp_settings)
+    monkeypatch.setattr(cli, "_conn", lambda s: conn)
+    result = CliRunner().invoke(cli.app, ["reset-password", "--password", "x"])
+    assert result.exit_code == 1
+    assert "setup wizard" in result.output
+    conn.close()

@@ -420,3 +420,19 @@ def test_api_login_blocked_during_first_boot(app):
         r = c.post("/api/auth/login", json={"username": "x", "password": "y"})
         assert r.status_code == 403
         assert r.json().get("setup") is True
+
+
+def test_list_users_exposes_no_secrets(conn):
+    auth.create_user(conn, "alice", "pw")
+    (row,) = auth.list_users(conn)
+    assert row["username"] == "alice"
+    assert set(row) == {"id", "username", "created_at"}
+
+
+def test_delete_user_sessions_revokes_only_that_user(conn):
+    a = auth.create_user(conn, "alice", "pw")
+    b = auth.create_user(conn, "bob", "pw")
+    ta, tb = auth.create_session(conn, a), auth.create_session(conn, b)
+    assert auth.delete_user_sessions(conn, a) == 1
+    assert auth.validate_session(conn, ta) is None
+    assert auth.validate_session(conn, tb) == b

@@ -101,6 +101,15 @@ def has_users(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT 1 FROM web_users LIMIT 1").fetchone() is not None
 
 
+def list_users(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """List accounts (id/username/created_at only -- never the hash or salt)."""
+    rows = conn.execute("SELECT id, username, created_at FROM web_users ORDER BY id").fetchall()
+    return [
+        {"id": int(r["id"]), "username": r["username"], "created_at": r["created_at"]}
+        for r in rows
+    ]
+
+
 def change_password(conn: sqlite3.Connection, user_id: int, new_password: str) -> None:
     """Set a new scrypt-hashed password (fresh salt) for an existing user."""
     salt = secrets.token_bytes(_SALT_BYTES)
@@ -161,6 +170,17 @@ def delete_session(conn: sqlite3.Connection, token: str) -> None:
     """Log out: remove the session for this token (no-op if unknown)."""
     conn.execute("DELETE FROM web_sessions WHERE token_hash = ?", (_sha256_hex(token),))
     conn.commit()
+
+
+def delete_user_sessions(conn: sqlite3.Connection, user_id: int) -> int:
+    """Revoke every session of one user; returns the number removed.
+
+    Used after an out-of-band password reset so a leaked cookie can't outlive the
+    credential it was issued against.
+    """
+    cur = conn.execute("DELETE FROM web_sessions WHERE user_id = ?", (user_id,))
+    conn.commit()
+    return cur.rowcount
 
 
 def purge_expired(conn: sqlite3.Connection) -> int:

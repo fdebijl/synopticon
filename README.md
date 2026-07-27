@@ -181,7 +181,7 @@ On a fresh install the GUI redirects to a setup wizard, resumable at each step:
 
 ### Authentication
 
-- **Admin account** — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from **Settings → Access**.
+- **Admin account** — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from **Settings → Access**, or — if you've locked yourself out — from the shell with [`synopticon reset-password`](#reset-password).
 - **API keys** — create named, revocable keys under **Settings → Access** (shown once, then stored hashed). Send them as `Authorization: Bearer syn_...` on `/api/*` requests — the intended path for automation and planned sidecars (e.g. a browser extension). Cookie endpoints are CSRF-hardened (JSON-only + SameSite); the bearer path is immune by construction.
 
 ```bash
@@ -298,6 +298,20 @@ Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, setting
 
 #### `review` *(deprecated alias)*
 Deprecated alias of `web`, kept for one release. Serves the same app and prints the `/review` URL; new usage should call `synopticon web`. Same `--host`/`--port` options.
+
+#### `reset-password`
+Reset a web GUI account's password from the shell — the recovery path when the admin password is lost. It rewrites the scrypt hash in `data/synopticon.db` directly, so it needs filesystem access to the DB but no login, and it never touches the NAS. All of that account's sessions are revoked (so a stolen cookie can't outlive the credential) unless `--keep-sessions`. With a single account the username can be omitted. This is CLI-only by design and is not exposed as a web job.
+
+```bash
+uv run synopticon reset-password              # prompts twice, hidden
+docker compose run --rm synopticon reset-password admin
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `[USERNAME]` | the only account | Account to reset; required if several exist. |
+| `--password TEXT` | *(prompt)* | New password non-interactively. Prefer the prompt — this lands in your shell history. |
+| `--keep-sessions` | off | Leave that account's existing logins valid. |
 
 #### `apply`
 Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
