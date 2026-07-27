@@ -27,7 +27,7 @@ dependencies = [
 # ONNX Runtime ships as two mutually-exclusive PyPI packages sharing the same
 # import namespace. Pick exactly one: `cpu` (default) or `gpu` (CUDA). They are
 # declared conflicting under [tool.uv] so `uv sync --extra gpu` resolves cleanly.
-cpu = ["onnxruntime>=1.17"]
+cpu = ["onnxruntime>=1.28.0"]
 # The [cuda,cudnn] extra pulls NVIDIA's CUDA + cuDNN runtime wheels from PyPI, so
 # a GPU install needs only the NVIDIA driver -- no system CUDA toolkit. Pinned to
 # the CUDA 12 line (<1.27): 1.27 switched to CUDA 13, whose nvidia-*-cu13 wheels
