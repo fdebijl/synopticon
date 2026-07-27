@@ -87,6 +87,7 @@ export const LABELS: Record<string, string> = {
   restoration: 'Restoration',
   clustering: 'Clustering',
   crossref: 'Crossref',
+  models: 'Models',
   access: 'Access',
 }
 

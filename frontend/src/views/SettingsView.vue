@@ -9,9 +9,10 @@
 import { ref } from 'vue'
 import SchemaForm from '../components/settings/SchemaForm.vue'
 import AccessTab from '../components/settings/AccessTab.vue'
+import ModelsTab from '../components/settings/ModelsTab.vue'
 import { SECTIONS, LABELS } from '../utils/schema'
 
-const TABS: string[] = [...SECTIONS, 'access']
+const TABS: string[] = [...SECTIONS, 'models', 'access']
 const activeTab = ref<string>(SECTIONS[0])
 const errorSections = ref<string[]>([])
 
@@ -39,11 +40,12 @@ function activate(tab: string): void {
     </div>
 
     <SchemaForm
-      v-show="activeTab !== 'access'"
+      v-show="activeTab !== 'access' && activeTab !== 'models'"
       :active-section="activeTab"
       @update:error-sections="errorSections = $event"
       @activate="activate"
     />
+    <ModelsTab v-if="activeTab === 'models'" />
     <AccessTab v-show="activeTab === 'access'" />
   </div>
 </template>

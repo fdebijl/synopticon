@@ -288,6 +288,8 @@ def _build_models_download(params: dict) -> list[str]:
     only = _str_list(params, "only")
     if only:
         argv += ["--only", *only]
+    if _bool(params, "allow_record_hash"):
+        argv.append("--allow-record-hash")
     return argv
 
 

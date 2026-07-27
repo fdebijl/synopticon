@@ -41,6 +41,11 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 def _migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= len(_MIGRATIONS):
+        # Already current: return without a commit. The web GUI opens a
+        # connection per request, and an unconditional commit here costs a
+        # journal write + lock round-trip on every one of them.
+        return
     for i, migration in enumerate(_MIGRATIONS, start=1):
         if i > version:
             conn.executescript(migration.read_text())

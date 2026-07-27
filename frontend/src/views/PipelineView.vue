@@ -3,11 +3,12 @@
 // the shared JobPanel, plus a job-history table. Ports pipeline.html.j2 +
 // pipeline.js. The server is the single validator (JOB_SPECS); the forms only
 // collect the params each builder accepts. All Run buttons disable while any job
-// is queued/running (polled from /api/jobs every 4s and refreshed on job-done).
-import { ref, reactive, onMounted, onUnmounted } from 'vue'
+// is queued/running (read from the shared jobs store, which owns the single
+// /api/jobs poller, and refreshed on job-done).
+import { computed, ref, reactive } from 'vue'
 import JobPanel from '../components/JobPanel.vue'
-import { getJSON } from '../api/client'
 import { toast } from '../stores/toasts'
+import { useJobs } from '../stores/jobs'
 import type { Job } from '../api/types'
 
 const SPACES: [string, string][] = [
@@ -111,6 +112,11 @@ const CARDS: CardDef[] = [
         label: 'Only',
         placeholder: 'comma-separated keys (blank = all)',
       },
+      {
+        kind: 'check',
+        param: 'allow_record_hash',
+        label: 'record hash of manually-added models (--allow-record-hash)',
+      },
     ],
   },
 ]
@@ -178,17 +184,14 @@ function buildParams(card: CardDef): Record<string, unknown> {
 }
 
 const panel = ref<InstanceType<typeof JobPanel> | null>(null)
-const running = ref(false)
-const history = ref<Job[]>([])
-let pollTimer: number | null = null
+const { state: jobs, refreshJobs } = useJobs()
+const history = computed<Job[]>(() => jobs.history)
+const running = computed(() => jobs.running !== null)
 
 function run(card: CardDef): void {
   panel.value
     ?.start(card.cmd, buildParams(card))
-    .then(() => {
-      running.value = true
-      void refreshHistory()
-    })
+    .then(() => void refreshJobs())
     .catch((err: Error) => toast(err.message || 'Failed to start job', 'error'))
 }
 
@@ -202,29 +205,11 @@ function fmtDuration(m: Job): string {
   return mm + 'm ' + ss + 's'
 }
 
-async function refreshHistory(): Promise<void> {
-  try {
-    const res = await getJSON<{ items: Job[] }>('/api/jobs')
-    const items = res.items || []
-    running.value = items.some((m) => m.state === 'queued' || m.state === 'running')
-    history.value = items
-  } catch {
-    /* transient */
-  }
-}
-
-onMounted(() => {
-  void refreshHistory()
-  pollTimer = window.setInterval(refreshHistory, 4000)
-})
-onUnmounted(() => {
-  if (pollTimer !== null) window.clearInterval(pollTimer)
-})
 </script>
 
 <template>
   <div class="page">
-    <JobPanel ref="panel" @done="refreshHistory" />
+    <JobPanel ref="panel" @done="refreshJobs" />
 
     <div class="cmd-grid" style="margin-top: var(--sp-4)">
       <section

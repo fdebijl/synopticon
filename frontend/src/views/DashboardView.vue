@@ -1,20 +1,19 @@
 <script setup lang="ts">
 // Dashboard: stat tiles + a sync→extract→cluster→review→apply strip + an audit
 // tail, all from /api/stats + /api/audit (the old window.SYN_* server embeds are
-// gone — we fetch on mount instead). Refresh loop mirrors dashboard.js: a cheap
-// /api/jobs heartbeat every 10s, pulling full stats only while (or just after) a
-// job runs. The empty-DB CTA replaces the tiles when nothing is synced yet.
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+// gone — we fetch on mount instead). Stats are pulled on mount and then only
+// while (or just after) a job runs; the "is a job running" signal comes from the
+// shared jobs store rather than a second /api/jobs timer of our own. The empty-DB
+// CTA replaces the tiles when nothing is synced yet.
+import { ref, computed, onMounted, watch } from 'vue'
 import { getJSON } from '../api/client'
+import { useJobs } from '../stores/jobs'
 import type { Stats, AuditEntry } from '../api/types'
-
-const REFRESH_MS = 10000
 
 const stats = ref<Stats | null>(null)
 const audit = ref<AuditEntry[]>([])
 const loaded = ref(false)
-let timer: number | null = null
-let wasRunning = false
+const { state: jobs } = useJobs()
 
 function num(n: unknown): string {
   return (Number(n) || 0).toLocaleString()
@@ -211,31 +210,25 @@ async function pullStats(): Promise<void> {
   audit.value = a.items || []
 }
 
-async function heartbeat(): Promise<void> {
-  try {
-    const res = await getJSON<{ items: { state: string }[] }>('/api/jobs')
-    const running = (res.items || []).some((m) => m.state === 'queued' || m.state === 'running')
-    if (running || wasRunning) await pullStats().catch(() => {})
-    wasRunning = running
-  } catch {
-    /* transient */
-  }
-}
-
 onMounted(async () => {
   try {
     await pullStats()
-    wasRunning = !!stats.value?.job?.current
   } catch {
     /* client handles 401; leave the page in its loading state */
   } finally {
     loaded.value = true
   }
-  timer = window.setInterval(heartbeat, REFRESH_MS)
 })
-onUnmounted(() => {
-  if (timer !== null) window.clearInterval(timer)
-})
+
+// Stats are expensive relative to the job list, so refresh them only when the
+// shared store reports a job — and once more when that job finishes, to pick up
+// whatever it wrote.
+watch(
+  () => jobs.running?.id ?? null,
+  (now, before) => {
+    if (now !== null || before !== null) void pullStats().catch(() => {})
+  },
+)
 </script>
 
 <template>

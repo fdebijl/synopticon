@@ -245,3 +245,19 @@ export interface JobEvent {
   state?: JobState
   [k: string]: unknown
 }
+
+export interface ModelStatus {
+  key: string
+  file: string
+  present: boolean
+  size: number | null
+  registered: boolean
+  sha256: string | null
+  source_url: string | null
+  license: string | null
+}
+
+export interface ModelsResponse {
+  models_dir: string
+  items: ModelStatus[]
+}

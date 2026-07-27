@@ -50,6 +50,38 @@ def missing_models(models_dir: Path | str) -> list[str]:
     ]
 
 
+def model_status(models_dir: Path | str) -> list[dict[str, Any]]:
+    """Per-model status for the Models settings view (cheap: no re-hashing).
+
+    Composes ``REQUIRED_MODELS`` with the on-disk manifest and file presence.
+    Reports whether each required model's file is present, whether it is
+    registered (sha256 recorded), plus the registered hash / size / license /
+    source. Deliberately does NOT recompute sha256 (the weight files are
+    hundreds of MB each) — ``registered`` reflects manifest state, and the
+    pipeline still verifies the real hash on load via :func:`resolve_model`.
+    """
+    models_dir = Path(models_dir)
+    manifest = load_manifest(models_dir)
+    out: list[dict[str, Any]] = []
+    for key, filename in REQUIRED_MODELS.items():
+        path = models_dir / filename
+        present = path.is_file()
+        entry = manifest.get(key) or {}
+        out.append(
+            {
+                "key": key,
+                "file": filename,
+                "present": present,
+                "size": path.stat().st_size if present else None,
+                "registered": key in manifest,
+                "sha256": entry.get("sha256"),
+                "source_url": entry.get("source_url"),
+                "license": entry.get("license"),
+            }
+        )
+    return out
+
+
 class ModelIntegrityError(RuntimeError):
     """Raised when a model file's sha256 does not match the manifest."""
 

@@ -215,6 +215,41 @@ def test_stats_degrades_without_models(app, db):
         assert "job" in data
 
 
+def test_models_endpoint_reports_presence_and_registration(app, db, settings):
+    from pathlib import Path
+
+    from synopticon.pipeline import manifest as mf
+
+    _seed_user(db)
+    mdir = Path(settings.storage.models_dir)
+    mdir.mkdir(parents=True, exist_ok=True)
+    # one required model present + registered; the rest absent.
+    key, fname = next(iter(mf.REQUIRED_MODELS.items()))
+    (mdir / fname).write_bytes(b"weights")
+    mf.register_model(mdir, key, fname, "http://src", "MIT")
+
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.get("/api/models")
+        assert r.status_code == 200
+        data = r.json()
+        items = {m["key"]: m for m in data["items"]}
+        assert set(items) == set(mf.REQUIRED_MODELS)
+        present = items[key]
+        assert present["present"] is True
+        assert present["registered"] is True
+        assert present["size"] == len(b"weights")
+        assert present["sha256"]
+        absent = [m for k, m in items.items() if k != key]
+        assert all(m["present"] is False and m["registered"] is False for m in absent)
+
+
+def test_models_endpoint_requires_auth(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        assert c.get("/api/models").status_code == 401
+
+
 # --------------------------------------------------------------------------- #
 # Review endpoints
 # --------------------------------------------------------------------------- #

@@ -45,15 +45,17 @@ export SYNOPTICON_NAS__URL=https://your-nas.example.com
 export SYNOPTICON_NAS__ACCOUNT=photos-bot     # a dedicated NAS user is recommended
 export SYNOPTICON_NAS__PASSWORD=...
 
-docker compose build
+docker compose build                          # or skip: see Docker images below to pull instead
 docker compose run synopticon models download
 docker compose run synopticon sync
 docker compose run synopticon extract          # the long pass; resumable, re-runnable (see GPU acceleration below)
 docker compose run synopticon cluster
 docker compose run synopticon report           # static HTML in ./data/report/<run>/
-docker compose run --service-ports synopticon web      # full GUI at http://127.0.0.1:8686 (review lives at /review)
+docker compose run --service-ports synopticon web --host 0.0.0.0   # GUI at http://127.0.0.1:8686 (review lives at /review)
 docker compose run synopticon apply            # dry-run; add --apply to write
 ```
+
+> `web` binds `127.0.0.1` by default, which inside a container means the container's *own* loopback — unreachable from the host however you publish the port. `--host 0.0.0.0` binds all container interfaces; the compose file still only publishes to `127.0.0.1:8686` on the host, so it stays off your network.
 
 Deduplication is a separate, shorter flow off the same `sync`:
 
@@ -68,15 +70,85 @@ Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU ac
 
 **Prefer a GUI?** `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
 
+### Docker images
+
+Prebuilt images are published to Docker Hub at [`fdebijl/synopticon`](https://hub.docker.com/r/fdebijl/synopticon), so you can skip `docker compose build` entirely. **One repository holds both compute variants; the tag picks which** — there is no separate `-gpu` repository.
+
+| Tag | Variant | Moves? | Use it for |
+|---|---|---|---|
+| `latest` | CPU | on each release | Trying it out. `latest` is the CPU build deliberately — it's the variant that runs anywhere. |
+| `cpu` | CPU | on each release | Same image as `latest`, but explicit. Prefer this in a compose file so the variant is legible. |
+| `gpu` | CUDA | on each release | NVIDIA hosts. Needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). |
+| `0.1.0`, `0.1.0-cpu` | CPU | never | Pinning to an exact release. |
+| `0.1.0-gpu` | CUDA | never | Pinning to an exact release. |
+| `0.1`, `0.1-cpu`, `0.1-gpu` | both | tracks patches | Auto-picking up `0.1.x` fixes without jumping a minor. |
+| `sha-<short>-cpu`, `sha-<short>-gpu` | both | never | Reproducing one exact commit; also what unreleased manual builds publish. |
+
+**Which variant?** Take `cpu` unless you have an NVIDIA GPU *and* the Container Toolkit installed. The GPU image is roughly four times larger (~3.5 GB vs ~850 MB) because it carries NVIDIA's CUDA and cuDNN runtime as PyPI wheels, and it buys you nothing without a driver to talk to. Everything except `extract` is unaffected by the choice — see [GPU acceleration](#gpu-acceleration) for what actually speeds up.
+
+**Pinning.** `latest`, `cpu` and `gpu` are moving tags: a `docker pull` can change what you're running. For anything unattended, pin to a full version (`0.1.0-cpu`) or a digest.
+
+Both variants are `linux/amd64` only. The GPU one has no arm64 build because NVIDIA ships no arm64 CUDA wheels.
+
+**Running an image directly.** The entrypoint is `synopticon`, so any [CLI command](#cli-reference) goes straight on the end and the two volumes are the same `/data` and `/models` compose mounts:
+
+```bash
+docker pull fdebijl/synopticon:cpu
+
+docker run --rm \
+  -v "$PWD/data:/data" -v "$PWD/models:/models" \
+  -e SYNOPTICON_NAS__URL=https://your-nas.example.com \
+  -e SYNOPTICON_NAS__ACCOUNT=photos-bot \
+  -e SYNOPTICON_NAS__PASSWORD=... \
+  fdebijl/synopticon:cpu sync
+```
+
+The GUI additionally needs a published port and `--host 0.0.0.0` (see the note above):
+
+```bash
+docker run --rm -p 127.0.0.1:8686:8686 \
+  -v "$PWD/data:/data" -v "$PWD/models:/models" \
+  fdebijl/synopticon:cpu web --host 0.0.0.0
+```
+
+On a GPU host, swap the tag and add `--gpus all`:
+
+```bash
+docker run --rm --gpus all \
+  -v "$PWD/data:/data" -v "$PWD/models:/models" \
+  fdebijl/synopticon:gpu extract
+```
+
+**Using them with compose.** The bundled `docker-compose.yml` builds from source. To pull instead, drop the `build:` block and name a tag — `docker-compose.override.yml` does this without touching the tracked file:
+
+```yaml
+services:
+  synopticon:
+    image: fdebijl/synopticon:cpu
+    build: !reset null
+  synopticon-gpu:
+    image: fdebijl/synopticon:gpu
+    build: !reset null
+```
+
+**Building them yourself** stays fully supported — the images are just CI output of the same `docker/Dockerfile`, which has one target per variant:
+
+```bash
+docker build -f docker/Dockerfile --target cpu -t synopticon:cpu .
+docker build -f docker/Dockerfile --target gpu --build-arg ORT_EXTRA=gpu -t synopticon:gpu .
+```
+
 ## Web GUI
 
 `synopticon web` serves a full browser GUI over the whole lifecycle — first-run setup, editing `config.toml`, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections — styled to sit comfortably next to Synology Photos. It's the recommended way to drive Synopticon day to day; the CLI stays fully supported for scripting and headless runs.
 
-The GUI is a Vue 3 single-page app served by the backend. **Docker is the recommended path — the image builds the frontend itself, no Node needed on the host:**
+The GUI is a Vue 3 single-page app served by the backend. **Docker is the recommended path — the image ships the frontend prebuilt, no Node needed on the host:**
 
 ```bash
-docker compose run --service-ports synopticon web   # http://127.0.0.1:8686
+docker compose run --service-ports synopticon web --host 0.0.0.0   # http://127.0.0.1:8686
 ```
+
+`--host 0.0.0.0` is required in a container: the `127.0.0.1` default binds the container's own loopback, which no published port can reach. The host-side binding stays on `127.0.0.1` either way — see [Docker images](#docker-images) for the plain `docker run` form.
 
 From a source checkout you build the SPA once (Node 22+), then the same `uv run synopticon web` serves it:
 
@@ -217,11 +289,11 @@ Generate the static HTML review report.
 | `--run-id INTEGER` | latest | Cluster run to report on. |
 
 #### `web`
-Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports`. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
+Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports` **and** `--host 0.0.0.0` — the default bind is unreachable from outside the container. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
 
 | Option | Default | Description |
 |---|---|---|
-| `--host TEXT` | `127.0.0.1` | Bind address. |
+| `--host TEXT` | `127.0.0.1` | Bind address. Use `0.0.0.0` in a container. |
 | `--port INTEGER` | `8686` | Bind port. |
 
 #### `review` *(deprecated alias)*
@@ -349,9 +421,14 @@ Extraction (detection + embedding) is the long pass and runs on CPU by default. 
 
 **Bare-metal:** `uv sync --extra gpu` instead of `--extra cpu`. The two extras are mutually exclusive (`onnxruntime` and `onnxruntime-gpu` share one import namespace), so uv installs exactly one. The `gpu` extra is also incompatible with `restore`/`export` — those pin `torch==2.1.2`, which requires an older cuDNN than the GPU runtime does.
 
-**Docker:**
+**Docker:** use the `gpu`-tagged image (or the `gpu` compose profile, which builds the equivalent from source). See [Docker images](#docker-images) for the full tag list.
 
 ```bash
+docker run --rm --gpus all \
+  -v "$PWD/data:/data" -v "$PWD/models:/models" \
+  fdebijl/synopticon:gpu extract
+
+# or, building from source:
 docker compose --profile gpu build
 docker compose --profile gpu run synopticon-gpu extract
 ```
@@ -377,6 +454,36 @@ The face-recognition pipeline needs model weights; deduplication and the houseke
 | MagFace iResNet100 | embedder + quality signal | official checkpoint → `scripts/export_magface_onnx.py` | optional, manual export |
 
 The pipeline degrades gracefully to whatever subset is present (minimum: SCRFD + one embedder). Every model is sha256-verified against `models/manifest.json` on load; the auto-downloaded models are pinned upstream, and locally-exported ones are registered with `models download --allow-record-hash`. Face restoration (CodeFormer) is off by default and lives behind the `restore` extra due to its pinned-torch dependency chain.
+
+### Exporting AdaFace and MagFace
+
+AdaFace and MagFace can't be auto-downloaded — their weights aren't redistributed, so you fetch the official checkpoint yourself and convert it to ONNX with the bundled export scripts. Both scripts take `--checkpoint` and `--out`.
+
+The export scripts depend on `torch==2.1.2` (pinned to match the `restore` extra's constraints), which predates NumPy 2 and cannot interop with the project's `numpy>=2.4.6` pin. So **don't run them via `--extra export` inside the project venv** — the ONNX still traces, but the built-in torch-vs-ONNX numerical check crashes with `Numpy is not available`, leaving the file unverified. Instead run each script in an isolated, project-free env on Python 3.11 with `numpy<2`, so the verification actually runs:
+
+**AdaFace IR-101 (WebFace12M):** grab `adaface_ir101_webface12m.ckpt` from the "Pretrained Models" table in the [mk-minchul/AdaFace](https://github.com/mk-minchul/AdaFace) README (the `IR-101` / `WebFace12M` row), then:
+
+```bash
+uv run --no-project --python 3.11 \
+  --with "torch==2.1.2" --with "onnx>=1.15" --with "numpy<2" \
+  python scripts/export_adaface_onnx.py \
+  --checkpoint adaface_ir101_webface12m.ckpt \
+  --out models/adaface_ir101_webface12m.onnx
+```
+
+**MagFace iResNet100:** grab `magface_iresnet100.pth` from the "Model Zoo" section of the [IrvingMeng/MagFace](https://github.com/IrvingMeng/MagFace) README (the iResNet100 backbone), then:
+
+```bash
+uv run --no-project --python 3.11 \
+  --with "torch==2.1.2" --with "onnx>=1.15" --with "numpy<2" \
+  python scripts/export_magface_onnx.py \
+  --checkpoint magface_iresnet100.pth \
+  --out models/magface_iresnet100.onnx
+```
+
+A successful run prints `torch-vs-ort cosine: 1.000000` and `OK`. The AdaFace export additionally warns about a few unexpected `head.*` keys — that's the training-time margin head, correctly ignored; only the backbone embedding is exported. Once the `.onnx` files exist in `models/`, re-run `synopticon models download --allow-record-hash` to verify and register them in the manifest.
+
+In the web GUI, the same step is the **Download models** card on the Pipeline page — tick **record hash** to register manually-copied `.onnx` files — and **Settings → Models** shows which weights are present and registered.
 
 ## Safety model
 

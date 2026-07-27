@@ -33,6 +33,7 @@ routes through the catch-all, which returns ``index.html`` to authenticated page
 requests. ``/crops`` are personal photos and require a session like every page.
 """
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -107,6 +108,7 @@ def create_app(
         StreamingResponse,
     )
     from fastapi.staticfiles import StaticFiles
+    from starlette.concurrency import run_in_threadpool
 
     from . import auth
     from ..review import queries
@@ -178,6 +180,27 @@ def create_app(
                 return ("user", uid)
         return None
 
+    # Once an account exists it can never be removed (there is no delete-user
+    # route), so first boot is a one-way latch: cache it and stop querying.
+    have_users = False
+
+    def _auth_lookup(request: Request) -> tuple[Any, bool]:
+        """Blocking auth resolution: ``(ident, first_boot)``.
+
+        Runs in the threadpool — never on the event loop. Opening a SQLite
+        connection and reading from it can block for as long as the DB lock is
+        held, and doing that on the loop stalls every other in-flight request
+        with it (a single slow query becomes a server-wide stall).
+        """
+        nonlocal have_users
+        c = conn()
+        try:
+            if not have_users:
+                have_users = auth.has_users(c)
+            return _authenticate(request, c), not have_users
+        finally:
+            c.close()
+
     @app.middleware("http")
     async def auth_middleware(request: Request, call_next):
         path = request.url.path
@@ -189,15 +212,15 @@ def create_app(
         # Dist-root files (favicons, site.webmanifest, img/…) are public too —
         # the login view needs them unauthenticated. index.html is NOT bypassed:
         # it follows the page auth rules below (only /login and /setup unauth'd).
-        if path != "/index.html" and _resolve_dist_file(path) is not None:
+        # /api paths can never name a dist file, so skip the stat() for them.
+        if (
+            not path.startswith("/api/")
+            and path != "/index.html"
+            and _resolve_dist_file(path) is not None
+        ):
             return await call_next(request)
 
-        c = conn()
-        try:
-            first_boot = not auth.has_users(c)
-            ident = _authenticate(request, c)
-        finally:
-            c.close()
+        ident, first_boot = await run_in_threadpool(_auth_lookup, request)
         request.state.ident = ident
         request.state.first_boot = first_boot
 
@@ -375,6 +398,17 @@ def create_app(
         }
         return data
 
+    @app.get("/api/models")
+    def api_models():
+        from ..pipeline import manifest as mf
+
+        models_dir = settings.storage.models_dir
+        try:
+            items = mf.model_status(models_dir)
+        except Exception:
+            items = []
+        return {"models_dir": str(models_dir), "items": items}
+
     @app.get("/api/audit")
     def api_audit(limit: int = 50):
         from .. import audit
@@ -440,14 +474,24 @@ def create_app(
         }
 
     @app.get("/api/jobs/{job_id}/stream")
-    def api_job_stream(job_id: str, after: int = 0):
+    async def api_job_stream(request: Request, job_id: str, after: int = 0):
         if jm.get(job_id) is None:
             return JSONResponse({"error": "unknown job"}, status_code=404)
 
-        def event_stream():
+        # Must be an *async* generator. A sync one is iterated via
+        # ``iterate_in_threadpool``, so every open stream would sit on an AnyIO
+        # worker thread between yields (up to the 15 s ping) — and that pool is
+        # shared with every sync route handler. A few dozen streams then starve
+        # the whole API. Here the waiting is an ``asyncio.sleep`` that holds no
+        # thread; ``jm.events``/``jm.get`` are in-memory and lock-bounded.
+        async def event_stream():
             last = int(after)
             last_ping = time.monotonic()
             while True:
+                # A client that navigated away (or a proxy that dropped the
+                # connection) must not leave this loop spinning forever.
+                if await request.is_disconnected():
+                    return
                 drained = jm.events(job_id, after=last)
                 for evt in drained:
                     last = evt.get("seq", last)
@@ -469,7 +513,7 @@ def create_app(
                 if now - last_ping >= 15:
                     last_ping = now
                     yield ": ping\n\n"
-                time.sleep(0.5)
+                await asyncio.sleep(0.5)
 
         return StreamingResponse(
             event_stream(),

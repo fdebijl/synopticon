@@ -46,26 +46,52 @@ def _photo_stats(conn: sqlite3.Connection, spaces: list[str]) -> dict[str, dict[
     return out
 
 
+_VERSION_CACHE: dict[Any, tuple[bool, str | None]] = {}
+
+
+def _pipeline_version_cached(settings: Settings) -> tuple[bool, str | None]:
+    """``(models_ready, pipeline_version)``, memoized on the manifest's identity.
+
+    ``/api/stats`` is polled by the dashboard, and resolving this pulls in
+    ``pipeline.runner`` (numpy + cv2, ~0.7 s cold). Worse, a *failing* import is
+    not cached by ``sys.modules``, so without this every poll would pay the full
+    import cost again. The cache key is the manifest's (mtime_ns, size), so
+    swapping models still invalidates it.
+    """
+    from ..pipeline.manifest import manifest_path
+
+    try:
+        st = manifest_path(settings.storage.models_dir).stat()
+        key = (str(settings.storage.models_dir), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return False, None  # no manifest: nothing imported, nothing to cache
+
+    cached = _VERSION_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        from ..pipeline.manifest import load_manifest
+
+        result: tuple[bool, str | None] = (False, None)
+        if load_manifest(settings.storage.models_dir):
+            from ..pipeline.runner import pipeline_version
+
+            result = (True, pipeline_version(settings, settings.storage.models_dir))
+    except Exception:  # noqa: BLE001 - a missing/broken manifest must not 500
+        result = (False, None)
+    _VERSION_CACHE.clear()  # only ever one live manifest
+    _VERSION_CACHE[key] = result
+    return result
+
+
 def _extract_stats(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
     """Extract coverage against the current pipeline_version.
 
     Degrades to ``pipeline_version: null`` / ``models_ready: false`` when the
     model manifest is absent or any manifest/import error occurs — never raises.
     """
-    models_ready = False
-    version: str | None = None
-    try:
-        from ..pipeline.manifest import load_manifest
-
-        manifest = load_manifest(settings.storage.models_dir)
-        if manifest:
-            from ..pipeline.runner import pipeline_version
-
-            version = pipeline_version(settings, settings.storage.models_dir)
-            models_ready = True
-    except Exception:  # noqa: BLE001 - a missing/broken manifest must not 500
-        models_ready = False
-        version = None
+    models_ready, version = _pipeline_version_cached(settings)
 
     # Photos eligible for extraction: not deleted, not video.
     eligible = int(

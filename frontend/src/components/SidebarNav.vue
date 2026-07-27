@@ -29,6 +29,7 @@ const route = useRoute()
 const { state: auth } = useAuth()
 const pending = ref(0)
 let timer: number | null = null
+let alive = false
 
 const version = computed(() => auth.me?.version ?? '')
 
@@ -37,7 +38,11 @@ function isActive(to: string): boolean {
   return route.path === to || route.path.startsWith(to + '/')
 }
 
+// setTimeout-chained rather than setInterval: an interval keeps firing while an
+// earlier request is still outstanding, so a slow backend accumulates concurrent
+// requests for the same badge. A hidden tab skips its turn entirely.
 async function refresh(): Promise<void> {
+  if (document.visibilityState === 'hidden') return
   try {
     const data = await getJSON<{ counts: ReviewCounts }>('/api/review/counts')
     const p = data.counts.pending ?? {}
@@ -51,12 +56,19 @@ function closeNav(): void {
   document.body.classList.remove('nav-open')
 }
 
+async function loop(): Promise<void> {
+  await refresh()
+  if (alive) timer = window.setTimeout(loop, 15000)
+}
+
 onMounted(() => {
-  void refresh()
-  timer = window.setInterval(refresh, 15000)
+  alive = true
+  void loop()
 })
 onUnmounted(() => {
-  if (timer !== null) window.clearInterval(timer)
+  alive = false
+  if (timer !== null) window.clearTimeout(timer)
+  timer = null
 })
 </script>
 

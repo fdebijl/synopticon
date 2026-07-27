@@ -23,6 +23,9 @@ from typing import Callable
 
 from ..config import Settings
 
+#: How long a crops disk-usage figure stays fresh (seconds).
+_CROPS_TTL = 60.0
+
 
 def _count(conn: sqlite3.Connection, table: str) -> int:
     try:
@@ -42,9 +45,24 @@ def register_ops_routes(
     ``conn`` is the per-request connection factory from ``create_app`` (opens a
     fresh ``store.connect`` each call; the caller closes it in try/finally).
     """
+    import time
     from pathlib import Path
 
     from ..review import queries
+
+    # `_crops_usage` stats every crop on disk — hundreds of thousands of files on
+    # a populated library, inside a request handler. The figure is advisory and
+    # the page re-polls, so cache it briefly rather than walk the tree per call.
+    crops_cache: list[tuple[float, dict]] = []
+
+    def crops_usage(crops_dir: Path) -> dict:
+        now = time.monotonic()
+        if crops_cache and now - crops_cache[0][0] < _CROPS_TTL:
+            return crops_cache[0][1]
+        data = _crops_usage(crops_dir)
+        crops_cache.clear()
+        crops_cache.append((now, data))
+        return data
 
     @app.get("/api/review/named-merge-pairs")
     def api_named_merge_pairs():
@@ -68,7 +86,7 @@ def register_ops_routes(
                 "faces": _count(c, "faces"),
                 "embeddings": _count(c, "embeddings"),
                 "cluster_runs": _count(c, "cluster_runs"),
-                "crops": _crops_usage(Path(settings.storage.crops_dir)),
+                "crops": crops_usage(Path(settings.storage.crops_dir)),
             }
             return data
         finally:
