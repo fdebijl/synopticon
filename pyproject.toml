@@ -44,7 +44,7 @@ restore = [
 ]
 review = [
     "fastapi>=0.140.13",
-    "uvicorn>=0.29",
+    "uvicorn>=0.52.0",
     "tomlkit>=0.12",
 ]
 faiss = ["faiss-cpu>=1.8"]
