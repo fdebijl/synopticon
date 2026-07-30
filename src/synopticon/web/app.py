@@ -34,7 +34,9 @@ requests. ``/crops`` are personal photos and require a session like every page.
 """
 
 import asyncio
+import itertools
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -72,6 +74,42 @@ _SHELL_CACHE_CONTROL = "no-cache"
 #: *another* process — ``synopticon reset-password``. Two seconds keeps that
 #: recovery path honest while still collapsing one page load's burst.
 _AUTH_CACHE_TTL = 2.0
+
+log = logging.getLogger("synopticon.web")
+
+#: Responsiveness watchdog (see ``_watchdog`` in :func:`create_app`).
+#:
+#: The GUI is one uvicorn process, so *every* whole-server stall looks identical
+#: from the outside: a batch of unrelated requests all completing at the same
+#: instant, which is what a HAR shows and all it shows. There are three distinct
+#: causes and picking between them after the fact is guesswork unless the server
+#: recorded which one it was:
+#:
+#: 1. the event loop was blocked (sync work on the loop, or a worker thread
+#:    holding the GIL) — shows up as loop *lag*;
+#: 2. the AnyIO worker pool was saturated — every request needs a thread for
+#:    ``_auth_lookup`` alone, so a full pool stalls the whole API with a
+#:    perfectly healthy loop, and no lag is observed;
+#: 3. one handler was genuinely slow and the reverse proxy serialised others
+#:    behind it on a pooled upstream connection — no lag, no saturation, just
+#:    one long request that the client may well have aborted (and so never
+#:    appears in its own HAR — only its collateral damage does).
+#:
+#: The watchdog logs all three signals together, so the next occurrence is
+#: attributable instead of re-derivable. It costs two ``monotonic()`` calls per
+#: tick and only ever logs on pathology.
+_WATCHDOG_TICK = 0.25
+_WATCHDOG_STALL = 1.0
+_SATURATION_LOG_INTERVAL = 10.0
+#: Server-side handler wall time that earns a log line on its own.
+_SLOW_REQUEST = 3.0
+#: Per-path throttle for the slow-request line. A stall releases its whole queue
+#: at once, so without this one incident logs a near-identical line per queued
+#: request — burying the first (and only informative) one.
+_SLOW_REQUEST_LOG_INTERVAL = 10.0
+#: In-flight requests to name before collapsing the rest into "+N more". A
+#: saturation incident can have hundreds; the oldest few are what matter.
+_IN_FLIGHT_REPORT_MAX = 8
 
 
 def _require_fastapi():
@@ -199,10 +237,82 @@ def create_app(
     app_version = _package_version()
     limiter = auth.LoginRateLimiter()
 
+    # -- responsiveness watchdog ------------------------------------------- #
+    # `in_flight` is only ever touched from the event loop (the timing
+    # middleware and the watchdog both run there), so it needs no lock.
+    in_flight: dict[int, tuple[str, float]] = {}
+    request_seq = itertools.count()
+    #: "METHOD <route template>" -> (last logged monotonic, suppressed since).
+    #: Keyed on the *route*, not the URL, so a slow disk behind `/crops` cannot
+    #: mint an entry per face crop (and a review page's worth of them all
+    #: collapse into one log line, which is what you want to read anyway).
+    slow_log_state: dict[str, tuple[float, int]] = {}
+
+    def _in_flight_report(now: float) -> str:
+        oldest_first = sorted(in_flight.values(), key=lambda v: v[1])
+        if not oldest_first:
+            return "none"
+        shown = oldest_first[:_IN_FLIGHT_REPORT_MAX]
+        report = ", ".join(f"{label} ({now - started:.1f}s)" for label, started in shown)
+        extra = len(oldest_first) - len(shown)
+        return f"{report} (+{extra} more)" if extra else report
+
+    def _thread_stats() -> tuple[int | None, int | None]:
+        """``(borrowed, total)`` AnyIO worker threads, or ``(None, None)``.
+
+        Saturation here is the difference between "one endpoint is slow" and
+        "the whole API is wedged": the auth middleware needs a worker thread for
+        every single request, so an exhausted pool queues even a static
+        ``index.html``.
+        """
+        try:
+            import anyio.to_thread
+
+            stats = anyio.to_thread.current_default_thread_limiter().statistics()
+            return stats.borrowed_tokens, int(stats.total_tokens)
+        except Exception:  # noqa: BLE001 - diagnostics must never break serving
+            return None, None
+
+    async def _watchdog() -> None:
+        last_saturation_log = 0.0
+        while True:
+            before = time.monotonic()
+            await asyncio.sleep(_WATCHDOG_TICK)
+            now = time.monotonic()
+            lag = now - before - _WATCHDOG_TICK
+            borrowed, total = _thread_stats()
+            if lag >= _WATCHDOG_STALL:
+                # The loop could not run during the stall, so the thread counts
+                # are a post-drain sample — the lag itself is the finding.
+                log.warning(
+                    "event loop stalled for %.1fs (threads %s/%s after); in-flight: %s",
+                    lag,
+                    borrowed,
+                    total,
+                    _in_flight_report(now),
+                )
+            elif (
+                borrowed is not None
+                and total
+                and borrowed >= total
+                and now - last_saturation_log >= _SATURATION_LOG_INTERVAL
+            ):
+                last_saturation_log = now
+                log.warning(
+                    "AnyIO worker pool saturated (%s/%s threads); in-flight: %s",
+                    borrowed,
+                    total,
+                    _in_flight_report(now),
+                )
+
     @asynccontextmanager
     async def lifespan(app):
-        yield
-        jm.shutdown()
+        watchdog = asyncio.create_task(_watchdog())
+        try:
+            yield
+        finally:
+            watchdog.cancel()
+            jm.shutdown()
 
     app = FastAPI(title="Synopticon", lifespan=lifespan)
     _add_gzip(app)
@@ -407,6 +517,45 @@ def create_app(
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
         return response
+
+    # Registered last, so it is the *outermost* middleware and its clock covers
+    # everything below it (auth, gzip, routing, handler). The in-flight set it
+    # maintains is what makes the watchdog's log lines actionable — without it a
+    # stall says "something took 24s" and never says what.
+    @app.middleware("http")
+    async def request_timing(request: Request, call_next):
+        key = next(request_seq)
+        label = f"{request.method} {request.url.path}"
+        started = time.monotonic()
+        in_flight[key] = (label, started)
+        try:
+            return await call_next(request)
+        finally:
+            in_flight.pop(key, None)
+            now = time.monotonic()
+            elapsed = now - started
+            if elapsed >= _SLOW_REQUEST:
+                # `route` is set by the router downstream, so it is available by
+                # the time call_next returns; it falls back to the raw path for
+                # a request that never matched anything.
+                route = request.scope.get("route")
+                key_path = getattr(route, "path", None) or request.url.path
+                throttle_key = f"{request.method} {key_path}"
+                seen, suppressed = slow_log_state.get(throttle_key, (0.0, 0))
+                if now - seen < _SLOW_REQUEST_LOG_INTERVAL:
+                    slow_log_state[throttle_key] = (seen, suppressed + 1)
+                else:
+                    borrowed, total = _thread_stats()
+                    log.warning(
+                        "slow request: %s took %.1fs (threads %s/%s%s); concurrent: %s",
+                        label,
+                        elapsed,
+                        borrowed,
+                        total,
+                        f"; {suppressed} similar suppressed" if suppressed else "",
+                        _in_flight_report(now),
+                    )
+                    slow_log_state[throttle_key] = (now, 0)
 
     # -- auth helpers ------------------------------------------------------- #
     def _set_session_cookie(resp, token: str, request: Request) -> None:
@@ -856,13 +1005,26 @@ def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8686) -> None
     """
     _require_fastapi()
     import uvicorn
+    from uvicorn.config import LOGGING_CONFIG
 
     _check_dist_built(_DIST_DIR)
     app = create_app(settings)
+    # The watchdog's findings are only useful if they reach the container log, so
+    # route ``synopticon.web`` through uvicorn's own stderr handler rather than
+    # leaving it to ``logging.lastResort`` (unformatted, and easy to mistake for
+    # stray output).
+    log_config = dict(LOGGING_CONFIG)
+    log_config["loggers"] = dict(log_config["loggers"])
+    log_config["loggers"]["synopticon.web"] = {
+        "handlers": ["default"],
+        "level": "INFO",
+        "propagate": False,
+    }
     uvicorn.run(
         app,
         host=host,
         port=port,
         proxy_headers=True,
         forwarded_allow_ips="*",
+        log_config=log_config,
     )

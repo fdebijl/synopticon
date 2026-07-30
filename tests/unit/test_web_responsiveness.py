@@ -1,0 +1,162 @@
+"""Responsiveness invariants for the single-process web GUI.
+
+Two properties, both of which have regressed before and are invisible in a
+normal functional test (the app still returns 200 — it just does so seconds
+late, and takes every concurrent request down with it):
+
+1. **The web process never imports the extraction image stack.** ``cv2`` (and
+   ``onnxruntime``) cost hundreds of milliseconds warm and seconds with a cold
+   page cache. Paying that inside a request handler on the only uvicorn process
+   stalls every other in-flight request with it. ``/api/stats`` used to reach
+   ``pipeline.runner`` for ``pipeline_version``; it now uses the leaf
+   ``pipeline.version``.
+
+2. **The watchdog reports each stall mode.** A client-side capture cannot tell a
+   blocked event loop from a saturated worker pool from one slow handler — every
+   one of them looks like "unrelated requests all finished at the same instant".
+   The server has to say which, or the next incident is guesswork again.
+"""
+
+from __future__ import annotations
+
+import logging
+import subprocess
+import sys
+import textwrap
+import time
+
+import pytest
+
+from synopticon.config import load_settings
+
+pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient  # noqa: E402
+
+from synopticon.web.app import create_app  # noqa: E402
+from synopticon.web.jobs import JobManager  # noqa: E402
+
+#: Modules whose import cost must never land in a request handler.
+_FORBIDDEN_IN_WEB_PROCESS = ("cv2", "onnxruntime", "torch")
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return load_settings(
+        storage={"data_dir": tmp_path},
+        nas={"url": "https://nas.test", "account": "svc", "password": "pw"},
+    )
+
+
+@pytest.fixture
+def dist(tmp_path):
+    d = tmp_path / "dist"
+    d.mkdir()
+    (d / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+    return d
+
+
+def test_serving_the_api_never_imports_the_image_stack(tmp_path):
+    """Import the web modules *and run the stats path*, then check sys.modules.
+
+    Runs in a subprocess on purpose: pytest's session imports cv2 for the
+    pipeline tests, which would mask exactly the regression this guards against.
+    ``gather_stats`` is actually executed (with a manifest present, so the
+    ``models_ready`` branch is taken) — an unused-import check would pass even if
+    the lazy import inside ``_pipeline_version_cached`` reached for ``runner``.
+    """
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "manifest.json").write_text(
+        '{"scrfd_10g_bnkps": {"file": "scrfd_10g_bnkps.onnx", "sha256": "x"}}',
+        encoding="utf-8",
+    )
+    script = textwrap.dedent(
+        f"""
+        import sys
+        import synopticon.web.app         # noqa: F401
+        import synopticon.web.ops_routes  # noqa: F401
+        import synopticon.pipeline.crops  # noqa: F401  (only for crops_disk_usage)
+        from synopticon.config import load_settings
+        from synopticon.db import store
+        from synopticon.web.stats import gather_stats
+
+        settings = load_settings(
+            storage={{"data_dir": {str(tmp_path)!r}, "models_dir": {str(models)!r}}}
+        )
+        conn = store.connect(settings.storage.db_path)
+        stats = gather_stats(conn, settings)
+        assert stats["extract"]["pipeline_version"], stats["extract"]
+        print(",".join(m for m in {_FORBIDDEN_IN_WEB_PROCESS!r} if m in sys.modules))
+        """
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+    assert out.stdout.strip() == "", f"web process imported: {out.stdout.strip()}"
+
+
+def test_pipeline_version_is_re_exported_by_runner():
+    """Existing ``from .runner import pipeline_version`` sites keep working."""
+    pytest.importorskip("cv2")
+    from synopticon.pipeline.runner import pipeline_version as via_runner
+    from synopticon.pipeline.version import pipeline_version as via_leaf
+
+    assert via_runner is via_leaf
+
+
+def _splice_before_catch_all(app, prefix: str) -> None:
+    """Move routes under ``prefix`` ahead of the SPA catch-all.
+
+    ``create_app`` registers ``/{path:path}`` last on purpose, so anything added
+    afterwards is unreachable. Tests that need a probe route have to reorder.
+    """
+    routes = app.router.routes
+    catch_all = next(r for r in routes if getattr(r, "path", "") == "/{path:path}")
+    probes = [r for r in routes if getattr(r, "path", "").startswith(prefix)]
+    for r in [*probes, catch_all]:
+        routes.remove(r)
+    routes.extend([*probes, catch_all])
+
+
+def test_watchdog_names_a_blocked_event_loop(settings, dist, tmp_path, caplog):
+    """Sync work on the loop is reported as loop *lag*, naming the request."""
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+
+    @app.get("/api/probe/block")
+    async def block():  # async def -> runs on the event loop
+        time.sleep(1.5)
+        return {"ok": True}
+
+    _splice_before_catch_all(app, "/api/probe")
+    with caplog.at_level(logging.WARNING, logger="synopticon.web"), TestClient(app) as tc:
+        tc.post("/api/auth/create-account", json={"username": "a", "password": "pw"})
+        assert tc.get("/api/probe/block").status_code == 200
+    jm.shutdown()
+
+    stalls = [r.getMessage() for r in caplog.records if "event loop stalled" in r.getMessage()]
+    assert stalls, "a 1.5s sync sleep on the loop went unreported"
+    assert "/api/probe/block" in stalls[0]
+
+
+def test_watchdog_reports_a_slow_handler_without_crying_stall(
+    settings, dist, tmp_path, caplog
+):
+    """A threadpooled slow handler is logged, but the loop is *not* blamed."""
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+
+    @app.get("/api/probe/slow")
+    def slow():  # sync def -> Starlette threadpools it, loop stays free
+        time.sleep(3.2)
+        return {"ok": True}
+
+    _splice_before_catch_all(app, "/api/probe")
+    with caplog.at_level(logging.WARNING, logger="synopticon.web"), TestClient(app) as tc:
+        tc.post("/api/auth/create-account", json={"username": "a", "password": "pw"})
+        assert tc.get("/api/probe/slow").status_code == 200
+    jm.shutdown()
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("slow request: GET /api/probe/slow" in m for m in messages)
+    assert not any("event loop stalled" in m for m in messages)

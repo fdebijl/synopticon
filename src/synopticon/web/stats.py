@@ -6,6 +6,11 @@ import at module scope. The one place that needs the model manifest
 failure so a fresh install with no model weights degrades to
 ``models_ready: false`` and ``pipeline_version: null`` instead of crashing the
 ``/api/stats`` endpoint.
+
+Those lazy imports must stay confined to the *leaf* pipeline modules
+(``pipeline.manifest``, ``pipeline.version``). Reaching for ``pipeline.runner``
+instead drags numpy + cv2 into a request handler on the only uvicorn process —
+see :func:`_pipeline_version_cached`.
 """
 
 from __future__ import annotations
@@ -52,10 +57,16 @@ _VERSION_CACHE: dict[Any, tuple[bool, str | None]] = {}
 def _pipeline_version_cached(settings: Settings) -> tuple[bool, str | None]:
     """``(models_ready, pipeline_version)``, memoized on the manifest's identity.
 
-    ``/api/stats`` is polled by the dashboard, and resolving this pulls in
-    ``pipeline.runner`` (numpy + cv2, ~0.7 s cold). Worse, a *failing* import is
-    not cached by ``sys.modules``, so without this every poll would pay the full
-    import cost again. The cache key is the manifest's (mtime_ns, size), so
+    The version comes from ``pipeline.version`` — a leaf module — and **never**
+    from ``pipeline.runner``: runner imports numpy + cv2 at module scope, so the
+    first ``/api/stats`` after a restart used to page both shared objects in
+    inside a request handler (sub-second warm, seconds on cold NAS storage) just
+    to sha256 the manifest. A stall that long on the only uvicorn process shows
+    up client-side as every unrelated in-flight request finishing at the same
+    instant.
+
+    The memo survives for a second reason: it also skips re-reading the manifest
+    on every dashboard poll. The cache key is the manifest's (mtime_ns, size), so
     swapping models still invalidates it.
     """
     from ..pipeline.manifest import manifest_path
@@ -75,7 +86,7 @@ def _pipeline_version_cached(settings: Settings) -> tuple[bool, str | None]:
 
         result: tuple[bool, str | None] = (False, None)
         if load_manifest(settings.storage.models_dir):
-            from ..pipeline.runner import pipeline_version
+            from ..pipeline.version import pipeline_version
 
             result = (True, pipeline_version(settings, settings.storage.models_dir))
     except Exception:  # noqa: BLE001 - a missing/broken manifest must not 500

@@ -24,10 +24,14 @@ from pathlib import Path
 
 from ..config import Settings, Space
 from ..db import store
-from . import align
-from .runner import _crop_paths, load_image_bgr
 
 log = logging.getLogger(__name__)
+
+# `align` and `.runner` are imported lazily by the two functions that actually
+# regenerate images. Both pull cv2/numpy at module scope, and the web process
+# imports this module solely for `crops_disk_usage` — a directory walk. Keeping
+# the heavy imports out of module scope means /api/maintenance/counts cannot pay
+# an image-stack import inside a request handler.
 
 Progress = Callable[[int, int | None], None]
 FetchOriginal = Callable[[sqlite3.Row], Path]
@@ -35,6 +39,8 @@ FetchOriginal = Callable[[sqlite3.Row], Path]
 
 def _crops_present(crops_dir: Path, face_id: int) -> bool:
     """True when both the aligned and context crop already exist on disk."""
+    from .runner import _crop_paths
+
     crop_path, ctx_path = _crop_paths(crops_dir, face_id)
     return crop_path.exists() and ctx_path.exists()
 
@@ -66,6 +72,9 @@ def regen_crops(
     can't be fetched or decoded is skipped and counted — never fatal.
     """
     import cv2
+
+    from . import align
+    from .runner import _crop_paths, load_image_bgr
 
     crops_dir = settings.storage.crops_dir
     crops_dir.mkdir(parents=True, exist_ok=True)

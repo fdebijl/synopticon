@@ -6,8 +6,10 @@ Public entry points (for CLI wiring):
   current ``pipeline_version``), writing ``faces``, ``embeddings`` and
   ``extract_log`` rows plus aligned/context crops. Crash-resumable: each photo is
   a single SQLite transaction and an ``extract_log`` row marks it done.
-* :func:`pipeline_version` — a short hash of the model manifest + detection config;
-  a change invalidates prior extractions.
+* :func:`pipeline_version` — re-exported from the dependency-free
+  :mod:`.version` module (a short hash of the model manifest + detection config;
+  a change invalidates prior extractions). Import it from there, not from here,
+  unless you also want numpy/cv2.
 
 Detector and ensemble are injectable via ``detector_factory`` / ``ensemble_factory``
 (zero-arg callables) so tests can run with no model files or network.
@@ -15,7 +17,6 @@ Detector and ensemble are injectable via ``detector_factory`` / ``ensemble_facto
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import sqlite3
@@ -32,8 +33,8 @@ from . import align, restore
 from .detect.base import Detection
 from .detect.merge import union
 from .embed.ensemble import MAGFACE_NAME, EmbeddingEnsemble, fuse
-from .manifest import manifest_bytes
 from .onnx_session import session_device
+from .version import pipeline_version
 
 log = logging.getLogger(__name__)
 
@@ -55,18 +56,6 @@ class ExtractStats:
 
     def _bump(self, detector: str) -> None:
         self.detector_counts[detector] = self.detector_counts.get(detector, 0) + 1
-
-
-def pipeline_version(settings: Settings, models_dir: Path | str) -> str:
-    """Short hash of the model manifest bytes + canonical detection config.
-
-    Changing any detection threshold or swapping a model invalidates prior
-    extractions, so the work queue picks those photos up again.
-    """
-    manifest = manifest_bytes(models_dir)
-    det = json.dumps(settings.detection.model_dump(), sort_keys=True, separators=(",", ":"))
-    digest = hashlib.sha256(manifest + det.encode("utf-8")).hexdigest()
-    return digest[:12]
 
 
 class CompositeDetector:
