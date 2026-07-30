@@ -259,7 +259,16 @@ def _crossref_core(
             if pos is not None:
                 positions_by_person.setdefault(pk, []).append(pos)
 
-    for cid, info in clusters.items():
+    emitter = get_emitter()
+    mapped = sum(1 for i in clusters.values() if i.mapped_person is not None)
+    emitter.log(
+        "info",
+        f"cluster.crossref: {len(clusters)} cluster(s), {mapped} mapped to a known person, "
+        f"{len(label_map)} ground-truth labelled face(s)",
+        phase="cluster.crossref",
+    )
+    for done, (cid, info) in enumerate(clusters.items()):
+        emitter.progress("cluster.crossref", done, len(clusters))
         labeled_positions = [p for p in info.members if int(face_ids[p]) in label_map]
 
         # --- assigns / low_confidence ---
@@ -423,6 +432,13 @@ def _crossref_core(
             )
         )
 
+    emitter.progress("cluster.crossref", len(clusters), len(clusters))
+    emitter.log(
+        "info",
+        f"cluster.crossref: proposed {len(assigns)} assign(s), {len(reassigns)} reassign(s), "
+        f"{len(merges)} merge(s), {len(new_persons)} new person(s)",
+        phase="cluster.crossref",
+    )
     return ClusterResult(
         face_ids=face_ids,
         labels=labels,
@@ -600,7 +616,8 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
     run_id = int(cur.lastrowid)
 
     # clusters + cluster_members
-    for cid in sorted(result.clusters):
+    for done, cid in enumerate(sorted(result.clusters)):
+        emitter.progress("cluster.persist", done, len(result.clusters))
         info = result.clusters[cid]
         mapped = info.mapped_person
         conn.execute(
@@ -686,10 +703,17 @@ def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
             (run_id, kind, json.dumps(payload), None, ts),
         )
 
+    emitter.progress("cluster.persist", len(result.clusters), len(result.clusters))
     queue_inserts = conn.execute(
         "SELECT COUNT(*) FROM review_queue WHERE run_id = ?", (run_id,)
     ).fetchone()[0]
     conn.commit()
+    emitter.log(
+        "info",
+        f"cluster run {run_id}: {len(result.clusters)} cluster(s) stored, "
+        f"{queue_inserts} new review item(s) queued (cross-run duplicates skipped)",
+        phase="cluster.persist",
+    )
     emitter.result(
         stats={
             "run_id": run_id,

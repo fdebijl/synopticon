@@ -13,13 +13,26 @@ import typer
 
 from synopticon.config import Settings, load_settings
 from synopticon.db import store
-from synopticon.progress import get_emitter
+from synopticon.progress import get_emitter, install_log_bridge
 
 app = typer.Typer(help=__doc__, no_args_is_help=True)
 models_app = typer.Typer(help="Model weight management.", no_args_is_help=True)
 eval_app = typer.Typer(help="Evaluate clustering quality against held-out labels.", no_args_is_help=True)
 app.add_typer(models_app, name="models")
 app.add_typer(eval_app, name="eval")
+
+
+@app.callback()
+def _main(ctx: typer.Context) -> None:
+    """Wire the structured progress stream up before any command runs.
+
+    Under `SYNOPTICON_PROGRESS_FILE` (i.e. as a web-GUI job) this bridges the
+    whole `synopticon` logger tree into the event stream and announces which
+    command started; with the variable unset it is a no-op and terminal output is
+    unchanged.
+    """
+    if install_log_bridge():
+        get_emitter().log("info", f"starting: synopticon {ctx.invoked_subcommand or ''}".strip())
 
 
 def _settings() -> Settings:
@@ -110,18 +123,29 @@ def check():
     typer.echo("all good — you can run: synopticon sync")
 
 
-def _progress(space: str, label: str):
+def _progress(space: str, label: str, phase: str | None = None):
     """Render a sync progress callback: a live line on a tty, periodic lines otherwise.
 
-    Also emits a structured `sync.<label>` progress event when the progress
-    protocol is enabled (SYNOPTICON_PROGRESS_FILE set); a no-op otherwise, so
-    terminal output is unchanged.
+    Also emits a structured progress event for `phase` (default `sync.<label>`)
+    when the progress protocol is enabled (SYNOPTICON_PROGRESS_FILE set); a no-op
+    otherwise, so terminal output is unchanged. `phase` must match the name the
+    caller passed to `emitter.phase()`, or a consumer sees the one phase twice
+    under two names.
+
+    When the protocol *is* enabled the plain-text echo is suppressed: a job
+    consumer already renders the structured event as a live bar (plus a periodic
+    log heartbeat), and the console mirror would add hundreds of superseded
+    "3400/38861" lines to the same log for no extra information.
     """
     is_tty = sys.stdout.isatty()
     emitter = get_emitter()
+    echo = not emitter.enabled
+    phase_name = phase or f"sync.{label}"
 
     def cb(done: int, total: int | None):
-        emitter.progress(f"sync.{label}", done, total, space=space)
+        emitter.progress(phase_name, done, total, space=space)
+        if not echo:
+            return
         suffix = f"{done}/{total}" if total is not None else str(done)
         if is_tty:
             typer.echo(f"\r[{space}] {label}: {suffix}", nl=False)
@@ -256,6 +280,8 @@ def extract(
     space: str = typer.Option(None, help="Limit to one space (default: all configured)."),
 ):
     """Detect faces and compute ensemble embeddings (resumable)."""
+    from dataclasses import asdict
+
     from synopticon.pipeline.runner import run_extract
     from synopticon.sync import downloads
     from synopticon.syno.client import SynoClient
@@ -263,6 +289,7 @@ def extract(
     settings = _settings()
     conn = _conn(settings)
     emitter = get_emitter()
+    result_stats: dict[str, dict] = {}
     with SynoClient(settings, conn) as client:
         for sp in _spaces(settings, space):
             emitter.phase("extract", space=sp)
@@ -272,9 +299,11 @@ def extract(
 
             stats = run_extract(conn, settings, fetch, limit=limit, photo_id=photo_id, space=sp)
             typer.echo(f"[{sp}] {stats}")
+            result_stats[sp] = asdict(stats)
     if not settings.storage.keep_originals:
         evicted = downloads.evict_originals(settings)
         typer.echo(f"evicted: {evicted}")
+    emitter.result(stats=result_stats)
 
 
 @app.command()
@@ -289,12 +318,16 @@ def benchmark(
     Read-only: reuses the extract pipeline but persists no faces/embeddings/crops.
     Originals are downloaded (and cached) exactly as `extract` would.
     """
+    from dataclasses import asdict
+
     from synopticon.pipeline.benchmark import run_benchmark
     from synopticon.sync import downloads
     from synopticon.syno.client import SynoClient
 
     settings = _settings()
     conn = _conn(settings)
+    emitter = get_emitter()
+    emitter.phase("benchmark", space=space)
     with SynoClient(settings, conn) as client:
         def fetch(row: sqlite3.Row) -> Path:
             return downloads.ensure_original(conn, client, settings, row)
@@ -304,6 +337,7 @@ def benchmark(
             warmup=warmup, progress=typer.echo,
         )
     typer.echo(str(stats))
+    emitter.result(stats=asdict(stats))
 
 
 @app.command()
@@ -328,6 +362,8 @@ def recluster(
 
     settings = _apply_overrides(_settings(), set_)
     conn = _conn(settings)
+    if set_:
+        typer.echo(f"overrides: {', '.join(set_)}")
     run_id = run_clustering(conn, settings)
     typer.echo(f"cluster run {run_id} complete")
 
@@ -387,23 +423,34 @@ def reset(
     if not yes:
         typer.confirm("Proceed?", abort=True)
 
+    emitter = get_emitter()
+    emitter.phase("reset", all=all_)
+
     # audit_log.review_item_id references review_queue with no cascade; null it
     # first so clearing the queue can't trip the constraint. This keeps the
     # NAS-write history, dropping only the now-stale local linkage.
     conn.execute("UPDATE audit_log SET review_item_id = NULL WHERE review_item_id IS NOT NULL")
-    for t in tables:
+    for i, t in enumerate(tables):
+        typer.echo(f"clearing {t} ({counts[t]} rows)")
         conn.execute(f"DELETE FROM {t}")
+        emitter.progress("reset", i + 1, len(tables))
     conn.commit()
 
     if not keep_crops:
+        typer.echo(f"deleting crop images under {settings.storage.crops_dir}")
         shutil.rmtree(settings.storage.crops_dir, ignore_errors=True)
         settings.storage.crops_dir.mkdir(parents=True, exist_ok=True)
     # Drop cached kNN graphs (keyed by face_ids, now stale).
+    graphs = 0
     for npz in Path(settings.storage.data_dir).glob("graph_*.npz"):
         npz.unlink()
+        graphs += 1
 
     nxt = "synopticon sync && synopticon extract" if all_ else "synopticon extract"
     typer.echo(f"reset complete — next: {nxt}")
+    emitter.result(
+        stats={"rows_deleted": total, "tables": counts, "graphs_dropped": graphs}
+    )
 
 
 @app.command("clear-queue")
@@ -442,6 +489,7 @@ def clear_queue(
     conn.commit()
 
     typer.echo(f"cleared {n} pending item(s) — next: synopticon cluster")
+    get_emitter().result(stats={"cleared": n})
 
 
 @app.command("regen-crops")
@@ -476,7 +524,7 @@ def regen_crops_cmd(
 
             stats = regen_crops(
                 conn, settings, fetch, space=sp, only_missing=only_missing,
-                limit=limit, progress=_progress(sp, "regen"),
+                limit=limit, progress=_progress(sp, "regen", phase="crops.regen"),
             )
             _finish_line()
             typer.echo(f"[{sp}] {stats}")
@@ -511,8 +559,10 @@ def delete_crops_cmd(
     if not yes:
         typer.confirm("Proceed?", abort=True)
 
+    get_emitter().phase("crops.delete")
     delete_crops(crops_dir)
     typer.echo("crops deleted")
+    get_emitter().result(stats={"files": files, "bytes": nbytes})
 
 
 @app.command()
@@ -528,6 +578,8 @@ def report(run_id: int = typer.Option(None, help="Cluster run to report on (defa
             typer.echo("no cluster runs yet — run: synopticon cluster", err=True)
             raise typer.Exit(1)
         run_id = row["r"]
+    get_emitter().phase("report", run_id=run_id)
+    typer.echo(f"rendering report for cluster run {run_id}")
     path = generate(conn, settings, run_id)
     typer.echo(f"report: {path}")
     get_emitter().result(stats={"run_id": run_id, "path": str(path)})
@@ -834,15 +886,22 @@ def dedupe(
     conn = _conn(settings)
     spaces = _spaces(settings, space)
 
+    emitter = get_emitter()
     drop_ids_by_space: dict[str, list[int]] = {}
     total_groups = total_drop = total_bytes = 0
     for sp in spaces:
+        emitter.phase("dedupe.scan", space=sp)
         groups = []
         if exact:
+            typer.echo(f"[{sp}] scanning for byte-identical (sha256) duplicates")
             groups += dd.find_exact(conn, sp)
         if visual:
+            typer.echo(
+                f"[{sp}] scanning for near-identical (phash within {threshold} bits) duplicates"
+            )
             groups += dd.find_visual(conn, sp, threshold)
         if not groups:
+            typer.echo(f"[{sp}] no duplicate groups")
             continue
         typer.echo(f"\n[{sp}] {len(groups)} duplicate group(s):")
         unique_drop: dict[int, sqlite3.Row] = {}
@@ -875,7 +934,6 @@ def dedupe(
     )
 
     logfile = configure_apply_logging(Path(__file__).resolve().parents[2] / "apply.log")
-    emitter = get_emitter()
 
     if not apply_:
         typer.echo("\nDRY RUN — pass --apply to delete these photos from the NAS")

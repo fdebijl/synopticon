@@ -1,6 +1,6 @@
 [project]
 name = "synopticon"
-version = "0.6.0"
+version = "0.7.0"
 description = "Ensemble face-recognition supplement for Synology Photos: catch what it missed, correct what it got wrong."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
@@ -52,7 +52,9 @@ faiss = ["faiss-cpu>=1.8"]
 export = ["torch==2.1.2", "onnx>=1.15"]
 
 [project.scripts]
-synopticon = "synopticon.cli:app"
+# Routed through __main__:main (not cli:app) so both invocation styles get the
+# same top-level error reporting into the progress stream.
+synopticon = "synopticon.__main__:main"
 
 [dependency-groups]
 dev = [

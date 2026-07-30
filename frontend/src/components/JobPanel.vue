@@ -14,13 +14,18 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { postJSON } from '../api/client'
 import { toast } from '../stores/toasts'
-import { useJobStream, type DoneDetail } from '../composables/useJobStream'
+import {
+  useJobStream,
+  formatDuration,
+  formatRate,
+  type DoneDetail,
+} from '../composables/useJobStream'
 
 const props = defineProps<{ jobId?: string }>()
 const emit = defineEmits<{ done: [detail: DoneDetail] }>()
 
 const stream = useJobStream({ onDone: (detail) => emit('done', detail) })
-const { jobId, jobState, finished, phases, progress, log } = stream
+const { jobId, jobState, finished, phases, progress, log, meta, elapsed, error } = stream
 
 const logEl = ref<HTMLPreElement | null>(null)
 let logPaused = false
@@ -31,6 +36,33 @@ function fmtJobId(id: string): string {
 
 const title = computed(() => (jobId.value ? fmtJobId(jobId.value) : 'Idle'))
 const showCancel = computed(() => jobId.value !== null && !finished.value)
+// Show the state for a running job too — previously only terminal states got a
+// chip, so a queued or running job carried no status at all.
+const stateLabel = computed(() => jobState.value ?? meta.value?.state ?? null)
+
+/** `sync.faces (personal) · 14,500 / 14,521 (99%) · 12.4/s · ETA 2s` */
+const progressText = computed(() => {
+  const p = progress.value
+  if (!p) return ''
+  const parts: string[] = []
+  if (p.label) parts.push(p.label)
+  if (p.total != null) {
+    parts.push(`${p.done?.toLocaleString()} / ${p.total.toLocaleString()} (${p.pct}%)`)
+  } else if (p.done != null) {
+    parts.push(p.done.toLocaleString())
+  }
+  if (p.rate) parts.push(formatRate(p.rate))
+  if (p.etaSeconds != null && !finished.value) parts.push(`ETA ${formatDuration(p.etaSeconds)}`)
+  return parts.join(' · ')
+})
+
+const elapsedText = computed(() =>
+  elapsed.value === null ? '' : formatDuration(elapsed.value),
+)
+const logEmpty = computed(() => log.value.length === 0)
+// Why it failed, as a headline — a reason buried in a scrolled log is easy to
+// miss, and it is the first thing anyone looks for on a red job.
+const failure = computed(() => error.value || meta.value?.error || null)
 
 function onLogScroll(): void {
   const el = logEl.value
@@ -86,10 +118,14 @@ defineExpose({ start, attach })
   <section class="job-panel" aria-label="Job progress">
     <div class="job-panel-head">
       <span class="job-panel-title">{{ title }}</span>
-      <span v-if="finished && jobState" class="job-state badge" :class="`state-${jobState}`">{{
-        jobState
+      <span v-if="stateLabel" class="job-state badge" :class="`state-${stateLabel}`">{{
+        stateLabel
+      }}</span>
+      <span v-if="meta?.name" class="muted mono job-panel-cmd">{{
+        (meta.argv || [meta.name]).join(' ')
       }}</span>
       <div class="job-panel-spacer"></div>
+      <span v-if="elapsedText" class="muted mono" aria-label="Elapsed">{{ elapsedText }}</span>
       <button
         v-if="showCancel"
         type="button"
@@ -99,7 +135,7 @@ defineExpose({ start, attach })
         Cancel
       </button>
     </div>
-    <div class="phase-chips" aria-label="Phases">
+    <div v-if="phases.length" class="phase-chips" aria-label="Phases">
       <span
         v-for="p in phases"
         :key="p.name"
@@ -108,25 +144,30 @@ defineExpose({ start, attach })
         >{{ p.name }}</span
       >
     </div>
-    <div
-      v-if="progress"
-      class="progress"
-      :class="{ indeterminate: progress.indeterminate }"
-      role="progressbar"
-      aria-live="polite"
-      aria-valuemin="0"
-      aria-valuemax="100"
-      :aria-valuenow="progress.indeterminate ? undefined : progress.pct"
-    >
+    <p v-if="failure" class="job-error" role="alert">{{ failure }}</p>
+    <div v-if="progress">
+      <div class="job-progress-meta mono" aria-live="polite">{{ progressText }}</div>
       <div
-        class="progress-bar"
-        :style="progress.indeterminate ? undefined : { width: progress.pct + '%' }"
-      ></div>
+        class="progress"
+        :class="{ indeterminate: progress.indeterminate }"
+        role="progressbar"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        :aria-valuenow="progress.indeterminate ? undefined : progress.pct"
+      >
+        <div
+          class="progress-bar"
+          :style="progress.indeterminate ? undefined : { width: progress.pct + '%' }"
+        ></div>
+      </div>
     </div>
     <pre ref="logEl" class="job-log" tabindex="0" aria-label="Job log" @scroll="onLogScroll"><div
+        v-if="logEmpty"
+        class="log-placeholder"
+      >{{ finished ? 'no output was recorded for this job' : 'waiting for output…' }}</div><div
         v-for="line in log"
         :key="line.seq"
-        :class="`log-${line.level}`"
+        :class="[`log-${line.level}`, line.stream ? `log-stream-${line.stream}` : '']"
       >{{ line.message }}</div></pre>
   </section>
 </template>

@@ -781,7 +781,10 @@ def create_app(
 
     @app.get("/api/jobs/{job_id}/stream")
     async def api_job_stream(request: Request, job_id: str, after: int = 0):
-        if jm.get(job_id) is None:
+        # Threadpooled: for a job this process never ran, `get` reads job.json and
+        # replays events.jsonl/stdout/stderr off disk. Doing that here also warms
+        # the replay cache, so the async generator below only ever touches memory.
+        if await run_in_threadpool(lambda: jm.get(job_id)) is None:
             return JSONResponse({"error": "unknown job"}, status_code=404)
 
         # Must be an *async* generator. A sync one is iterated via

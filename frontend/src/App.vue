@@ -26,6 +26,18 @@ const avatar = computed(() => (username.value ?? '?').charAt(0).toUpperCase())
 const themeOpen = ref(false)
 const userOpen = ref(false)
 
+// `sync · sync.faces 99%` — the chip is the only progress indication on pages
+// that do not host a JobPanel, so it carries the phase and percentage the
+// listing already provides rather than a bare "running".
+const jobChipText = computed(() => {
+  const j = jobs.running
+  if (!j) return ''
+  if (j.state === 'queued') return `${j.name} queued`
+  const p = j.progress
+  if (!p?.phase) return `${j.name} running`
+  return p.pct === null ? `${j.name} · ${p.phase}` : `${j.name} · ${p.phase} ${p.pct}%`
+})
+
 function toggleTheme(): void {
   userOpen.value = false
   themeOpen.value = !themeOpen.value
@@ -97,7 +109,7 @@ onBeforeUnmount(() => {
             aria-live="polite"
           >
             <span class="spinner" aria-hidden="true"></span>
-            <span>{{ jobs.running.name }} running</span>
+            <span>{{ jobChipText }}</span>
           </RouterLink>
           <div class="menu" :class="{ open: themeOpen }" id="theme-menu">
             <button

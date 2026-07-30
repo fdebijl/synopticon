@@ -135,6 +135,16 @@ export type JobState =
   | 'cancelled'
   | 'interrupted'
 
+/** Live snapshot attached to a job this server process is running (web/jobs.py
+ *  ::_progress_snapshot). Absent for queued jobs and for anything read off disk. */
+export interface JobProgressSnapshot {
+  phase: string | null
+  space: string | null
+  done: number | null
+  total: number | null
+  pct: number | null
+}
+
 export interface Job {
   id: string
   name: string
@@ -148,6 +158,7 @@ export interface Job {
   exit_code?: number | null
   error?: string | null
   seq?: number
+  progress?: JobProgressSnapshot | null
 }
 
 // GET /api/config (web/configio.py::read_config). Secrets in `values` are masked
@@ -237,12 +248,20 @@ export type JobEventKind =
 export interface JobEvent {
   event: JobEventKind
   seq?: number
+  /** Emitter wall-clock (seconds). Absent on events replayed from disk. */
+  ts?: number
   phase?: string
   done?: number
   total?: number
   message?: string
   level?: string
   state?: JobState
+  /** Set on `log` events mirrored from the subprocess console. */
+  stream?: 'stdout' | 'stderr'
+  /** Set on `final`, and on an `error` synthesized from a non-zero exit. */
+  exit_code?: number | null
+  /** Which space a phase/progress event belongs to (personal | shared). */
+  space?: string
   [k: string]: unknown
 }
 

@@ -9,6 +9,13 @@ from __future__ import annotations
 import numpy as np
 from scipy import sparse
 
+from ..progress import get_emitter
+
+#: Node visits between `cluster.labels` progress events. The label-propagation
+#: loop is per-node Python, so calling the emitter on every node would show up in
+#: the runtime; every 2000 visits is still sub-second granularity.
+_PROGRESS_EVERY = 2000
+
 
 def _build_adjacency(
     indices: np.ndarray, sims: np.ndarray, edge_threshold: float
@@ -49,9 +56,22 @@ def chinese_whispers(
     indptr, adj_idx, adj_w = adj.indptr, adj.indices, adj.data
     rng = np.random.default_rng(seed)
 
-    for _ in range(iterations):
+    emitter = get_emitter()
+    emitter.log(
+        "info",
+        f"cluster.labels: chinese whispers over {n} nodes, {adj.nnz // 2} edges "
+        f"(threshold {edge_threshold}), {iterations} iteration(s)",
+        phase="cluster.labels",
+    )
+    visits = 0
+    budget = iterations * n
+
+    for it in range(iterations):
         order = rng.permutation(n)
         for node in order:
+            visits += 1
+            if visits % _PROGRESS_EVERY == 0:
+                emitter.progress("cluster.labels", visits, budget, iteration=it + 1)
             start, end = indptr[node], indptr[node + 1]
             if start == end:
                 continue  # isolated node keeps its own label
@@ -67,4 +87,10 @@ def chinese_whispers(
             candidates = uniq[totals >= best - 1e-12]
             labels[node] = candidates.min()
 
+    emitter.progress("cluster.labels", budget, budget)
+    emitter.log(
+        "info",
+        f"cluster.labels: {len(np.unique(labels))} label(s) after propagation",
+        phase="cluster.labels",
+    )
     return labels

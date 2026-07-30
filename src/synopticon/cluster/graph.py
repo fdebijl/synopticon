@@ -14,6 +14,7 @@ import numpy as np
 
 from ..config import Settings
 from ..db import store
+from ..progress import get_emitter
 
 
 def _l2_normalize(mat: np.ndarray, axis: int = -1) -> np.ndarray:
@@ -36,22 +37,38 @@ def load_fused(
 
     Returns ``face_ids`` (int64, ascending) and ``X`` (float32, ``(N, D)``).
     """
-    rows = conn.execute(
+    emitter = get_emitter()
+    # Stream the cursor rather than fetchall(): on a large library nearly all the
+    # wall-clock of this phase is pulling the blobs out of SQLite, so a
+    # fetchall() up front would do the waiting *before* the first progress event
+    # and then race through the decode loop, reporting a phase that looks
+    # instant after an unexplained multi-second freeze. The extra COUNT is an
+    # index scan, cheap next to reading the vectors.
+    total = conn.execute(
+        "SELECT COUNT(*) FROM embeddings WHERE variant = 'orig'"
+    ).fetchone()[0]
+    cursor = conn.execute(
         "SELECT face_id, model, dim, vec FROM embeddings WHERE variant = 'orig'"
-    ).fetchall()
+    )
 
     # face_id -> {model: vector}
     by_face: dict[int, dict[str, np.ndarray]] = {}
     models: set[str] = set()
-    for row in rows:
+    seen = 0
+    for row in cursor:
         fid = int(row["face_id"])
         model = row["model"]
         vec = store.blob_to_vec(row["vec"]).reshape(int(row["dim"]))
         by_face.setdefault(fid, {})[model] = vec
         models.add(model)
+        seen += 1
+        if seen % 2000 == 0:
+            emitter.progress("cluster.load", seen, total)
+    emitter.progress("cluster.load", seen, max(seen, total))
 
     sorted_models = sorted(models)
     if not sorted_models:
+        emitter.log("warning", "no embeddings found — run `synopticon extract` first")
         return np.empty(0, dtype=np.int64), np.empty((0, 0), dtype=np.float32)
 
     weights = dict(settings.clustering.fusion_weights)
@@ -59,6 +76,12 @@ def load_fused(
     # Keep only faces having all available models.
     complete = sorted(
         fid for fid, mv in by_face.items() if all(m in mv for m in sorted_models)
+    )
+    emitter.log(
+        "info",
+        f"cluster.load: {len(complete)} face(s) with all {len(sorted_models)} model(s) "
+        f"({', '.join(sorted_models)}); {len(by_face) - len(complete)} incomplete, skipped",
+        phase="cluster.load",
     )
     if not complete:
         return np.empty(0, dtype=np.int64), np.empty((0, 0), dtype=np.float32)
@@ -80,9 +103,11 @@ def _knn_numpy(
     X: np.ndarray, k: int, chunk: int
 ) -> tuple[np.ndarray, np.ndarray]:
     n = X.shape[0]
+    emitter = get_emitter()
     indices = np.empty((n, k), dtype=np.int32)
     sims = np.empty((n, k), dtype=np.float32)
     for start in range(0, n, chunk):
+        emitter.progress("cluster.graph", start, n)
         end = min(start + chunk, n)
         block = X[start:end] @ X.T  # (chunk, n), cosine since X normalized
         # Exclude self.
@@ -95,6 +120,7 @@ def _knn_numpy(
         top_sims = np.take_along_axis(part_sims, order, axis=1)
         indices[start:end] = top_idx.astype(np.int32)
         sims[start:end] = top_sims.astype(np.float32)
+    emitter.progress("cluster.graph", n, n)
     return indices, sims
 
 
@@ -102,6 +128,7 @@ def _knn_faiss(X: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     import faiss  # type: ignore
 
     n, d = X.shape
+    emitter = get_emitter()
     index = faiss.IndexFlatIP(d)
     index.add(np.ascontiguousarray(X, dtype=np.float32))
     # Retrieve k+1 to drop self.
@@ -109,6 +136,8 @@ def _knn_faiss(X: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     indices = np.empty((n, k), dtype=np.int32)
     sims = np.empty((n, k), dtype=np.float32)
     for i in range(n):
+        if i % 5000 == 0:
+            emitter.progress("cluster.graph", i, n)
         row_idx = idx_all[i]
         row_sim = sims_all[i]
         mask = row_idx != i
@@ -125,6 +154,7 @@ def _knn_faiss(X: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
     order = np.argsort(-sims, axis=1)
     indices = np.take_along_axis(indices, order, axis=1)
     sims = np.take_along_axis(sims, order, axis=1)
+    emitter.progress("cluster.graph", n, n)
     return indices, sims
 
 
@@ -137,6 +167,7 @@ def knn_graph(
     results are sorted identically (descending sim) so both paths agree.
     """
     n = X.shape[0]
+    emitter = get_emitter()
     kk = min(k, n - 1) if n > 1 else 0
     if kk <= 0:
         return (
@@ -146,8 +177,12 @@ def knn_graph(
     try:
         import faiss  # noqa: F401
 
+        emitter.log("info", f"cluster.graph: exact top-{kk} kNN over {n} faces (faiss)",
+                    phase="cluster.graph")
         return _knn_faiss(X, kk)
     except Exception:
+        emitter.log("info", f"cluster.graph: exact top-{kk} kNN over {n} faces (numpy)",
+                    phase="cluster.graph")
         return _knn_numpy(X, kk, chunk)
 
 
@@ -205,8 +240,13 @@ def build_or_load_graph(
     """
     k = settings.clustering.knn_k
     weights = dict(settings.clustering.fusion_weights)
+    emitter = get_emitter()
     cached = load_graph(settings.storage.data_dir, face_ids, k, weights)
     if cached is not None:
+        emitter.log(
+            "info", "cluster.graph: reusing cached kNN graph (same faces, k and weights)",
+            phase="cluster.graph",
+        )
         return cached
     indices, sims = knn_graph(X, k)
     save_graph(settings.storage.data_dir, face_ids, k, weights, indices, sims)

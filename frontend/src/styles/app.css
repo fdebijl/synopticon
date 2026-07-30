@@ -254,6 +254,13 @@ table.data th { color: var(--text-2); font-weight: 600; }
 .job-panel-head { display: flex; align-items: center; gap: var(--sp-2); }
 .job-panel-title { font-weight: 600; }
 .job-panel-spacer { flex: 1; }
+.job-panel-cmd { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Live counts/rate/ETA above the bar. Tabular figures stop the digits jittering
+   as the numbers tick over. */
+.job-progress-meta {
+  font-size: var(--fs-sm); color: var(--text-2); margin-bottom: var(--sp-1);
+  font-variant-numeric: tabular-nums; min-height: 1.2em;
+}
 .job-log {
   margin: 0; max-height: 320px; overflow: auto; background: var(--bg-sunken);
   border-radius: var(--radius); padding: var(--sp-2) var(--sp-3); font-size: var(--fs-sm);
@@ -261,6 +268,16 @@ table.data th { color: var(--text-2); font-weight: 600; }
 }
 .job-log .log-warning { color: var(--warn); }
 .job-log .log-error { color: var(--danger); }
+/* Phase transitions are the log's structure — brighter than the lines they group. */
+.job-log .log-phase { color: var(--action); font-weight: 600; margin-top: var(--sp-1); }
+/* Console-mirrored lines are secondary to the structured ones. */
+.job-log .log-stream-stdout { color: var(--text-2); }
+.job-log .log-placeholder { color: var(--text-2); font-style: italic; }
+.job-error {
+  margin: 0; background: rgba(216, 67, 67, .12); color: var(--danger);
+  border-radius: var(--radius); padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-base); word-break: break-word;
+}
 
 /* ----------------------------- REVIEW ---------------------------------- */
 .toolbar {

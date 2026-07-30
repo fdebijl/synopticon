@@ -67,6 +67,22 @@ with open(p, "a") as f:
     f.write(json.dumps({"v": 1, "event": "log", "message": "ok"}) + "\n")
 """
 
+# Writes only to the console: a plain stdout line, an in-place redraw sequence, an
+# ANSI-coloured stderr warning, and a final line with no trailing newline.
+_SCRIPT_CONSOLE = r"""
+import sys
+print("hello from stdout")
+sys.stderr.write("\x1b[33mwatch out\x1b[0m\n")
+sys.stderr.write("step: 1/3\rstep: 2/3\rstep: 3/3\n")
+sys.stdout.write("no trailing newline")
+"""
+
+# Dies with an uncaught exception and emits no structured event at all.
+_SCRIPT_CRASH = r"""
+print("got as far as here")
+raise RuntimeError("model weights not found")
+"""
+
 
 def _builder(script: str):
     return lambda argv: [sys.executable, "-c", script, *argv]
@@ -77,6 +93,8 @@ def _fake_specs():
         "progress": JobSpec("progress", lambda p: [str(p.get("n", 3)), str(p.get("nap", 0.1))]),
         "sleep": JobSpec("sleep", lambda p: []),
         "malformed": JobSpec("malformed", lambda p: []),
+        "console": JobSpec("console", lambda p: []),
+        "crash": JobSpec("crash", lambda p: []),
     }
 
 
@@ -167,6 +185,120 @@ def test_malformed_line_wrapped_as_log(manager_factory):
     malformed = [e for e in events if e.get("malformed")]
     assert len(malformed) == 1
     assert malformed[0]["event"] == "log" and malformed[0]["message"] == "this is not json"
+
+
+def _log_messages(jm: JobManager, jid: str) -> list[str]:
+    return [e["message"] for e in jm.events(jid) if e["event"] == "log"]
+
+
+def test_console_output_is_mirrored_as_log_events(manager_factory):
+    """stdout/stderr reach the GUI, ANSI-stripped and with `\\r` frames collapsed."""
+    jm = manager_factory(_SCRIPT_CONSOLE)
+    jid = jm.submit("console")
+    _wait_state(jm, jid, "succeeded")
+    assert _wait(lambda: len(_log_messages(jm, jid)) >= 4)
+    logs = [e for e in jm.events(jid) if e["event"] == "log"]
+    by_msg = {e["message"]: e for e in logs}
+
+    assert by_msg["hello from stdout"]["stream"] == "stdout"
+    assert by_msg["hello from stdout"]["level"] == "info"
+    # ANSI colour codes are stripped, not shown literally.
+    assert by_msg["watch out"]["stream"] == "stderr"
+    assert by_msg["watch out"]["level"] == "warning"
+    # An in-place redraw collapses to its final frame only.
+    assert "step: 3/3" in by_msg
+    assert "step: 1/3" not in by_msg and "step: 2/3" not in by_msg
+    # A trailing line with no newline is still flushed.
+    assert "no trailing newline" in by_msg
+
+
+def test_crash_with_no_events_still_explains_itself(manager_factory):
+    """A traceback-only failure yields an `error` event and a job.error headline."""
+    jm = manager_factory(_SCRIPT_CRASH)
+    jid = jm.submit("crash")
+    meta = _wait_state(jm, jid, "failed")
+    assert meta["exit_code"] != 0
+    # The reason skips the traceback scaffolding and names the exception.
+    assert meta["error"] == "RuntimeError: model weights not found"
+    assert _wait(lambda: any(e["event"] == "error" for e in jm.events(jid)))
+    err = next(e for e in jm.events(jid) if e["event"] == "error")
+    assert err["message"] == "RuntimeError: model weights not found"
+    # stdout printed before the crash is preserved as context.
+    assert "got as far as here" in _log_messages(jm, jid)
+
+
+def test_error_event_is_not_synthesized_when_command_reported_one(manager_factory, tmp_path):
+    """An explicit `error` event is authoritative; no second one is invented."""
+    script = r"""
+import os, json, sys
+p = os.environ["SYNOPTICON_PROGRESS_FILE"]
+with open(p, "a") as f:
+    f.write(json.dumps({"v": 1, "event": "error", "message": "config invalid"}) + "\n")
+sys.exit(1)
+"""
+    jm = manager_factory(script)
+    jm._specs["crash"] = JobSpec("crash", lambda p: [])
+    jid = jm.submit("crash")
+    _wait_state(jm, jid, "failed")
+    assert _wait(lambda: any(e["event"] == "error" for e in jm.events(jid)))
+    errors = [e for e in jm.events(jid) if e["event"] == "error"]
+    assert [e["message"] for e in errors] == ["config invalid"]
+
+
+def test_events_replayed_from_disk_for_a_job_this_process_never_ran(manager_factory, tmp_path):
+    """A job from a previous server run must not render as an empty log."""
+    jm = manager_factory(_SCRIPT_CONSOLE)
+    jid = jm.submit("console")
+    _wait_state(jm, jid, "succeeded")
+    assert _wait(lambda: len(_log_messages(jm, jid)) >= 4)
+    live = jm.events(jid)
+
+    # A fresh manager over the same dir has nothing in memory for this job.
+    fresh = manager_factory(_SCRIPT_CONSOLE)
+    assert jid not in fresh._jobs
+    replayed = fresh.events(jid)
+
+    # Same content. Not the same order: the console streams carry no timestamps,
+    # so a replay groups stdout then stderr instead of reproducing the live
+    # per-poll interleave (documented in JobManager._replay).
+    assert sorted(e["message"] for e in replayed if e["event"] == "log") == sorted(
+        _log_messages(jm, jid)
+    )
+    assert replayed[-1]["event"] == "final"
+    assert replayed[-1]["state"] == "succeeded"
+    assert len(replayed) >= len([e for e in live if e["event"] != "final"])
+
+    # seq is dense and the `after=` cursor drains, exactly like the live path.
+    assert [e["seq"] for e in replayed] == list(range(1, len(replayed) + 1))
+    assert fresh.events(jid, after=len(replayed)) == []
+    assert fresh.get(jid)["seq"] == len(replayed)
+    # Repeated reads are served from the cache and stay identical.
+    assert fresh.events(jid) == replayed
+
+
+def test_running_job_listing_carries_a_progress_snapshot(manager_factory):
+    """The topbar/dashboard show how far a job got without opening a stream."""
+    jm = manager_factory()
+    jid = jm.submit("progress", {"n": 6, "nap": 0.25})
+    assert _wait(lambda: (jm.get(jid).get("progress") or {}).get("done"))
+    snap = jm.get(jid)["progress"]
+    assert snap["phase"] == "test"
+    assert 1 <= snap["done"] <= 6 and snap["total"] == 6
+    assert snap["pct"] == round(snap["done"] * 100 / 6)
+    # Present on the listing endpoints too, for jobs this process is running.
+    assert next(m for m in jm.history() if m["id"] == jid)["progress"]["phase"] == "test"
+    assert next(m for m in jm.list_jobs() if m["id"] == jid)["progress"]["phase"] == "test"
+
+    _wait_state(jm, jid, "succeeded")
+    # Never persisted: a stale percentage on disk would outlive the run.
+    on_disk = json.loads((jm.jobs_dir / jid / "job.json").read_text())
+    assert "progress" not in on_disk
+
+
+def test_replay_of_unknown_job_is_empty(manager_factory):
+    jm = manager_factory()
+    assert jm.events("does-not-exist") == []
+    assert jm.get("does-not-exist") is None
 
 
 def test_sigint_cancel_marks_cancelled(manager_factory):

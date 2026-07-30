@@ -18,6 +18,12 @@ Design (see the web-GUI plan §2 and §6):
   redirected to files; a 250 ms tailer thread follows `events.jsonl` into an
   in-memory ring buffer with a monotonic `seq` cursor and a latest-per-phase
   snapshot. `job.json` metadata is rewritten on every state change.
+* The tailer follows `stdout.log` / `stderr.log` too, mirroring them as `log`
+  events (tagged with `stream`, ANSI-stripped, `\r` redraws collapsed to their
+  final frame). Without this a command that dies before emitting any structured
+  event — bad config, missing weights, an uncaught traceback — leaves the GUI
+  with an empty log and no cause. A non-zero exit that emitted no `error` event
+  additionally gets one synthesized from the tail of stderr.
 * On startup, jobs left `running` by a crashed server are re-adopted if their
   pid is still a live `synopticon` process, else marked `interrupted`.
 """
@@ -27,6 +33,7 @@ from __future__ import annotations
 import enum
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -477,9 +484,13 @@ def resolve_argv(
 # --------------------------------------------------------------------------- #
 
 _MAX_IN_FLIGHT = 5
-_RING_SIZE = 5000
+# Console output shares the ring with structured events, and a dry-run `dedupe`
+# over a large library legitimately prints thousands of lines.
+_RING_SIZE = 20000
 _TAIL_INTERVAL = 0.25
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
+#: Replayed-from-disk event lists held in memory (a full job log each).
+_REPLAY_CACHE_MAX = 8
 
 
 @dataclass
@@ -502,7 +513,15 @@ class Job:
     seq: int = 0
     events: deque = field(default_factory=lambda: deque(maxlen=_RING_SIZE), repr=False)
     latest: dict[str, dict] = field(default_factory=dict, repr=False)
+    #: Most recent `progress` event, for the compact snapshot on job listings.
+    last_progress: dict | None = field(default=None, repr=False)
     _tail_pos: int = 0
+    # Independent read cursors for stdout.log / stderr.log, which are followed
+    # alongside events.jsonl and surfaced as `log` events.
+    _out_pos: dict[str, int] = field(default_factory=dict, repr=False)
+    #: Last few stderr lines, kept to explain a non-zero exit that emitted no
+    #: structured `error` event (an uncaught traceback, an import failure, ...).
+    stderr_tail: deque = field(default_factory=lambda: deque(maxlen=20), repr=False)
 
     def meta(self) -> dict:
         return {
@@ -524,6 +543,68 @@ def _default_command(argv: list[str]) -> list[str]:
     return [sys.executable, "-m", "synopticon", *argv]
 
 
+#: CSI escape sequences (colour, cursor moves) emitted by typer.secho / tqdm.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+
+
+def _console_line(raw: str) -> str:
+    """Normalize one console line for display, or '' if there is nothing to show.
+
+    Two terminal-only behaviours have to be undone. Progress writers redraw in
+    place with ``\\r``, so a single "line" can hold dozens of superseded frames —
+    only the last one is current. And colour is expressed as ANSI escapes, which
+    would render as literal noise in the browser.
+    """
+    if "\r" in raw:
+        frames = [seg for seg in raw.split("\r") if seg.strip()]
+        raw = frames[-1] if frames else ""
+    return _ANSI_RE.sub("", raw).rstrip()
+
+
+def _progress_snapshot(job: "Job") -> dict | None:
+    """Compact `{phase, space, done, total, pct}` for a job listing, or None.
+
+    Deliberately not part of ``Job.meta()``: that shape is what gets written to
+    job.json, and a persisted progress figure would be stale the moment the job
+    ends or the server restarts.
+    """
+    evt = job.last_progress
+    if evt is None:
+        return None
+    done, total = evt.get("done"), evt.get("total")
+    pct = None
+    if isinstance(done, int) and isinstance(total, int) and total > 0:
+        pct = min(100, max(0, round(done * 100 / total)))
+    return {
+        "phase": evt.get("phase"),
+        "space": evt.get("space"),
+        "done": done,
+        "total": total,
+        "pct": pct,
+    }
+
+
+def _failure_reason(job: "Job") -> str:
+    """One-line explanation for a non-zero exit, from the tail of stderr.
+
+    Prefers the last line of a Python traceback (the exception itself) over the
+    frame listing above it; falls back to the exit code when stderr is empty.
+    """
+    lines = [ln for ln in job.stderr_tail if ln.strip()]
+    for line in reversed(lines):
+        # Skip traceback scaffolding (indented frames + source echo, and the
+        # "Traceback" banner) to land on the message that explains it.
+        if line.startswith((" ", "\t")):
+            continue
+        stripped = line.strip()
+        if stripped.startswith(("Traceback (", "^", "~")):
+            continue
+        return stripped[:500]
+    if lines:
+        return lines[-1].strip()[:500]
+    return f"exited with code {job.exit_code} and no output"
+
+
 class JobManager:
     """Serialized subprocess job runner backed by flat files under ``jobs_dir``."""
 
@@ -542,6 +623,9 @@ class JobManager:
         self._lock = threading.RLock()
         self._cv = threading.Condition(self._lock)
         self._jobs: dict[str, Job] = {}
+        #: job_id -> (identity, events) for jobs replayed off disk. Keyed on the
+        #: job's terminal identity so a re-adopted job re-reads.
+        self._replay_cache: dict[str, tuple[tuple, list[dict]]] = {}
         self._pending: deque[str] = deque()
         self._current: str | None = None
         self._stop = False
@@ -610,36 +694,130 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(job_id)
             if job is not None:
-                data = job.meta()
+                data = self._with_progress(job)
                 data["seq"] = job.seq
                 data["latest"] = {p: dict(e) for p, e in job.latest.items()}
                 return data
-        return self._load_meta(self.jobs_dir / job_id)
+        meta = self._load_meta(self.jobs_dir / job_id)
+        if meta is not None:
+            # Match the in-memory shape so a replayed job is indistinguishable
+            # to the API: `seq` is the highest replayed sequence number.
+            replayed = self._replay(job_id)
+            meta["seq"] = replayed[-1]["seq"] if replayed else 0
+        return meta
 
     def events(self, job_id: str, after: int = 0) -> list[dict]:
-        """Ring-buffered events for a job with ``seq > after`` (empty if unknown)."""
+        """Events for a job with ``seq > after`` (empty if unknown).
+
+        Served from the in-memory ring for jobs this process ran, and replayed
+        from the job directory for everything older. Without the replay every job
+        that predates the current server process renders as an empty log — the
+        history list happily shows it (that comes from ``job.json``) while the
+        events, stdout and stderr sitting right next to it on disk are ignored.
+        """
         with self._lock:
             job = self._jobs.get(job_id)
-            if job is None:
-                return []
-            return [dict(e) for e in job.events if e.get("seq", 0) > after]
+            if job is not None:
+                return [dict(e) for e in job.events if e.get("seq", 0) > after]
+        return [e for e in self._replay(job_id) if e.get("seq", 0) > after]
+
+    def _replay(self, job_id: str) -> list[dict]:
+        """Reconstruct a finished job's event list from its directory (cached).
+
+        Ordering is structured events, then stdout, then stderr: the console
+        streams carry no timestamps, so a true interleave is not recoverable —
+        and a live run's 250 ms poll batches them the same way. ``seq`` is
+        assigned by position, which is stable because a terminal job's files no
+        longer change, so the client's ``after=`` cursor keeps working.
+        """
+        job_dir = self.jobs_dir / job_id
+        meta = self._load_meta(job_dir)
+        if meta is None:
+            return []
+        key = (job_id, meta.get("state"), meta.get("ended_at"))
+        with self._lock:
+            cached = self._replay_cache.get(job_id)
+            if cached is not None and cached[0] == key:
+                return cached[1]
+
+        events: list[dict] = []
+        for line in self._read_lines(job_dir / "events.jsonl"):
+            try:
+                evt = json.loads(line)
+            except (ValueError, json.JSONDecodeError):
+                continue
+            if isinstance(evt, dict):
+                events.append(evt)
+        for stream in ("stdout", "stderr"):
+            level = "warning" if stream == "stderr" else "info"
+            for line in self._read_lines(job_dir / f"{stream}.log"):
+                text = _console_line(line)
+                if text:
+                    events.append(
+                        {"v": 1, "event": "log", "level": level,
+                         "message": text, "stream": stream}
+                    )
+        if meta.get("error"):
+            events.append({"v": 1, "event": "error", "message": meta["error"]})
+        if meta.get("state") in _TERMINAL_STATES:
+            events.append(
+                {"v": 1, "event": "final", "state": meta["state"],
+                 "exit_code": meta.get("exit_code")}
+            )
+        for i, evt in enumerate(events, start=1):
+            evt["seq"] = i
+
+        # Only cache a finished job: a job still being written (one another
+        # process is running) has no stable identity to key on, so caching it
+        # would freeze its log at whatever it had reached.
+        if meta.get("state") in _TERMINAL_STATES:
+            with self._lock:
+                if len(self._replay_cache) >= _REPLAY_CACHE_MAX:
+                    self._replay_cache.clear()
+                self._replay_cache[job_id] = (key, events)
+        return events
+
+    @staticmethod
+    def _read_lines(path: Path) -> list[str]:
+        """All lines of ``path``, newline translation off (empty if unreadable)."""
+        try:
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+                return f.read().split("\n")
+        except OSError:
+            return []
 
     def list_jobs(self) -> list[dict]:
         """In-memory jobs, newest first (created_at desc)."""
         with self._lock:
-            metas = [j.meta() for j in self._jobs.values()]
+            metas = [self._with_progress(j) for j in self._jobs.values()]
         metas.sort(key=lambda m: m.get("created_at") or 0, reverse=True)
         return metas
 
     def history(self, limit: int = 50) -> list[dict]:
-        """Newest ``limit`` jobs read from job.json on disk (survives restart)."""
+        """Newest ``limit`` jobs read from job.json on disk (survives restart).
+
+        A job this process is running also carries its live ``progress``
+        snapshot, so a listing (the topbar chip, the dashboard) can show how far
+        along it is without opening a stream per job.
+        """
         metas: list[dict] = []
         for d in self.jobs_dir.iterdir() if self.jobs_dir.is_dir() else []:
             meta = self._load_meta(d)
-            if meta is not None:
-                metas.append(meta)
+            if meta is None:
+                continue
+            with self._lock:
+                job = self._jobs.get(meta.get("id") or d.name)
+                if job is not None:
+                    meta["progress"] = _progress_snapshot(job)
+            metas.append(meta)
         metas.sort(key=lambda m: m.get("created_at") or 0, reverse=True)
         return metas[:limit]
+
+    def _with_progress(self, job: Job) -> dict:
+        """``job.meta()`` plus the live progress snapshot. Caller holds the lock."""
+        meta = job.meta()
+        meta["progress"] = _progress_snapshot(job)
+        return meta
 
     # -- cancellation / shutdown ------------------------------------------- #
 
@@ -775,7 +953,25 @@ class JobManager:
             else:
                 state = "failed"
             job.proc = None
+            explained = any(e.get("event") == "error" for e in job.events)
+            reason = _failure_reason(job) if state == "failed" and not explained else None
+            if reason:
+                job.error = reason
             self._set_state(job, state)
+        # A failure the command did not narrate itself must still say *something*
+        # useful: promote the tail of stderr into a real `error` event so the UI
+        # has a headline instead of just a red "failed" chip.
+        if reason:
+            self._ingest_event(
+                job,
+                {
+                    "v": 1,
+                    "ts": time.time(),
+                    "event": "error",
+                    "message": reason,
+                    "exit_code": rc,
+                },
+            )
         # Synthesize the authoritative terminal event (exit code is truth).
         self._ingest(
             job,
@@ -793,20 +989,21 @@ class JobManager:
     # -- event tailing ------------------------------------------------------ #
 
     def _tail(self, job: Job, is_running: Callable[[], bool]) -> None:
-        """Follow events.jsonl into the ring buffer until the process exits."""
+        """Follow events.jsonl *and* stdout/stderr into the ring until exit.
+
+        The console streams matter as much as the structured events: a command
+        that dies before it emits anything (bad config, missing model weights,
+        an uncaught traceback) would otherwise leave the GUI with a completely
+        empty log and no way to tell *why* it failed. Everything a terminal user
+        would have seen is therefore mirrored as `log` events, tagged with the
+        stream it came from.
+        """
         path = job.dir / "events.jsonl"
         buf = ""
+        console: dict[str, str] = {"stdout": "", "stderr": ""}
         while True:
             exited = not is_running()
-            chunk = ""
-            try:
-                if path.exists():
-                    with path.open("r", encoding="utf-8", errors="replace") as f:
-                        f.seek(job._tail_pos)
-                        chunk = f.read()
-                        job._tail_pos = f.tell()
-            except OSError:
-                chunk = ""
+            chunk = self._read_new(job, path, "events")
             if chunk:
                 buf += chunk
                 lines = buf.split("\n")
@@ -815,13 +1012,66 @@ class JobManager:
                     line = line.strip()
                     if line:
                         self._ingest(job, line)
+            for stream in ("stdout", "stderr"):
+                console[stream] = self._tail_console(job, stream, console[stream])
             if exited:
                 break
             time.sleep(_TAIL_INTERVAL)
-        # Flush a trailing line with no newline.
+        # Flush trailing partial lines (no newline written before exit).
         tail = buf.strip()
         if tail:
             self._ingest(job, tail)
+        for stream in ("stdout", "stderr"):
+            self._tail_console(job, stream, console[stream], flush=True)
+
+    def _read_new(self, job: Job, path: Path, key: str) -> str:
+        """Read everything appended to ``path`` since this job's last read."""
+        pos = job._tail_pos if key == "events" else job._out_pos.get(key, 0)
+        try:
+            if not path.exists():
+                return ""
+            # newline="" disables universal-newline translation. Without it a
+            # progress writer's `\r` redraws arrive already rewritten to `\n`,
+            # i.e. as hundreds of separate lines that can no longer be collapsed
+            # back to the final frame.
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as f:
+                f.seek(pos)
+                chunk = f.read()
+                pos = f.tell()
+        except OSError:
+            return ""
+        if key == "events":
+            job._tail_pos = pos
+        else:
+            job._out_pos[key] = pos
+        return chunk
+
+    def _tail_console(self, job: Job, stream: str, buf: str, flush: bool = False) -> str:
+        """Ingest newly-written ``<stream>.log`` lines; return the partial remainder."""
+        buf += self._read_new(job, job.dir / f"{stream}.log", stream)
+        lines = buf.split("\n")
+        # Hold back the trailing partial line until its newline arrives; on the
+        # final flush there is nothing more coming, so take it as-is.
+        buf = "" if flush else lines.pop()
+        level = "warning" if stream == "stderr" else "info"
+        for raw in lines:
+            text = _console_line(raw)
+            if not text:
+                continue
+            if stream == "stderr":
+                job.stderr_tail.append(text)
+            self._ingest_event(
+                job,
+                {
+                    "v": 1,
+                    "ts": time.time(),
+                    "event": "log",
+                    "level": level,
+                    "message": text,
+                    "stream": stream,
+                },
+            )
+        return buf
 
     def _ingest(self, job: Job, line: str) -> None:
         try:
@@ -836,6 +1086,9 @@ class JobManager:
                 "message": line,
                 "malformed": True,
             }
+        self._ingest_event(job, evt)
+
+    def _ingest_event(self, job: Job, evt: dict) -> None:
         with self._lock:
             job.seq += 1
             evt["seq"] = job.seq
@@ -843,6 +1096,8 @@ class JobManager:
             phase = evt.get("phase")
             if isinstance(phase, str) and phase:
                 job.latest[phase] = evt
+            if evt.get("event") == "progress":
+                job.last_progress = evt
 
     # -- cancellation escalation ------------------------------------------- #
 

@@ -208,8 +208,14 @@ def run_extract(
     stats = ExtractStats()
     rows = _fetch_work(conn, space, version, limit, photo_id)
     emitter = get_emitter()
-
-    for i, row in enumerate(tqdm(rows, desc="extract", unit="photo")):
+    log.info(
+        "extract: %d photo(s) queued (space=%s, pipeline_version=%s, restoration=%s)",
+        len(rows), space, version[:12], "on" if restoration_on else "off",
+    )
+    # A consumer of the progress protocol renders the structured `progress`
+    # events itself; tqdm's carriage-return redraws on stderr would only add
+    # noise to the same log.
+    for i, row in enumerate(tqdm(rows, desc="extract", unit="photo", disable=emitter.enabled)):
         try:
             _process_photo(
                 conn, settings, row, space, version, detector, ensemble,
