@@ -492,6 +492,25 @@ _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"}
 #: Replayed-from-disk event lists held in memory (a full job log each).
 _REPLAY_CACHE_MAX = 8
 
+#: Thread-count variables honoured by the numeric stacks a job pulls in. Left
+#: alone, OpenBLAS/OpenMP size their pools to the machine and *busy-spin*
+#: between calls, so a clustering job's `X @ X.T` puts one hot thread on every
+#: core. The web server is a single process sharing those cores: its worker
+#: threads then need tens of seconds of wall-clock to do a millisecond of work,
+#: which reads from the outside as "the whole API froze" (the event loop, which
+#: only ever wakes to do a few microseconds at a time, sails through — so the
+#: watchdog reports no lag and an idle threadpool while requests take 90 s).
+_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+)
+#: Default niceness for a job subprocess. Batch work by definition, and the one
+#: thing it must not do is make the GUI that launched it unusable.
+_JOB_NICE = 10
+
 
 @dataclass
 class Job:
@@ -614,11 +633,19 @@ class JobManager:
         *,
         specs: dict[str, JobSpec] | None = None,
         command_builder: Callable[[list[str]], list[str]] | None = None,
+        thread_cap: int | None = None,
+        nice: int = _JOB_NICE,
     ):
         self.jobs_dir = Path(jobs_dir)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self._specs = specs if specs is not None else JOB_SPECS
         self._command_builder = command_builder or _default_command
+        # `None` -> reserve one core for the server; 0 -> leave the environment
+        # untouched (the operator is managing thread counts themselves).
+        if thread_cap is None:
+            thread_cap = max(1, (os.cpu_count() or 2) - 1)
+        self._thread_cap = max(0, int(thread_cap))
+        self._nice = max(0, int(nice))
 
         self._lock = threading.RLock()
         self._cv = threading.Condition(self._lock)
@@ -896,6 +923,11 @@ class JobManager:
         env = os.environ.copy()
         env["SYNOPTICON_PROGRESS_FILE"] = str(events_path)
         env["PYTHONUNBUFFERED"] = "1"
+        # Must be in the environment *before* exec: the numeric stacks read these
+        # once, at import, and size their pools for the life of the process.
+        for var in _THREAD_ENV_VARS:
+            if self._thread_cap and var not in env:
+                env[var] = str(self._thread_cap)
         command = self._command_builder(job.argv)
 
         stdout_f = (job.dir / "stdout.log").open("wb")
@@ -918,6 +950,8 @@ class JobManager:
                 job.ended_at = time.time()
                 self._set_state(job, "failed")
             return
+
+        self._renice(proc.pid)
 
         # Publish proc *before* marking running so a cancel that raced the
         # queued->running transition can always find the process to signal;
@@ -1098,6 +1132,29 @@ class JobManager:
                 job.latest[phase] = evt
             if evt.get("event") == "progress":
                 job.last_progress = evt
+
+    # -- child resource limits ---------------------------------------------- #
+
+    def _renice(self, pid: int) -> None:
+        """Lower the child's scheduling priority. Best-effort, never fatal.
+
+        Applied from the parent rather than via ``preexec_fn``: running Python
+        between fork and exec is documented as unsafe in a threaded program
+        (this process has a worker, a tailer and the whole AnyIO pool), and it
+        also forces CPython off its ``posix_spawn``/vfork fast path.
+
+        Doing it after ``Popen`` is a race on paper only. Linux niceness is
+        per-thread and inherited at thread creation, so what matters is landing
+        before the child spawns its BLAS/OpenMP pool — that happens on the first
+        matmul, seconds to minutes into a job, while this runs microseconds
+        after the fork.
+        """
+        if not self._nice or not hasattr(os, "setpriority"):
+            return
+        try:
+            os.setpriority(os.PRIO_PROCESS, pid, self._nice)
+        except OSError:
+            pass
 
     # -- cancellation escalation ------------------------------------------- #
 

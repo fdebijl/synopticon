@@ -116,6 +116,35 @@ class InferenceConfig(BaseModel):
             "comparing `synopticon benchmark` stage times across values."
         ),
     )
+    job_threads: int | None = Field(
+        default=None,
+        title="Job BLAS/OpenMP Threads",
+        description=(
+            "Thread cap handed to jobs launched from the web GUI, as OMP_NUM_THREADS "
+            "and friends (BLAS/OpenMP/numexpr). Leave blank for one less than the "
+            "logical core count, which reserves a core for the web server itself.\n"
+            "This is the knob that keeps the GUI responsive while a job runs: "
+            "clustering multiplies large matrices through BLAS, which by default "
+            "spawns one busy-spinning thread per core and starves the single uvicorn "
+            "process — the symptom is unrelated requests all taking tens of seconds "
+            "and completing at the same instant. Set 0 to leave the environment "
+            "alone (a value already exported by the operator always wins). Does not "
+            "govern ONNX Runtime, which has its own pool — see intra_op_threads."
+        ),
+    )
+    job_nice: int = Field(
+        default=10,
+        ge=0,
+        le=19,
+        title="Job Niceness",
+        description=(
+            "Scheduling niceness applied to web-launched job subprocesses (0-19, "
+            "higher yields more CPU to everything else). The default 10 lets an "
+            "interactive request win against a batch job without measurably slowing "
+            "the job down, since it only matters while the two compete. Set 0 to run "
+            "jobs at the same priority as the server."
+        ),
+    )
 
 
 class DetectionConfig(BaseModel):

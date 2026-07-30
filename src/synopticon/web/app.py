@@ -37,9 +37,11 @@ import asyncio
 import itertools
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -69,11 +71,17 @@ _SHELL_CACHE_CONTROL = "no-cache"
 #: opens its own SQLite connection just to resolve the cookie. API keys are
 #: never cached (see ``_credential``), so their revocation stays exact.
 #:
-#: Deliberately short. In-process revocation (logout, password change) clears
-#: the cache outright, so this window only ever applies to a session revoked by
-#: *another* process — ``synopticon reset-password``. Two seconds keeps that
-#: recovery path honest while still collapsing one page load's burst.
-_AUTH_CACHE_TTL = 2.0
+#: In-process revocation (logout, password change) clears the cache outright, so
+#: this window only ever applies to a session revoked by *another* process —
+#: ``synopticon reset-password``, which is a lockout-recovery path where waiting
+#: out a cache is acceptable.
+#:
+#: It used to be 2 s, which is shorter than every polling interval the SPA has
+#: (5 s for jobs while one runs, 15 s for review counts and the job list at
+#: rest). The cache therefore never hit for the steady-state traffic that
+#: dominates an idle GUI — every poll opened its own connection — and only ever
+#: paid off during a crop burst. 30 s covers the pollers as well.
+_AUTH_CACHE_TTL = 30.0
 
 log = logging.getLogger("synopticon.web")
 
@@ -110,6 +118,52 @@ _SLOW_REQUEST_LOG_INTERVAL = 10.0
 #: In-flight requests to name before collapsing the rest into "+N more". A
 #: saturation incident can have hundreds; the oldest few are what matter.
 _IN_FLIGHT_REPORT_MAX = 8
+#: Completed requests remembered so a loop stall can name what ran during it.
+_RECENT_DONE_MAX = 32
+
+
+def _psi(resource: str) -> float | None:
+    """Linux PSI ``some avg10`` for ``cpu``/``io``, or None where unavailable.
+
+    "Percent of the last 10 s during which at least one task was stalled waiting
+    for this resource" — exactly the question being asked when a request that
+    does a millisecond of work takes a minute.
+    """
+    try:
+        with open(f"/proc/pressure/{resource}", encoding="ascii") as fh:
+            for line in fh:
+                if not line.startswith("some "):
+                    continue
+                for field in line.split():
+                    if field.startswith("avg10="):
+                        return float(field[len("avg10=") :])
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def _pressure_report() -> str:
+    """External-contention snapshot for a watchdog line.
+
+    The three stall modes the watchdog already names are all *internal* — the
+    loop, the pool, one slow handler. They cannot describe the fourth: the
+    process was ready to run and the kernel did not schedule it, because a job
+    subprocess had every core. That looks like perfect health from in here (no
+    loop lag, an idle threadpool) while requests take 90 s, so the only way to
+    tell it apart after the fact is to record what the machine was doing.
+
+    Read lazily — only when something is already being logged.
+    """
+    parts = []
+    for resource in ("cpu", "io"):
+        value = _psi(resource)
+        if value is not None:
+            parts.append(f"{resource} stall {value:.0f}%")
+    try:
+        parts.append(f"load {os.getloadavg()[0]:.1f}/{os.cpu_count() or '?'}")
+    except OSError:
+        pass
+    return ", ".join(parts) if parts else "pressure unavailable"
 
 
 def _require_fastapi():
@@ -230,7 +284,18 @@ def create_app(
     store.connect(db_path).close()
 
     jobs_dir = Path(settings.storage.data_dir) / "jobs"
-    jm = job_manager if job_manager is not None else JobManager(jobs_dir)
+    # Jobs share this machine with the server that launched them. Unconstrained,
+    # a clustering run's BLAS pool takes every core and the GUI goes unusable —
+    # see JobManager's `_THREAD_ENV_VARS` / `_renice`.
+    jm = (
+        job_manager
+        if job_manager is not None
+        else JobManager(
+            jobs_dir,
+            thread_cap=settings.inference.job_threads,
+            nice=settings.inference.job_nice,
+        )
+    )
 
     dist = Path(dist_dir) if dist_dir is not None else _DIST_DIR
     dist_root = dist.resolve()
@@ -238,9 +303,18 @@ def create_app(
     limiter = auth.LoginRateLimiter()
 
     # -- responsiveness watchdog ------------------------------------------- #
-    # `in_flight` is only ever touched from the event loop (the timing
-    # middleware and the watchdog both run there), so it needs no lock.
+    # `in_flight` and `recently_done` are only ever touched from the event loop
+    # (the timing middleware and the watchdog both run there), so they need no
+    # lock.
     in_flight: dict[int, tuple[str, float]] = {}
+    #: (label, started, ended) for the last few completed requests.
+    #:
+    #: A request that blocks the *loop* cannot be observed while it does so —
+    #: the watchdog is a loop task, and by the time it runs again the culprit
+    #: has returned and left `in_flight`. Reporting only what is in flight
+    #: "now" therefore names everything except the one request that matters.
+    #: Keeping a short tail lets a stall report what overlapped its window.
+    recently_done: deque[tuple[str, float, float]] = deque(maxlen=_RECENT_DONE_MAX)
     request_seq = itertools.count()
     #: "METHOD <route template>" -> (last logged monotonic, suppressed since).
     #: Keyed on the *route*, not the URL, so a slow disk behind `/crops` cannot
@@ -248,13 +322,27 @@ def create_app(
     #: collapse into one log line, which is what you want to read anyway).
     slow_log_state: dict[str, tuple[float, int]] = {}
 
-    def _in_flight_report(now: float) -> str:
-        oldest_first = sorted(in_flight.values(), key=lambda v: v[1])
-        if not oldest_first:
+    def _in_flight_report(now: float, since: float | None = None) -> str:
+        """Requests still running, oldest first.
+
+        ``since`` additionally folds in requests that *finished* after that
+        moment, tagged ``done``. The watchdog passes the start of the window it
+        just lost to a stall, because the request responsible has necessarily
+        completed before the watchdog could run again.
+        """
+        entries = [(label, now - started, "") for label, started in in_flight.values()]
+        if since is not None:
+            entries += [
+                (label, ended - started, ", done")
+                for label, started, ended in recently_done
+                if ended >= since
+            ]
+        if not entries:
             return "none"
-        shown = oldest_first[:_IN_FLIGHT_REPORT_MAX]
-        report = ", ".join(f"{label} ({now - started:.1f}s)" for label, started in shown)
-        extra = len(oldest_first) - len(shown)
+        entries.sort(key=lambda e: e[1], reverse=True)
+        shown = entries[:_IN_FLIGHT_REPORT_MAX]
+        report = ", ".join(f"{label} ({age:.1f}s{tag})" for label, age, tag in shown)
+        extra = len(entries) - len(shown)
         return f"{report} (+{extra} more)" if extra else report
 
     def _thread_stats() -> tuple[int | None, int | None]:
@@ -284,12 +372,17 @@ def create_app(
             if lag >= _WATCHDOG_STALL:
                 # The loop could not run during the stall, so the thread counts
                 # are a post-drain sample — the lag itself is the finding.
+                # `since=before` is what surfaces the culprit: whatever blocked
+                # the loop had to finish before this line could be written, so
+                # it is in `recently_done`, not in flight.
                 log.warning(
-                    "event loop stalled for %.1fs (threads %s/%s after); in-flight: %s",
+                    "event loop stalled for %.1fs (threads %s/%s after; %s); "
+                    "during stall: %s",
                     lag,
                     borrowed,
                     total,
-                    _in_flight_report(now),
+                    _pressure_report(),
+                    _in_flight_report(now, since=before),
                 )
             elif (
                 borrowed is not None
@@ -299,9 +392,10 @@ def create_app(
             ):
                 last_saturation_log = now
                 log.warning(
-                    "AnyIO worker pool saturated (%s/%s threads); in-flight: %s",
+                    "AnyIO worker pool saturated (%s/%s threads; %s); in-flight: %s",
                     borrowed,
                     total,
+                    _pressure_report(),
                     _in_flight_report(now),
                 )
 
@@ -398,6 +492,17 @@ def create_app(
         token = request.cookies.get(SESSION_COOKIE)
         return ("s:" + token) if token else None
 
+    def _anonymous(request: Request) -> bool:
+        """True when the request presents no credential of any kind.
+
+        ``_credential`` collapses "has a Bearer header" and "has nothing" to the
+        same ``None`` (both are uncacheable), which is the wrong distinction
+        here — an anonymous request needs no database at all.
+        """
+        return not request.headers.get(
+            "authorization", ""
+        ).startswith("Bearer ") and not request.cookies.get(SESSION_COOKIE)
+
     # Once an account exists it can never be removed (there is no delete-user
     # route), so first boot is a one-way latch: cache it and stop querying.
     have_users = False
@@ -418,6 +523,12 @@ def create_app(
                 hit = auth_cache.get(credential)
                 if hit is not None and hit[1] > now:
                     return hit[0], False
+        # No credential at all, and we already know an account exists: the
+        # verdict is "anonymous" without asking the database. This is the whole
+        # of the healthcheck path (a loopback poller has no cookie) and of every
+        # 401, both of which otherwise opened a connection to learn nothing.
+        if have_users and _anonymous(request):
+            return None, False
         c = conn()
         try:
             if not have_users:
@@ -430,132 +541,248 @@ def create_app(
                 auth_cache[credential] = (ident, time.monotonic() + _AUTH_CACHE_TTL)
         return ident, not have_users
 
-    @app.middleware("http")
-    async def auth_middleware(request: Request, call_next):
-        path = request.url.path
-        method = request.method
-        # Hashed SPA bundle: public so /login and /setup can load before a
-        # session exists (mirrors the old /static bypass).
-        if path.startswith("/assets/"):
-            return await call_next(request)
-        # Dist-root files (favicons, site.webmanifest, img/…) are public too —
-        # the login view needs them unauthenticated. index.html is NOT bypassed:
-        # it follows the page auth rules below (only /login and /setup unauth'd).
-        # /api and /crops paths can never name a dist file, so skip the stat()
-        # for them — /crops in particular is one request per face crop.
-        is_api = path.startswith("/api/")
-        if (
-            not is_api
-            and not path.startswith("/crops/")
-            and path != "/index.html"
-            and _resolve_dist_file(path) is not None
-        ):
-            response = await call_next(request)
-            response.headers.setdefault("Cache-Control", _DIST_FILE_CACHE_CONTROL)
-            return response
+    # -- middleware --------------------------------------------------------- #
+    # All three layers below are *pure ASGI*, not Starlette's BaseHTTPMiddleware
+    # (`@app.middleware("http")`), and must stay that way. BaseHTTPMiddleware
+    # relays the response through a memory object stream inside a task group,
+    # which for a `StreamingResponse` means every SSE event crosses one such
+    # stream per layer; with three layers a job log's events were being pumped
+    # through nine hops on the event loop. Worse, when the client disconnects
+    # mid-stream the inner app finishes without ever sending a response start,
+    # and BaseHTTPMiddleware turns that into a spurious, un-catchable
+    # `RuntimeError: No response returned.` — logged on every abandoned job
+    # stream and on every shutdown with a stream open. Pure ASGI has neither
+    # problem: `send` is passed straight through.
 
-        ident, first_boot = await run_in_threadpool(_auth_lookup, request)
-        request.state.ident = ident
-        request.state.first_boot = first_boot
+    def _defaulting_send(send, headers: list[tuple[bytes, bytes]]):
+        """Wrap ``send`` so ``headers`` are added if not already present.
 
-        # CSRF: mutating API calls must be JSON (cookie is SameSite=Lax; a
-        # cross-site form post cannot set application/json).
-        if is_api and method in _MUTATING:
-            ctype = request.headers.get("content-type", "").split(";")[0].strip()
-            if ctype != "application/json":
-                return JSONResponse(
-                    {"error": "Content-Type must be application/json"},
-                    status_code=415,
+        Matches the ``response.headers.setdefault`` the dispatch-style
+        middleware used to do — a handler that sets its own value keeps it.
+        """
+
+        async def wrapped(message):
+            if message["type"] == "http.response.start":
+                raw = list(message.get("headers") or [])
+                present = {name.lower() for name, _ in raw}
+                raw.extend((n, v) for n, v in headers if n not in present)
+                message = {**message, "headers": raw}
+            await send(message)
+
+        return wrapped
+
+    class _AuthMiddleware:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            request = Request(scope, receive)
+            path = scope["path"]
+            method = scope["method"]
+
+            async def forward(response=None):
+                if response is not None:
+                    await response(scope, receive, send)
+                else:
+                    await self.app(scope, receive, send)
+
+            # Hashed SPA bundle: public so /login and /setup can load before a
+            # session exists (mirrors the old /static bypass).
+            if path.startswith("/assets/"):
+                await forward()
+                return
+            # Dist-root files (favicons, site.webmanifest, img/…) are public too
+            # — the login view needs them unauthenticated. index.html is NOT
+            # bypassed: it follows the page auth rules below (only /login and
+            # /setup unauth'd). /api and /crops paths can never name a dist
+            # file, so skip the stat() for them — /crops in particular is one
+            # request per face crop.
+            is_api = path.startswith("/api/")
+            if (
+                not is_api
+                and not path.startswith("/crops/")
+                and path != "/index.html"
+                and _resolve_dist_file(path) is not None
+            ):
+                await self.app(
+                    scope,
+                    receive,
+                    _defaulting_send(
+                        send,
+                        [(b"cache-control", _DIST_FILE_CACHE_CONTROL.encode())],
+                    ),
                 )
+                return
 
-        if first_boot:
-            allowed = (
-                path == "/setup"
-                or path.startswith("/api/setup")
-                or path == "/api/auth/create-account"
-                # /api/auth/me must answer during first boot so the SPA router
-                # guard can detect the claim flow (returns first_boot: true).
+            ident, first_boot = await run_in_threadpool(_auth_lookup, request)
+            # Written into the shared scope, which is the same dict the route
+            # handler's own Request wraps — `request.state.ident` downstream.
+            state = scope.setdefault("state", {})
+            state["ident"] = ident
+            state["first_boot"] = first_boot
+
+            # CSRF: mutating API calls must be JSON (cookie is SameSite=Lax; a
+            # cross-site form post cannot set application/json).
+            if is_api and method in _MUTATING:
+                ctype = request.headers.get("content-type", "").split(";")[0].strip()
+                if ctype != "application/json":
+                    await forward(
+                        JSONResponse(
+                            {"error": "Content-Type must be application/json"},
+                            status_code=415,
+                        )
+                    )
+                    return
+
+            if first_boot:
+                allowed = (
+                    path == "/setup"
+                    or path.startswith("/api/setup")
+                    or path == "/api/auth/create-account"
+                    # /api/auth/me must answer during first boot so the SPA
+                    # router guard can detect the claim flow (first_boot: true).
+                    or path == "/api/auth/me"
+                )
+                if allowed:
+                    await forward()
+                elif is_api:
+                    await forward(
+                        JSONResponse(
+                            {"error": "setup required", "setup": True}, status_code=403
+                        )
+                    )
+                else:
+                    await forward(RedirectResponse("/setup", status_code=302))
+                return
+
+            # Users exist. /login serves the SPA shell without a session so the
+            # LoginView can render (its client-side guard handles the rest).
+            # /api/auth/me reports auth state (always 200) and the JSON login
+            # accepts credentials; both still pass the CSRF gate above.
+            if (
+                path == "/login"
                 or path == "/api/auth/me"
-            )
-            if allowed:
-                return await call_next(request)
-            if is_api:
-                return JSONResponse(
-                    {"error": "setup required", "setup": True}, status_code=403
+                or (path == "/api/auth/login" and method == "POST")
+            ):
+                await forward()
+                return
+            if path == "/api/auth/create-account":
+                await forward(
+                    JSONResponse({"error": "account already exists"}, status_code=403)
                 )
-            return RedirectResponse("/setup", status_code=302)
+                return
 
-        # Users exist. /login serves the SPA shell without a session so the
-        # LoginView can render (its client-side guard handles the rest).
-        if path == "/login":
-            return await call_next(request)
-        # SPA auth endpoints reachable without a session: /api/auth/me reports
-        # auth state (always 200), and the JSON login accepts credentials. Both
-        # still pass the CSRF Content-Type gate above (login is a mutating POST).
-        if path == "/api/auth/me":
-            return await call_next(request)
-        if path == "/api/auth/login" and method == "POST":
-            return await call_next(request)
-        if path == "/api/auth/create-account":
-            return JSONResponse({"error": "account already exists"}, status_code=403)
+            if ident is None:
+                if is_api:
+                    await forward(
+                        JSONResponse(
+                            {"error": "authentication required"}, status_code=401
+                        )
+                    )
+                else:
+                    await forward(
+                        RedirectResponse(f"/login?next={quote(path)}", status_code=302)
+                    )
+                return
+            await forward()
 
-        if ident is None:
-            if is_api:
-                return JSONResponse(
-                    {"error": "authentication required"}, status_code=401
-                )
-            return RedirectResponse(f"/login?next={quote(path)}", status_code=302)
-        return await call_next(request)
+    class _NoStoreAPI:
+        """``Cache-Control: no-store`` on every ``/api`` response.
 
-    # Registered after auth_middleware, so it wraps it: every API response,
-    # including the ones the auth middleware short-circuits, gets the header.
-    # Without it a browser is free to heuristically cache a GET /api/... reply
-    # and serve a stale review queue or job list back to the SPA.
-    @app.middleware("http")
-    async def no_store_api(request: Request, call_next):
-        response = await call_next(request)
-        if request.url.path.startswith("/api/"):
-            response.headers.setdefault("Cache-Control", "no-store")
-        return response
+        Wraps the auth layer, so the replies auth short-circuits (401/302/415)
+        are covered too. Without it a browser is free to heuristically cache a
+        GET /api/… and serve a stale review queue back to the SPA.
+        """
 
-    # Registered last, so it is the *outermost* middleware and its clock covers
-    # everything below it (auth, gzip, routing, handler). The in-flight set it
-    # maintains is what makes the watchdog's log lines actionable — without it a
-    # stall says "something took 24s" and never says what.
-    @app.middleware("http")
-    async def request_timing(request: Request, call_next):
-        key = next(request_seq)
-        label = f"{request.method} {request.url.path}"
-        started = time.monotonic()
-        in_flight[key] = (label, started)
-        try:
-            return await call_next(request)
-        finally:
-            in_flight.pop(key, None)
-            now = time.monotonic()
-            elapsed = now - started
-            if elapsed >= _SLOW_REQUEST:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http" and scope["path"].startswith("/api/"):
+                send = _defaulting_send(send, [(b"cache-control", b"no-store")])
+            await self.app(scope, receive, send)
+
+    class _RequestTiming:
+        """Outermost layer: its clock covers auth, gzip, routing and handler.
+
+        Timing stops at ``http.response.start`` rather than at the end of the
+        body, which is what makes the number meaningful for the SSE endpoint —
+        a job stream is *supposed* to stay open for the length of the job, and
+        measuring that would bury the real stalls under one line per stream.
+        The in-flight set it maintains is what makes the watchdog's lines
+        actionable: without it a stall says "something took 24 s" and never
+        says what else was waiting.
+        """
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            key = next(request_seq)
+            label = f"{scope['method']} {scope['path']}"
+            started = time.monotonic()
+            in_flight[key] = (label, started)
+            done = False
+
+            def finish():
+                nonlocal done
+                if done:
+                    return
+                done = True
+                in_flight.pop(key, None)
+                now = time.monotonic()
+                elapsed = now - started
+                recently_done.append((label, started, now))
+                if elapsed < _SLOW_REQUEST:
+                    return
                 # `route` is set by the router downstream, so it is available by
-                # the time call_next returns; it falls back to the raw path for
-                # a request that never matched anything.
-                route = request.scope.get("route")
-                key_path = getattr(route, "path", None) or request.url.path
-                throttle_key = f"{request.method} {key_path}"
+                # the time the response starts; it falls back to the raw path
+                # for a request that never matched anything.
+                route = scope.get("route")
+                key_path = getattr(route, "path", None) or scope["path"]
+                throttle_key = f"{scope['method']} {key_path}"
                 seen, suppressed = slow_log_state.get(throttle_key, (0.0, 0))
                 if now - seen < _SLOW_REQUEST_LOG_INTERVAL:
                     slow_log_state[throttle_key] = (seen, suppressed + 1)
-                else:
-                    borrowed, total = _thread_stats()
-                    log.warning(
-                        "slow request: %s took %.1fs (threads %s/%s%s); concurrent: %s",
-                        label,
-                        elapsed,
-                        borrowed,
-                        total,
-                        f"; {suppressed} similar suppressed" if suppressed else "",
-                        _in_flight_report(now),
-                    )
-                    slow_log_state[throttle_key] = (now, 0)
+                    return
+                borrowed, total = _thread_stats()
+                log.warning(
+                    "slow request: %s took %.1fs (threads %s/%s; %s%s); concurrent: %s",
+                    label,
+                    elapsed,
+                    borrowed,
+                    total,
+                    _pressure_report(),
+                    f"; {suppressed} similar suppressed" if suppressed else "",
+                    _in_flight_report(now),
+                )
+                slow_log_state[throttle_key] = (now, 0)
+
+            async def timed_send(message):
+                if message["type"] == "http.response.start":
+                    finish()
+                await send(message)
+
+            try:
+                await self.app(scope, receive, timed_send)
+            finally:
+                # Covers the paths that never reach a response start: an
+                # exception on the way down, or a client that vanished.
+                finish()
+
+    # Added innermost-first: Starlette wraps in reverse, so the last one added
+    # is the outermost. Order is load-bearing — see each class's docstring.
+    app.add_middleware(_AuthMiddleware)
+    app.add_middleware(_NoStoreAPI)
+    app.add_middleware(_RequestTiming)
 
     # -- auth helpers ------------------------------------------------------- #
     def _set_session_cookie(resp, token: str, request: Request) -> None:

@@ -83,6 +83,26 @@ print("got as far as here")
 raise RuntimeError("model weights not found")
 """
 
+# Reports the resource limits the manager imposed on it: thread-count env vars
+# and its own niceness.
+_SCRIPT_RESOURCES = r"""
+import os, json
+p = os.environ["SYNOPTICON_PROGRESS_FILE"]
+os.makedirs(os.path.dirname(p), exist_ok=True)
+try:
+    nice = os.getpriority(os.PRIO_PROCESS, 0)
+except (AttributeError, OSError):
+    nice = None
+with open(p, "a") as f:
+    f.write(json.dumps({
+        "v": 1, "event": "result",
+        "omp": os.environ.get("OMP_NUM_THREADS"),
+        "blas": os.environ.get("OPENBLAS_NUM_THREADS"),
+        "mkl": os.environ.get("MKL_NUM_THREADS"),
+        "nice": nice,
+    }) + "\n")
+"""
+
 
 def _builder(script: str):
     return lambda argv: [sys.executable, "-c", script, *argv]
@@ -95,6 +115,7 @@ def _fake_specs():
         "malformed": JobSpec("malformed", lambda p: []),
         "console": JobSpec("console", lambda p: []),
         "crash": JobSpec("crash", lambda p: []),
+        "resources": JobSpec("resources", lambda p: []),
     }
 
 
@@ -554,3 +575,63 @@ def test_danger_levels():
     assert JOB_SPECS["apply"].danger is DangerLevel.TYPED_PHRASE
     assert JOB_SPECS["dedupe"].danger is DangerLevel.TYPED_PHRASE
     assert JOB_SPECS["reset"].danger is DangerLevel.TYPED_PHRASE
+
+
+# --------------------------------------------------------------------------- #
+# Child resource limits                                                        #
+# --------------------------------------------------------------------------- #
+
+
+def _resources_of(jm, job_id):
+    meta = _wait_state(jm, job_id, "succeeded")
+    assert meta
+    result = next(
+        e for e in jm.events(job_id) if e.get("event") == "result"
+    )
+    return result
+
+
+def test_job_subprocess_gets_a_thread_cap_and_niceness(manager_factory):
+    """A job must not be able to take the machine away from the GUI.
+
+    Unconstrained, a clustering run's BLAS pool spawns one busy-spinning thread
+    per core; the single uvicorn process then needs tens of seconds of
+    wall-clock for a millisecond of work, which from the client side is
+    indistinguishable from the server having hung.
+    """
+    jm = manager_factory(_SCRIPT_RESOURCES, thread_cap=3, nice=7)
+    res = _resources_of(jm, jm.submit("resources", {}))
+
+    assert res["omp"] == "3"
+    assert res["blas"] == "3"
+    assert res["mkl"] == "3"
+    if res["nice"] is not None:  # POSIX only
+        assert res["nice"] == 7
+
+
+def test_thread_cap_defaults_to_leaving_the_server_a_core(manager_factory):
+    import os
+
+    jm = manager_factory(_SCRIPT_RESOURCES)
+    res = _resources_of(jm, jm.submit("resources", {}))
+
+    assert res["omp"] == str(max(1, (os.cpu_count() or 2) - 1))
+
+
+def test_explicit_thread_env_wins_over_the_cap(manager_factory, monkeypatch):
+    """An operator who exported OMP_NUM_THREADS meant it."""
+    monkeypatch.setenv("OMP_NUM_THREADS", "11")
+    jm = manager_factory(_SCRIPT_RESOURCES, thread_cap=3)
+    res = _resources_of(jm, jm.submit("resources", {}))
+
+    assert res["omp"] == "11"
+    assert res["blas"] == "3"  # untouched vars still get the cap
+
+
+def test_thread_cap_zero_leaves_the_environment_alone(manager_factory, monkeypatch):
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    jm = manager_factory(_SCRIPT_RESOURCES, thread_cap=0, nice=0)
+    res = _resources_of(jm, jm.submit("resources", {}))
+
+    assert res["omp"] is None
+    assert res["blas"] is None

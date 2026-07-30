@@ -160,3 +160,111 @@ def test_watchdog_reports_a_slow_handler_without_crying_stall(
     messages = [r.getMessage() for r in caplog.records]
     assert any("slow request: GET /api/probe/slow" in m for m in messages)
     assert not any("event loop stalled" in m for m in messages)
+
+
+def test_watchdog_reports_external_cpu_pressure(settings, dist, tmp_path, caplog):
+    """Every stall line carries the machine's own contention numbers.
+
+    The three internal stall modes cannot describe a fourth: the process was
+    runnable and the kernel scheduled something else (a job subprocess with
+    every core). That reads as perfect health from inside — no loop lag, an idle
+    threadpool — so the pressure snapshot is the only way to tell it apart.
+    """
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+
+    @app.get("/api/probe/slow")
+    def slow():
+        time.sleep(3.2)
+        return {"ok": True}
+
+    _splice_before_catch_all(app, "/api/probe")
+    with caplog.at_level(logging.WARNING, logger="synopticon.web"), TestClient(app) as tc:
+        tc.post("/api/auth/create-account", json={"username": "a", "password": "pw"})
+        assert tc.get("/api/probe/slow").status_code == 200
+    jm.shutdown()
+
+    line = next(m for m in (r.getMessage() for r in caplog.records) if "slow request" in m)
+    # PSI is Linux-only; the load average is the portable half.
+    assert "load " in line or "pressure unavailable" in line
+
+
+def test_anonymous_requests_never_touch_the_database(settings, dist, tmp_path):
+    """No credential + an account already exists => no connection is opened.
+
+    A cookieless loopback healthcheck polling ``/api/auth/me`` used to open a
+    SQLite connection per hit purely to be told it was anonymous, and so did
+    every 401. Both paths now answer from the ``have_users`` latch.
+    """
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+
+    with TestClient(app) as tc:
+        tc.post("/api/auth/create-account", json={"username": "a", "password": "pw"})
+        tc.cookies.clear()
+        # The `have_users` latch is only consulted (and set) by a lookup, and
+        # create-account does not flip it — one more request settles it.
+        tc.get("/api/auth/me")
+
+        from synopticon.db import store
+
+        opened = 0
+        real_connect = store.connect
+
+        def counting_connect(*a, **kw):
+            nonlocal opened
+            opened += 1
+            return real_connect(*a, **kw)
+
+        store.connect = counting_connect
+        try:
+            assert tc.get("/api/auth/me").json()["authenticated"] is False
+            assert tc.get("/api/stats").status_code == 401
+        finally:
+            store.connect = real_connect
+    jm.shutdown()
+
+    assert opened == 0, f"anonymous requests opened {opened} DB connection(s)"
+
+
+def test_sse_disconnect_does_not_raise_no_response_returned(
+    settings, dist, tmp_path, caplog
+):
+    """Abandoning a job stream must not log a spurious middleware traceback.
+
+    ``BaseHTTPMiddleware`` turns "inner app finished without sending a response"
+    — which is what a mid-stream client disconnect looks like — into
+    ``RuntimeError: No response returned.``. The middleware stack is pure ASGI
+    precisely so that cannot happen; this locks it in.
+    """
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+
+    with caplog.at_level(logging.ERROR), TestClient(app) as tc:
+        tc.post("/api/auth/create-account", json={"username": "a", "password": "pw"})
+        job_id = tc.post("/api/jobs", json={"name": "cluster", "params": {}}).json()["job_id"]
+        # Open the stream and walk away after the first chunk.
+        with tc.stream("GET", f"/api/jobs/{job_id}/stream?after=0") as resp:
+            assert resp.status_code == 200
+            for _ in resp.iter_raw():
+                break
+    jm.shutdown()
+
+    assert not any("No response returned" in r.getMessage() for r in caplog.records)
+
+
+def test_middleware_stack_is_pure_asgi(settings, dist, tmp_path):
+    """No ``BaseHTTPMiddleware`` in the stack.
+
+    Each such layer relays the response through a memory object stream inside a
+    task group — nine hops per SSE event with three of them — and is the source
+    of the spurious ``No response returned.`` on client disconnect.
+    """
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+    jm.shutdown()
+
+    offenders = [m.cls.__name__ for m in app.user_middleware if issubclass(m.cls, BaseHTTPMiddleware)]
+    assert not offenders, f"BaseHTTPMiddleware layers present: {offenders}"

@@ -283,6 +283,13 @@ export function useJobStream(options: UseJobStreamOptions = {}): JobStream {
 
   function connectSSE(): void {
     if (finished.value || jobId.value === null) return
+    // Never leave a previous socket behind: assigning over `es` would drop the
+    // only reference to a still-open stream, which then holds a server-side
+    // generator alive until the job ends.
+    if (es) {
+      es.close()
+      es = null
+    }
     try {
       es = new EventSource('/api/jobs/' + jobId.value + '/stream?after=' + seq)
     } catch {
@@ -369,6 +376,12 @@ export function useJobStream(options: UseJobStreamOptions = {}): JobStream {
   }
 
   function attach(id: string): void {
+    // Idempotent. `start()` attaches on the POST response and a route change to
+    // /jobs/<id> mounts a panel that attaches again; without this the second
+    // call tore down a working stream and opened a duplicate, so the server saw
+    // two SSE generators per job and replayed the whole event ring into the
+    // second one.
+    if (jobId.value === id && !finished.value) return
     reset()
     jobId.value = id
     void loadMeta(id)

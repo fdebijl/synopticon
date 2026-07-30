@@ -211,6 +211,12 @@ Every command can emit machine-readable progress. Set `SYNOPTICON_PROGRESS_FILE=
 
 The process **exit code is authoritative** for success/failure; the `result`/`error` events are advisory niceties.
 
+### Jobs and the GUI's responsiveness
+
+A job launched from the GUI is a subprocess sharing the machine with the single-process web server, so it is deliberately constrained: it gets `nproc - 1` BLAS/OpenMP threads (`OMP_NUM_THREADS` and friends) and runs at niceness 10. Both are configurable via `inference.job_threads` and `inference.job_nice`; a thread variable you export yourself always wins, and `job_threads = 0` leaves the environment untouched.
+
+Without this, the numeric stacks size their pools to the whole machine and busy-spin between calls — a clustering run puts a hot thread on every core, and the web server then needs tens of seconds of wall-clock to do a millisecond of work. The symptom is distinctive and worth recognising: **unrelated requests all taking 30–90 s and completing at the same instant**, while the server itself looks healthy. If you see that, check the `slow request:` / `event loop stalled` lines in the server log — each carries a CPU/IO pressure snapshot (`cpu stall 84%, io stall 3%, load 15.9/16`) that distinguishes "this box is oversubscribed" from a problem inside the app.
+
 ## CLI reference
 
 All commands are subcommands of `synopticon` (Docker: `docker compose run synopticon <command>`). Every command reads `config.toml`; `--space` defaults to all spaces listed in `nas.spaces`. Everything is read-only toward the NAS except `apply`, `apply-all`, and `dedupe --apply`, which are each gated behind an explicit flag.
@@ -425,6 +431,7 @@ Everything lives in `config.toml` (see `config.example.toml`) and can be overrid
 - `nas.requests_per_second` — default 4; the NAS also serves your family, be gentle. Writes are throttled separately (1/s).
 - `storage.keep_originals` / `storage.originals_cache_gb` — by default originals are evicted after processing under a 50 GB LRU budget; only ~10–30 KB of crops per face are kept. Set `keep_originals = true` (needs roughly your library's size in free disk) to make future detector re-runs NAS-traffic-free.
 - `inference.device` — `auto` (default), `cpu`, or `cuda`; see [GPU acceleration](#gpu-acceleration). `inference.device_id` selects the CUDA GPU on multi-GPU hosts.
+- `inference.job_threads` / `inference.job_nice` — how much of the machine a job launched from the web GUI may take. By default a job gets `nproc - 1` BLAS/OpenMP threads and runs at niceness 10, which keeps the GUI responsive while it works; see [Jobs and the GUI's responsiveness](#jobs-and-the-guis-responsiveness).
 - `[clustering]` / `[crossref]` — the tuning surface; change and re-run `synopticon recluster --set clustering.edge_threshold=0.47` cheaply.
 
 ### GPU acceleration
