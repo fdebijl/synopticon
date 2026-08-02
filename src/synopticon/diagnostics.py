@@ -61,6 +61,15 @@ def _platform_section() -> Section:
     return ("Platform", rows)
 
 
+def _usable_cores_row() -> str:
+    from synopticon.cpu import available_cores, cgroup_cpu_limit
+
+    limit = cgroup_cpu_limit()
+    if limit is None:
+        return f"{available_cores()} (no cgroup CPU quota)"
+    return f"{available_cores()} (cgroup quota {limit:g} cores)"
+
+
 def _cpu_section() -> Section:
     info = _proc_cpuinfo()
     model = info.get("model name") or platform.processor() or "unknown"
@@ -72,6 +81,9 @@ def _cpu_section() -> Section:
         ("Architecture", platform.machine()),
         ("Physical cores", str(physical_cores())),
         ("Logical cores", str(logical)),
+        # Both counts above are host-wide readings; in a container the quota is
+        # the number that actually governs, so show it when there is one.
+        ("Usable cores", _usable_cores_row()),
         ("SIMD", ", ".join(simd) if simd else "unknown (non-x86 or /proc unavailable)"),
     ]
     return ("CPU", rows)

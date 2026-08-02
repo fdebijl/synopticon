@@ -268,3 +268,62 @@ def test_middleware_stack_is_pure_asgi(settings, dist, tmp_path):
 
     offenders = [m.cls.__name__ for m in app.user_middleware if issubclass(m.cls, BaseHTTPMiddleware)]
     assert not offenders, f"BaseHTTPMiddleware layers present: {offenders}"
+
+
+def test_health_probe_is_io_free_and_unauthenticated(settings, dist, tmp_path):
+    """``/api/health`` answers 200 with no credential and opens no connection.
+
+    This is the container liveness probe. During a long ``extract`` the job
+    writes crops and commits per photo to the same volume the server reads, so
+    every DB-touching handler can queue behind that I/O; a probe pointed at one
+    of them (``/api/auth/me``, ``/api/stats``) times out and the orchestrator
+    restarts the container out from under the job. The probe must therefore be
+    answered before the auth lookup and must touch nothing.
+    """
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+
+    with TestClient(app) as tc:
+        # Reachable during first boot, before any account exists.
+        assert tc.get("/api/health").json()["ok"] is True
+
+        tc.post("/api/auth/create-account", json={"username": "a", "password": "pw"})
+        tc.cookies.clear()
+
+        from synopticon.db import store
+
+        opened = 0
+        real_connect = store.connect
+
+        def counting_connect(*a, **kw):
+            nonlocal opened
+            opened += 1
+            return real_connect(*a, **kw)
+
+        store.connect = counting_connect
+        try:
+            r = tc.get("/api/health")
+        finally:
+            store.connect = real_connect
+
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert opened == 0
+    jm.shutdown()
+
+
+def test_health_handler_is_async_so_it_needs_no_worker_thread(settings, dist, tmp_path):
+    """A sync ``def`` handler is dispatched to the AnyIO pool.
+
+    That pool is precisely what a running job starves, so a sync health handler
+    would queue behind 40 blocked requests and fail the very probe it exists to
+    answer. Locking the coroutine-ness in: the endpoint's correctness is that it
+    never leaves the event loop.
+    """
+    import inspect
+
+    jm = JobManager(tmp_path / "jobs", command_builder=lambda argv: [sys.executable, "-c", ""])
+    app = create_app(settings, job_manager=jm, dist_dir=dist)
+    route = next(r for r in app.routes if getattr(r, "path", None) == "/api/health")
+    assert inspect.iscoroutinefunction(route.endpoint)
+    jm.shutdown()

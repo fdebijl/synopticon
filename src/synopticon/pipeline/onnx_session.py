@@ -5,30 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-
-def physical_cores() -> int:
-    """Best-effort physical core count (Linux /proc/cpuinfo, else cpu_count)."""
-    import os
-
-    try:
-        cores: set[tuple[str, str]] = set()
-        physical_id = core_id = ""
-        with open("/proc/cpuinfo") as fh:
-            for line in fh:
-                if line.startswith("physical id"):
-                    physical_id = line.split(":", 1)[1].strip()
-                elif line.startswith("core id"):
-                    core_id = line.split(":", 1)[1].strip()
-                elif not line.strip() and core_id != "":
-                    cores.add((physical_id, core_id))
-                    physical_id = core_id = ""
-        if core_id != "":
-            cores.add((physical_id, core_id))
-        if cores:
-            return len(cores)
-    except OSError:
-        pass
-    return os.cpu_count() or 1
+from synopticon.cpu import available_cores, physical_cores  # noqa: F401  (re-exported)
 
 
 def session_device(session) -> str:

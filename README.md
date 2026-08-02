@@ -138,6 +138,27 @@ docker build -f docker/Dockerfile --target cpu -t synopticon:cpu .
 docker build -f docker/Dockerfile --target gpu --build-arg ORT_EXTRA=gpu -t synopticon:gpu .
 ```
 
+### Healthchecks
+
+The image ships no `HEALTHCHECK` of its own — the same entrypoint serves both the long-running `web` mode and one-shot commands like `sync`, and a probe attached to the latter would just report them unhealthy. Add one on the service when you run `web` as a managed service (Swarm, Portainer, `docker compose up`). **Probe `/api/health`**, which answers 200 unauthenticated and is deliberately I/O-free — no database, no filesystem, no NAS:
+
+```yaml
+healthcheck:
+  # The slim image has no curl; use the bundled python.
+  test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8686/api/health', timeout=5).status==200 else 1)"]
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+```
+
+Two things to get right, both of which otherwise bite during a long `extract`:
+
+- **Probe `/api/health`, not `/api/auth/me` or `/api/stats`.** Those two read the database. A running job writes crops and commits per photo to the same volume, so on a slow or network-backed `/data` every DB-touching handler queues on it — a probe pointed at one of them times out while the server is perfectly alive. `/api/health` is answered before any of that machinery and cannot be starved by a job.
+- **Give it slack.** An orchestrator restarts an unhealthy task, and a restart mid-`extract` throws away the current photo's work (the run itself resumes — every phase is resumable by construction — but you lose the container). `retries: 5` at a 30 s interval tolerates a 2½-minute blip; the pipeline's slowest single step is model load at job start, which `start_period` should cover.
+
+Under a CPU quota (`--cpus`, Swarm's `--limit-cpu`), thread pools are sized from the cgroup, not the host's core count, so a 2-core container gets a 2-thread job rather than a 32-thread one. `inference.job_threads` and `inference.job_nice` tune this further — see [Configuration](#configuration).
+
 ## Web GUI
 
 `synopticon web` serves a full browser GUI over the whole lifecycle — first-run setup, editing `config.toml`, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections — styled to sit comfortably next to Synology Photos. It's the recommended way to drive Synopticon day to day; the CLI stays fully supported for scripting and headless runs.

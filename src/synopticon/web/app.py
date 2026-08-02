@@ -590,6 +590,22 @@ def create_app(
                 else:
                     await self.app(scope, receive, send)
 
+            # Liveness probe: answered before anything that can block. It takes
+            # no worker thread, opens no database connection and stats no file,
+            # so the only thing that can fail it is a dead event loop — which is
+            # precisely what a container healthcheck should be asking about.
+            #
+            # It must never go through the auth lookup below. That hop needs an
+            # AnyIO worker thread, and during a long `extract` the pool is the
+            # scarce resource: the job's crop writes and per-photo commits hit
+            # the same (often NFS-backed) volume the server reads, every
+            # DB-touching handler parks in D-state, and a probe queued behind 40
+            # of those blows its timeout. Three of those in a row and the
+            # orchestrator restarts the container out from under the job.
+            if path == "/api/health":
+                await forward()
+                return
+
             # Hashed SPA bundle: public so /login and /setup can load before a
             # session exists (mirrors the old /static bypass).
             if path.startswith("/assets/"):
@@ -618,7 +634,16 @@ def create_app(
                 )
                 return
 
-            ident, first_boot = await run_in_threadpool(_auth_lookup, request)
+            # Anonymous, and an account is already known to exist: the verdict is
+            # "not authenticated" without asking the database, so don't spend a
+            # worker thread to reach it. Same short-circuit `_auth_lookup` makes
+            # internally, hoisted onto the loop — it is pure header inspection,
+            # and it keeps every 401 independent of a threadpool a running job
+            # can saturate.
+            if have_users and _anonymous(request):
+                ident, first_boot = None, False
+            else:
+                ident, first_boot = await run_in_threadpool(_auth_lookup, request)
             # Written into the shared scope, which is the same dict the route
             # handler's own Request wraps — `request.state.ident` downstream.
             state = scope.setdefault("state", {})
@@ -887,6 +912,18 @@ def create_app(
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
+
+    @app.get("/api/health")
+    async def api_health():
+        """Container liveness probe. Deliberately does nothing.
+
+        `async def`, not `def`: a sync handler is dispatched to the AnyIO worker
+        pool, which is exactly the resource a long-running job starves. Keep it
+        free of every kind of I/O — no database, no filesystem, no NAS — so that
+        a slow disk or a locked DB can never be mistaken for a dead server and
+        get the container restarted mid-job. Use `/api/stats` for readiness.
+        """
+        return {"ok": True, "version": app_version}
 
     @app.get("/api/auth/me")
     def api_me(request: Request):

@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from synopticon.cpu import available_cores
+
 # --------------------------------------------------------------------------- #
 # Errors                                                                        #
 # --------------------------------------------------------------------------- #
@@ -642,8 +644,11 @@ class JobManager:
         self._command_builder = command_builder or _default_command
         # `None` -> reserve one core for the server; 0 -> leave the environment
         # untouched (the operator is managing thread counts themselves).
+        # `available_cores()`, not `os.cpu_count()`: inside a container the
+        # latter reports the host's CPUs regardless of the cgroup quota, so a
+        # 2-core container would hand its job a 31-thread BLAS pool.
         if thread_cap is None:
-            thread_cap = max(1, (os.cpu_count() or 2) - 1)
+            thread_cap = max(1, available_cores() - 1)
         self._thread_cap = max(0, int(thread_cap))
         self._nice = max(0, int(nice))
 
