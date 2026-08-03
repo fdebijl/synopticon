@@ -2,8 +2,8 @@
 // Primary navigation sidebar. Ports templates/partials/sidebar.html.j2:
 // nav items, active highlight (server used `active == id`; mirrored here off the
 // route path), the Review pending-count badge (from /api/review/counts), plus a
-// version footer sourced from the cached /api/auth/me. The topbar (job chip,
-// theme/user menus) lives in App.vue as the shell.
+// bottom-pinned About item carrying the version from the cached /api/auth/me.
+// The topbar (job chip, theme/user menus) lives in App.vue as the shell.
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getJSON } from '../api/client'
@@ -97,7 +97,18 @@ onUnmounted(() => {
         </RouterLink>
       </li>
     </ul>
-    <div class="sidebar-footer muted" v-if="version">v{{ version }}</div>
+    <div class="sidebar-footer">
+      <RouterLink
+        to="/about"
+        class="nav-item"
+        :class="{ active: isActive('/about') }"
+        :aria-current="isActive('/about') ? 'page' : undefined"
+        @click="closeNav"
+      >
+        <span class="nav-label">About</span>
+        <span v-if="version" class="nav-version muted">v{{ version }}</span>
+      </RouterLink>
+    </div>
   </nav>
   <div class="nav-scrim" @click="closeNav" aria-hidden="true"></div>
 </template>
@@ -105,6 +116,10 @@ onUnmounted(() => {
 <style scoped>
 .sidebar-footer {
   margin-top: auto;
-  padding: var(--sp-2) var(--sp-3);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border-soft);
+}
+.nav-version {
+  font-size: var(--fs-sm);
 }
 </style>

@@ -56,6 +56,9 @@ export interface FieldDescriptor {
   /** dotted `section.key` path — used for env-override + 422 error mapping. */
   dotted: string
   info: FieldInfo
+  /** `Field(title=...)` from the pydantic schema; pydantic auto-fills a humanized
+   *  key when unset, so this is normally present. */
+  title?: string
   description?: string
   isSecret: boolean
 }
@@ -151,11 +154,15 @@ export function sectionFields(root: JsonSchema, section: string): FieldDescripto
   return Object.keys(props).map((key) => {
     const resolved = deref(props[key], root)
     const info = classify(resolved)
+    // Prefer the property's own title: deref'ing a $ref would otherwise pick up
+    // the referenced model/enum's class-name title instead of the field's.
+    const title = props[key].title ?? resolved.title
     return {
       section,
       key,
       dotted: `${section}.${key}`,
       info,
+      title: typeof title === 'string' ? title : undefined,
       description: typeof resolved.description === 'string' ? resolved.description : undefined,
       isSecret: info.kind === 'password',
     }

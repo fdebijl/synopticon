@@ -188,9 +188,10 @@ class DetectionConfig(BaseModel):
     )
     nms_iou: float = Field(
         default=0.45,
+        title="Intra-Detector NMS IoU",
         description=(
-            "IoU threshold for the per-detector Non-Max Suppression that de-duplicates "
-            "each detector's own multi-scale boxes (intra-detector, not the SCRFD↔YOLO "
+            "Intersection over Union threshold for the per-detector Non-Max Suppression that de-duplicates "
+            "each detector's own multi-scale boxes (intra-detector, not the SCRFD ↔ YOLO "
             "fusion). Typical 0.3-0.6; default 0.45. Lower it if one face gets "
             "duplicate/stacked boxes (common with multiple scales); raise it if two "
             "adjacent faces (cheek-to-cheek) collapse into one."
@@ -198,8 +199,9 @@ class DetectionConfig(BaseModel):
     )
     cross_iou: float = Field(
         default=0.50,
+        title="SCRFD ↔ YOLO Fusion IoU",
         description=(
-            "IoU threshold for fusing SCRFD and YOLO detections: a YOLO box overlapping "
+            "Intersection over Union threshold for fusing SCRFD and YOLO detections: a YOLO box overlapping "
             "an SCRFD box above this is treated as the same face (the SCRFD box and its "
             "landmarks are kept); below it, the YOLO box is added as a new face. Typical "
             "0.3-0.6; default 0.50. Lower it if the same face appears twice after fusion "
@@ -209,6 +211,7 @@ class DetectionConfig(BaseModel):
     )
     min_face_px: int = Field(
         default=20,
+        title="Minimum Face Size (px)",
         description=(
             "Minimum face size (shorter box side, in original-image pixels) to keep; "
             "smaller detections are dropped. Typical 16-40; default 20. Tiny crops "
@@ -220,6 +223,7 @@ class DetectionConfig(BaseModel):
     )
     max_long_side: int = Field(
         default=6000,
+        title="Max Long Side (px)",
         description=(
             "Upper cap (pixels) on SCRFD's upscaled long side, bounding memory from the "
             "scales pyramid; an upscale factor is reduced so long_side × factor stays "
@@ -232,6 +236,7 @@ class DetectionConfig(BaseModel):
     )
     yolo_upscale_below_px: int = Field(
         default=1600,
+        title="YOLO Upscale Threshold (px)",
         description=(
             "Long-side threshold (pixels) below which YOLO does an extra 2× upscale pass "
             "(YOLO always letterboxes to 640px, so small images otherwise waste "
@@ -246,12 +251,13 @@ class DetectionConfig(BaseModel):
 class RestorationConfig(BaseModel):
     enabled: bool = Field(
         default=False,
+        title="Enable Restoration",
         description=(
             "Master switch for the optional CodeFormer face-restoration pass. "
-            "Restoration is advisory only — it never feeds clustering; it fills the "
-            "'restored' embedding variant and files restore_disagreement review flags. "
-            "Off (default) = zero cost. On requires the [restore] extra (which pins old "
-            "torch/torchvision and is incompatible with the GPU extra — CPU inference "
+            "Restoration is advisory only, it never feeds clustering. Instead, it fills the "
+            "'restored' embedding variant and files restore_disagreement review flags.\n\n"
+            "Off (default): zero cost.\nOn: requires the [restore] extra (which pins old "
+            "torch/torchvision and is currently incompatible with the GPU extra — CPU inference "
             "only) plus a vendored CodeFormer model; without those it fails at startup "
             "or on the first crop. Leave off unless you have set restoration up "
             "specifically as a QA aid."
@@ -259,6 +265,7 @@ class RestorationConfig(BaseModel):
     )
     trigger_px: int = Field(
         default=80,
+        title="Restoration Trigger Size (px)",
         description=(
             "Restore any face whose shorter bounding-box side is below this many pixels, "
             "regardless of quality (OR'd with the quality gate). Default 80; practical "
@@ -271,6 +278,7 @@ class RestorationConfig(BaseModel):
     )
     quality_percentile: float = Field(
         default=15.0,
+        title="Restoration Quality Percentile",
         description=(
             "Restore faces in the bottom N% of each batch by MagFace embedding norm "
             "(MagFace magnitude is the per-face quality signal). Default 15.0; range "
@@ -283,6 +291,7 @@ class RestorationConfig(BaseModel):
     )
     fidelity: float = Field(
         default=0.7,
+        title="Restoration Fidelity Weight",
         description=(
             "CodeFormer's fidelity weight w in [0,1]: higher stays closer to the input "
             "(preserves identity, less enhancement), lower is more generative "
@@ -295,6 +304,7 @@ class RestorationConfig(BaseModel):
     )
     disagreement_cos: float = Field(
         default=0.30,
+        title="Restoration Disagreement Cosine",
         description=(
             "Flag a restored face for human review when its restored-vs-original "
             "embedding disagreement (1 − cosine) exceeds this; 0.30 (default) ≈ cosine "
@@ -310,6 +320,7 @@ class RestorationConfig(BaseModel):
 class ClusteringConfig(BaseModel):
     knn_k: int = Field(
         default=64,
+        title="kNN Neighbor Count",
         description=(
             "Number of nearest neighbors retrieved per face when building the "
             "cosine-similarity kNN graph — an upper bound on connectivity, not a cluster "
@@ -323,6 +334,7 @@ class ClusteringConfig(BaseModel):
     )
     edge_threshold: float = Field(
         default=0.50,
+        title="Edge Threshold",
         description=(
             "Cosine-similarity cutoff for keeping a graph edge in Chinese Whispers "
             "(ignored by HDBSCAN); faces with no surviving edge become singletons. Range "
@@ -336,6 +348,7 @@ class ClusteringConfig(BaseModel):
     )
     algorithm: Literal["chinese_whispers", "hdbscan"] = Field(
         default="chinese_whispers",
+        title="Clustering Algorithm",
         description=(
             "Clustering routine. 'chinese_whispers' (default) is iterative "
             "label-propagation on the thresholded graph: fast, no extra dependency, "
@@ -349,6 +362,7 @@ class ClusteringConfig(BaseModel):
     )
     cw_iterations: int = Field(
         default=30,
+        title="Chinese Whispers Iterations",
         description=(
             "Number of label-propagation sweeps in Chinese Whispers (no early stopping — "
             "it always runs this many). Typical 10-50; default 30 is over-provisioned. "
@@ -361,6 +375,7 @@ class ClusteringConfig(BaseModel):
     )
     min_cluster_size: int = Field(
         default=2,
+        title="HDBSCAN Minimum Cluster Size",
         description=(
             "HDBSCAN only — has no effect under the default chinese_whispers algorithm. "
             "Minimum faces for a cluster (connected components smaller than this are "
@@ -373,6 +388,7 @@ class ClusteringConfig(BaseModel):
     )
     seed: int = Field(
         default=42,
+        title="Chinese Whispers RNG Seed",
         description=(
             "RNG seed for Chinese Whispers' per-iteration node visit order, making runs "
             "byte-identical given the same inputs (HDBSCAN doesn't use it). Not a quality "
@@ -385,6 +401,7 @@ class ClusteringConfig(BaseModel):
     )
     fusion_weights: dict[str, float] = Field(
         default_factory=dict,
+        title="Per-Model Fusion Weights",
         description=(
             "Per-model weights (keyed by embedding model name, e.g. "
             "arcface/adaface/magface; a missing model = 1.0) controlling each model's "
@@ -402,6 +419,7 @@ class ClusteringConfig(BaseModel):
 class CrossrefConfig(BaseModel):
     majority: float = Field(
         default=0.60,
+        title="Majority Fraction",
         description=(
             "Fraction of a cluster's *labeled* faces that must agree on one Synology "
             "person before the cluster is trusted as that person's (paired with "
@@ -414,6 +432,7 @@ class CrossrefConfig(BaseModel):
     )
     min_labeled: int = Field(
         default=3,
+        title="Minimum Labeled Faces",
         description=(
             "Minimum number of labeled (Synology-tagged) faces a cluster needs before "
             "its majority vote is trusted at all; below this the cluster is ignored (no "
@@ -426,6 +445,7 @@ class CrossrefConfig(BaseModel):
     )
     assign_sim: float = Field(
         default=0.55,
+        title="Assign Similarity Cutoff",
         description=(
             "Cosine-similarity cutoff separating a confident 'assign' from a "
             "'low_confidence' flag: an unlabeled face's mean similarity to the cluster's "
@@ -439,6 +459,7 @@ class CrossrefConfig(BaseModel):
     )
     new_person_min_faces: int = Field(
         default=5,
+        title="New Person Minimum Faces",
         description=(
             "Minimum size of a fully-unlabeled cluster (zero Synology matches) before it "
             "is proposed as a brand-new person. Default 5; sensible 3-15. This is a size "
@@ -451,6 +472,7 @@ class CrossrefConfig(BaseModel):
     )
     merge_vote_fraction: float = Field(
         default=0.30,
+        title="Merge Vote Fraction",
         description=(
             "First merge trigger (intra-cluster): when two different Synology persons "
             "each hold at least this share of the *same* cluster, they're suggested as "
@@ -463,6 +485,7 @@ class CrossrefConfig(BaseModel):
     )
     merge_centroid_sim: float = Field(
         default=0.60,
+        title="Merge Centroid Similarity",
         description=(
             "Second merge trigger (inter-cluster): two clusters that mapped to "
             "*different* persons but whose mean-embedding centroids are closer than this "

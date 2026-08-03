@@ -280,3 +280,24 @@ export interface ModelsResponse {
   models_dir: string
   items: ModelStatus[]
 }
+
+export interface AboutInfo {
+  version: string
+  repo_url: string
+  pipeline_version: string | null
+  models_ready: boolean
+  python: string
+  platform: string
+  cpu: {
+    available_cores: number
+    physical_cores: number
+    cgroup_quota: number | null
+  }
+  paths: {
+    data_dir: string
+    models_dir: string
+    db_path: string
+  }
+  /** dist name → version, null when the distribution is not installed. */
+  packages: Record<string, string | null>
+}

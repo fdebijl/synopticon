@@ -251,6 +251,33 @@ def test_models_endpoint_requires_auth(app, db):
         assert c.get("/api/models").status_code == 401
 
 
+def test_about_endpoint_reports_build_and_environment(app, db, settings):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.get("/api/about")
+        assert r.status_code == 200
+        data = r.json()
+        assert data["version"]
+        assert data["repo_url"] == "https://github.com/fdebijl/synopticon"
+        # No weights in the test fixture: degrades like /api/stats does.
+        assert data["models_ready"] is False
+        assert data["pipeline_version"] is None
+        assert data["python"].count(".") >= 1
+        assert data["platform"]
+        assert data["cpu"]["available_cores"] >= 1
+        assert data["paths"]["models_dir"] == str(settings.storage.models_dir)
+        assert data["paths"]["db_path"] == str(settings.storage.db_path)
+        # A missing distribution is reported as null, never an error.
+        assert set(data["packages"]) >= {"onnxruntime", "numpy"}
+
+
+def test_about_endpoint_requires_auth(app, db):
+    _seed_user(db)
+    with TestClient(app, follow_redirects=False) as c:
+        assert c.get("/api/about").status_code == 401
+
+
 # --------------------------------------------------------------------------- #
 # Review endpoints
 # --------------------------------------------------------------------------- #

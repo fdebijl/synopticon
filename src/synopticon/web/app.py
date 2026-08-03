@@ -37,6 +37,7 @@ import asyncio
 import itertools
 import json
 import logging
+import sys
 import os
 import sqlite3
 import threading
@@ -976,6 +977,63 @@ def create_app(
             items = []
         return {"models_dir": str(models_dir), "items": items}
 
+    @app.get("/api/about")
+    def api_about():
+        """Build + environment facts for the About page (and bug reports).
+
+        Deliberately import-light: package versions come from
+        ``importlib.metadata`` (which reads dist metadata, not the modules), the
+        pipeline version from the memoized manifest helper — never
+        ``pipeline.runner``. See the responsiveness invariants.
+        """
+        import platform
+        import sys
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as dist_version
+
+        from ..cpu import available_cores, cgroup_cpu_limit, physical_cores
+        from .stats import _pipeline_version_cached
+
+        def dist(name: str) -> str | None:
+            try:
+                return dist_version(name)
+            except PackageNotFoundError:
+                return None
+            except Exception:  # noqa: BLE001 - metadata must never 500 the page
+                return None
+
+        models_ready, pv = _pipeline_version_cached(settings)
+        quota = cgroup_cpu_limit()
+        return {
+            "version": app_version,
+            "repo_url": "https://github.com/fdebijl/synopticon",
+            "pipeline_version": pv,
+            "models_ready": models_ready,
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "cpu": {
+                "available_cores": available_cores(),
+                "physical_cores": physical_cores(),
+                "cgroup_quota": quota,
+            },
+            "paths": {
+                "data_dir": str(settings.storage.data_dir),
+                "models_dir": str(settings.storage.models_dir),
+                "db_path": str(settings.storage.db_path),
+            },
+            "packages": {
+                name: dist(name)
+                for name in (
+                    "onnxruntime",
+                    "onnxruntime-gpu",
+                    "numpy",
+                    "fastapi",
+                    "faiss-cpu",
+                    "torch",
+                )
+            },
+        }
+
     @app.get("/api/audit")
     def api_audit(limit: int = 50):
         from .. import audit
@@ -1275,7 +1333,27 @@ def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8686) -> None
     from uvicorn.config import LOGGING_CONFIG
 
     _check_dist_built(_DIST_DIR)
+
+    # `create_app` runs *before* uvicorn binds the socket, and it touches the
+    # data volume: crops mkdir, a scan of the jobs dir, DB connect + migrations.
+    # On a slow or wedged /data that window is unbounded, and from the outside it
+    # is indistinguishable from a crash — the healthcheck gets a flat
+    # `connection refused` and the container log is empty, because uvicorn has
+    # not printed its own banner yet. Bracket it on stderr (uvicorn's logging is
+    # not configured until `run` below, so this is a plain write, not a logger).
+    print(
+        f"synopticon web: initialising (data_dir={settings.storage.data_dir})",
+        file=sys.stderr,
+        flush=True,
+    )
+    _t0 = time.monotonic()
     app = create_app(settings)
+    print(
+        f"synopticon web: initialised in {time.monotonic() - _t0:.1f}s, "
+        f"binding {host}:{port}",
+        file=sys.stderr,
+        flush=True,
+    )
     # The watchdog's findings are only useful if they reach the container log, so
     # route ``synopticon.web`` through uvicorn's own stderr handler rather than
     # leaving it to ``logging.lastResort`` (unformatted, and easy to mistake for

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// One config field row: label (humanized name + dotted key) beside a control
+// One config field row: label (schema title, else humanized key, + dotted key)
+// beside a control
 // chosen from the field's classified kind. Ports settings.js::renderField. The
 // control model is a string (inputs/selects/textarea) or boolean (checkbox);
 // the parent owns the value and dirty tracking, this component is presentational
@@ -19,7 +20,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: ControlValue): void }>()
 
-const name = computed(() => humanize(props.field.key))
+const name = computed(() => props.field.title || humanize(props.field.key))
 const kind = computed(() => props.field.info.kind)
 
 // String/select/textarea/number all bind a string model; checkbox binds bool.
