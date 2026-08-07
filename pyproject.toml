@@ -47,7 +47,7 @@ review = [
     "uvicorn>=0.52.1",
     "tomlkit>=0.12",
 ]
-faiss = ["faiss-cpu>=1.8"]
+faiss = ["faiss-cpu>=1.15.0"]
 # Needed only to run scripts/export_*_onnx.py once.
 export = ["torch==2.1.2", "onnx>=1.15"]
 
