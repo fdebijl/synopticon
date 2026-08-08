@@ -32,6 +32,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Apply' },
   },
   {
+    path: '/utilities',
+    name: 'utilities',
+    component: () => import('./views/UtilitiesView.vue'),
+    meta: { title: 'Utilities' },
+  },
+  {
     path: '/maintenance',
     name: 'maintenance',
     component: () => import('./views/MaintenanceView.vue'),

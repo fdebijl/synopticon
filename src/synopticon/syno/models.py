@@ -45,9 +45,13 @@ class Person:
     item_count: int | None
     show: bool | None
     cover: int | None
+    #: `additional.thumbnail.cache_key`, present only when the caller asked for
+    #: `additional=["thumbnail"]`. Required to build a Thumbnail.get URL.
+    thumbnail_cache_key: str | None = None
 
     @classmethod
     def from_api(cls, space: Space, raw: dict[str, Any]) -> Person:
+        thumbnail = (raw.get("additional") or {}).get("thumbnail") or {}
         return cls(
             id=raw["id"],
             space=space,
@@ -55,6 +59,7 @@ class Person:
             item_count=raw.get("item_count"),
             show=raw.get("show"),
             cover=raw.get("cover"),
+            thumbnail_cache_key=thumbnail.get("cache_key"),
         )
 
 

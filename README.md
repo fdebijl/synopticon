@@ -188,7 +188,7 @@ If you start `synopticon web` without a built frontend it exits with instruction
 | `--host TEXT` | `127.0.0.1` | Bind address. Keep it on loopback and put a reverse proxy in front for anything but local access (see [Reverse proxy / TLS](#reverse-proxy--tls)). |
 | `--port INTEGER` | `8686` | Bind port. |
 
-It serves a **Dashboard** (library stats, a sync→extract→cluster→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report, in a switchable **Grid** or **Focus** layout — Focus shows one large card plus a carousel of neighbouring items, with ←/→ to navigate; the choice persists in `localStorage` and as `?view=focus`), **Apply** (dry-run preview then consent-gated writes), **Maintenance** (the destructive housekeeping commands behind typed-phrase confirmations), **Settings** (edit every `config.toml` section, manage API keys, change your password), and **About** (version, pipeline version, environment details ready to paste into a bug report, and links to the GitHub repository). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
+It serves a **Dashboard** (library stats, a sync→extract→cluster→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report, in a switchable **Grid** or **Focus** layout — Focus shows one large card plus a carousel of neighbouring items, with ←/→ to navigate; the choice persists in `localStorage` and as `?view=focus`), **Apply** (dry-run preview then consent-gated writes), **Utilities** (tools that act on the NAS library itself: **QuickMerger** and photo deduplication), **Maintenance** (the destructive local-state housekeeping commands behind typed-phrase confirmations), **Settings** (edit every `config.toml` section, manage API keys, change your password), and **About** (version, pipeline version, environment details ready to paste into a bug report, and links to the GitHub repository). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
 
 ### First-run setup wizard
 
@@ -199,6 +199,19 @@ On a fresh install the GUI redirects to a setup wizard, resumable at each step:
 3. **Storage** — confirm the data/model directories are writable and check free disk.
 4. **Models** — download and verify the model weights (a job with live progress). Two embedders, **AdaFace** and **MagFace**, can't be downloaded automatically (their weights aren't redistributed) — export them manually first (see [Models](#models)). If they're missing, the step surfaces which models still need exporting and offers **Continue anyway**: the first sync works without any models, but running `extract` later requires all five.
 5. **First sync** — kick off an initial `sync` (skippable), then hand off to the dashboard.
+
+### QuickMerger
+
+**Utilities → QuickMerger** works through the backlog of people Synology detected but never got a name — the tedious part of curating a Photos library, keyboard-first and one card at a time. Load the list (it walks the whole People list on the NAS, including the long tail the default view hides), then for each person:
+
+- **type a name + Enter** — names that person (`Browse.Person.set`);
+- **type a few letters, ↑/↓ to pick a suggestion, Enter** — merges this person into the one you picked, keeping their name (`Browse.Person.merge`). The preview pane shows both faces before you commit;
+- **type `11`** (or click **Hide**) — hides the person, for the false positives Synology finds in wallpaper and photo frames;
+- **empty Enter / Skip / Skip 10 / Skip 100 / Previous** — move on without writing anything.
+
+These are direct NAS writes, not review-queue items, so the page asks for one confirmation before its first write of a session and then stays out of the way. Naming and hiding are reversible; a merge is not. The server refuses to merge a person that has a name on the NAS (re-checked immediately before the write), so a named↔named merge — the one write that destroys a human label — is unreachable from here; that path stays in the review queue behind its typed phrase. Every write lands in the audit log as `quickmerger.*`.
+
+QuickMerger is a port of the `har/quickmerger.js` userscript, which remains usable standalone against Synology Photos itself.
 
 ### Authentication
 
@@ -536,6 +549,7 @@ Every tool that can change your library is opt-in and leaves an audit trail:
 - Only reviewer-**approved** queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`, and a reassign is a single `Person.separate` call that can be reversed by moving the face back.
 - A cluster can propose both a merge of persons A/B and reassigns between them; if the merge is applied first the reassigns become no-ops (the pre-write NAS check skips them).
 - `dedupe` follows the same model: **dry-run by default**, `--apply` (plus a confirmation prompt) required to delete, a per-id idempotency check before each deletion, and every attempt audit-logged. Duplicate deletion is not reversible from Synopticon — confirm your DSM's recycle-bin behavior first.
+- [QuickMerger](#quickmerger) is the one GUI surface that writes to the NAS outside `apply`. It is interactive by nature (you act on one person at a time), so it confirms once per session rather than per card — but every write needs an explicit consent flag on the API call, a merge re-reads both people from the NAS first and is **refused** if the merged-away side has a name, and every attempt is audit-logged.
 - Recommended first write of any kind: scope narrowly (`--person-id <id>` for a test person, a single known duplicate for `dedupe`) and verify in the Photos UI.
 
 ## Compatibility

@@ -21,6 +21,7 @@ const NAV: NavItem[] = [
   { id: 'pipeline', to: '/pipeline', label: 'Pipeline' },
   { id: 'review', to: '/review', label: 'Review' },
   { id: 'apply', to: '/apply', label: 'Apply' },
+  { id: 'utilities', to: '/utilities', label: 'Utilities' },
   { id: 'maintenance', to: '/maintenance', label: 'Maintenance' },
   { id: 'settings', to: '/settings', label: 'Settings' },
 ]

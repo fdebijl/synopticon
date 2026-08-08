@@ -44,9 +44,18 @@ def get_item(
 
 
 def list_persons(
-    client: SynoClient, space: Space, show_hidden: bool = True, page_size: int = 500
+    client: SynoClient,
+    space: Space,
+    show_hidden: bool = True,
+    page_size: int = 500,
+    show_more: bool = False,
 ) -> Iterator[Person]:
-    """Paginated full-library person listing (Browse.Person.list)."""
+    """Paginated full-library person listing (Browse.Person.list).
+
+    `show_more=True` is Synology Photos' "show more people" listing: it includes
+    the long tail of low-item-count (usually unnamed) people the default view
+    hides. QuickMerger needs it; the sync pass deliberately does not.
+    """
     api = client.api_name(space, "Browse.Person")
     version = client.version_for(api, 1)
     for raw in client.paginate(
@@ -55,7 +64,7 @@ def list_persons(
         page_size=page_size,
         version=version,
         additional=list(DEFAULT_PERSON_ADDITIONAL),
-        show_more=False,
+        show_more=show_more,
         show_hidden=show_hidden,
     ):
         yield Person.from_api(space, raw)
@@ -122,6 +131,28 @@ def list_similar_groups(
     for raw in client.paginate(api, "list", page_size=page_size, version=version):
         if "similar" in raw:
             yield SimilarGroup.from_api(raw)
+
+
+def download_person_thumbnail(
+    client: SynoClient, space: Space, person_id: int, cache_key: str
+) -> Iterator[bytes]:
+    """Stream a person's cover thumbnail (Thumbnail.get, `type="person"`).
+
+    Param shape is the one the Synology Photos web UI itself uses: `api`,
+    `method` and `type` quoted, `cache_key` quoted, `id` bare, no `size` —
+    deviating from it (adding `size`) is untested against the live NAS.
+    """
+    api = client.api_name(space, "Thumbnail")
+    version = client.version_for(api, 2)
+    yield from client.stream(
+        api,
+        "get",
+        version=version,
+        quote_api=True,
+        id=person_id,
+        cache_key=QuotedString(cache_key),
+        type=QuotedString("person"),
+    )
 
 
 def download_original(client: SynoClient, space: Space, unit_id: int, cache_key: str) -> Iterator[bytes]:

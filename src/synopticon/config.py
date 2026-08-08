@@ -3,6 +3,12 @@
 The config file path is taken from SYNOPTICON_CONFIG, defaulting to
 ./config.toml then /data/config.toml. Credentials are recommended env-only:
 SYNOPTICON_NAS__ACCOUNT / SYNOPTICON_NAS__PASSWORD.
+
+Field help text is rendered verbatim in the web Settings UI and reads top-down
+from plain language into detail: `description` opens with what the setting does
+in ordinary terms and then gives practical guidance, while the internals go in
+`json_schema_extra={"details": ...}`, which the GUI renders as a collapsed,
+de-emphasized block under the description.
 """
 
 from __future__ import annotations
@@ -69,68 +75,103 @@ class InferenceConfig(BaseModel):
         default="auto",
         title="Device",
         description=(
-            "ONNX Runtime execution provider for all detection/embedding models.\n\n"
-            "'auto' uses the GPU when a working CUDAExecutionProvider is present and silently falls back to CPU otherwise\n"
-            "'cuda' forces GPU (still falls back to CPU with a warning if unavailable)\n"
-            "'cpu' is CPU-only and portable.\n\n"
-            "Confirm the effective device in the extract startup log ('running on "
-            "GPU/CPU') and via `synopticon hwinfo`, if you set 'cuda' but see CPU, "
-            "CUDA fell back, usually because a CPU-only onnxruntime wheel is installed."
+            "Whether the face models run on your CPU or on an NVIDIA GPU. A GPU is much "
+            "faster; the CPU works everywhere.\n\n"
+            "'auto' (default) uses the GPU when a working one is present and quietly "
+            "falls back to the CPU otherwise.\n"
+            "'cuda' asks for the GPU explicitly, and still falls back to the CPU with a "
+            "warning if it is unavailable.\n"
+            "'cpu' never touches the GPU and is the portable choice."
         ),
+        json_schema_extra={
+            "details": (
+                "Selects the ONNX Runtime execution provider for every detection and "
+                "embedding model. Confirm the effective device in the extract startup log "
+                "('running on GPU/CPU') or via `synopticon hwinfo` — if you set 'cuda' but "
+                "see CPU, CUDA init failed, usually because a CPU-only onnxruntime wheel "
+                "is installed."
+            )
+        },
     )
     device_id: int = Field(
         default=0,
         title="CUDA Device Ordinal",
         description=(
-            "CUDA device ordinal to pin the session to on multi-GPU hosts (0 = first "
-            "GPU, matching nvidia-smi indices). Ignored on CPU. Note that there is no built-in "
-            "multi-GPU sharding, one run uses one GPU. For the twelve people that still run SLI, you can "
-            "run multiple instances of Synopticon with this value incremented for parallelization. "
-            "An out-of-range ordinal makes CUDA init fail and silently fall back to CPU, so verify the intended GPU "
-            "shows load in nvidia-smi during an extract/benchmark run."
+            "Which GPU to use on a machine that has more than one. 0 is the first GPU; "
+            "leave it alone on single-GPU or CPU-only machines.\n\n"
+            "The numbering matches nvidia-smi, and the setting is ignored on CPU. There is "
+            "no built-in multi-GPU sharding — one run uses one GPU. For the twelve people "
+            "that still run SLI, run several instances of Synopticon with this value "
+            "incremented to parallelize."
         ),
+        json_schema_extra={
+            "details": (
+                "The CUDA device ordinal the session is pinned to. An out-of-range ordinal "
+                "makes CUDA init fail and silently fall back to CPU, so verify the "
+                "intended GPU shows load in nvidia-smi during an extract/benchmark run."
+            )
+        },
     )
     batch_size: int = Field(
         default=16,
         title="Embedding Batch Size",
         description=(
-            "Number of faces/crops sent to each embedder per inference call "
-            "(embedding stage only; detectors run one image at a time). The effective "
-            "batch per photo is capped at the faces found in that photo, so raising it "
-            "only helps crowded/group shots. Typical 8-64 (default 16): larger improves "
-            "GPU utilization at higher peak memory — raise to 32-64 on a GPU with "
-            "headroom, keep at 8-16 on CPU or small GPUs, and lower it if you hit CUDA "
-            "OOM during embed. Measure the 'embed' stage with `synopticon benchmark`."
+            "How many face crops are handed to each recognition model at once. Larger "
+            "batches use a GPU more efficiently but need more memory.\n\n"
+            "Typical 8-64, default 16: raise to 32-64 on a GPU with headroom, keep at 8-16 "
+            "on CPU or a small GPU, and lower it if you hit out-of-memory errors during "
+            "the embed stage."
         ),
+        json_schema_extra={
+            "details": (
+                "Applies to the embedding stage only — detectors run one image at a time. "
+                "The effective batch per photo is capped at the number of faces found in "
+                "that photo, so raising it only helps crowded group shots. Measure the "
+                "'embed' stage with `synopticon benchmark`."
+            )
+        },
     )
     intra_op_threads: int | None = Field(
         default=None,
         title="ONNX Runtime Intra-Op Threads",
         description=(
-            "ONNX Runtime intra-op thread count (parallelism within a single operator).\n"
-            "This the main CPU-throughput knob, leave blank to use the physical core count "
-            "(note that hyperthreads are deliberately excluded, as they rarely help compute-bound "
-            "ops). Set an explicit lower value (e.g. 2-4) to leave headroom or when "
-            "running several extract processes at once, to avoid oversubscription with "
-            "BLAS/OMP threads. Going above the physical core count rarely helps. Tune by "
-            "comparing `synopticon benchmark` stage times across values."
+            "How many CPU threads the face models may use. This is the main speed knob "
+            "when running on CPU; leave it blank to use every physical core.\n\n"
+            "Set an explicit lower value (2-4) to leave headroom for other work, or when "
+            "running several extract processes at once so they don't fight over cores. "
+            "Going above the physical core count rarely helps."
         ),
+        json_schema_extra={
+            "details": (
+                "ONNX Runtime's intra-op thread count (parallelism within a single "
+                "operator). The blank default is the physical core count — hyperthreads "
+                "are deliberately excluded, since they rarely help compute-bound ops — and "
+                "an explicit value also avoids oversubscription against BLAS/OMP pools. "
+                "Tune by comparing `synopticon benchmark` stage times across values."
+            )
+        },
     )
     job_threads: int | None = Field(
         default=None,
         title="Job BLAS/OpenMP Threads",
         description=(
-            "Thread cap handed to jobs launched from the web GUI, as OMP_NUM_THREADS "
-            "and friends (BLAS/OpenMP/numexpr). Leave blank for one less than the "
-            "logical core count, which reserves a core for the web server itself.\n"
-            "This is the knob that keeps the GUI responsive while a job runs: "
-            "clustering multiplies large matrices through BLAS, which by default "
-            "spawns one busy-spinning thread per core and starves the single uvicorn "
-            "process — the symptom is unrelated requests all taking tens of seconds "
-            "and completing at the same instant. Set 0 to leave the environment "
-            "alone (a value already exported by the operator always wins). Does not "
-            "govern ONNX Runtime, which has its own pool — see intra_op_threads."
+            "How many CPU threads a job started from the web GUI may use. Blank (default) "
+            "means one less than the core count, which keeps a core free so the web "
+            "interface stays responsive.\n\n"
+            "This is the knob to turn if the GUI crawls while a job runs. Set 0 to leave "
+            "the environment alone entirely; a value the operator has already exported "
+            "always wins."
         ),
+        json_schema_extra={
+            "details": (
+                "Exported to the job subprocess as OMP_NUM_THREADS and the "
+                "BLAS/OpenMP/numexpr aliases. Clustering multiplies large matrices through "
+                "BLAS, which by default spawns one busy-spinning thread per core and "
+                "starves the single uvicorn process — the symptom is unrelated requests "
+                "all taking tens of seconds and completing at the same instant. Does not "
+                "govern ONNX Runtime, which has its own pool: see intra_op_threads."
+            )
+        },
     )
     job_nice: int = Field(
         default=10,
@@ -138,12 +179,17 @@ class InferenceConfig(BaseModel):
         le=19,
         title="Job Niceness",
         description=(
-            "Scheduling niceness applied to web-launched job subprocesses (0-19, "
-            "higher yields more CPU to everything else). The default 10 lets an "
-            "interactive request win against a batch job without measurably slowing "
-            "the job down, since it only matters while the two compete. Set 0 to run "
-            "jobs at the same priority as the server."
+            "How politely jobs started from the web GUI compete for CPU with everything "
+            "else. Higher means the job yields more.\n\n"
+            "0-19; the default 10 lets an interactive request win against a batch job "
+            "without measurably slowing the job down, since priority only matters while "
+            "the two compete. Set 0 to run jobs at the same priority as the server."
         ),
+        json_schema_extra={
+            "details": (
+                "The scheduling niceness applied to job subprocesses after spawn."
+            )
+        },
     )
 
 
@@ -152,99 +198,153 @@ class DetectionConfig(BaseModel):
         default_factory=lambda: [1.0, 2.0],
         title="SCRFD Scales",
         description=(
-            "Image-pyramid factors for the SCRFD detector (does not affect YOLO): the "
-            "full frame is resized by each factor and re-inferenced, so faces are seen "
-            "at multiple resolutions. [1.0] is a single fast pass, weak on small faces; "
-            "[1.0, 2.0] (default) adds a 2× upscale to recover small/distant faces.\nEach "
-            "extra scale is a full forward pass, so a 2.0 factor would be ~4× the "
-            "pixels/compute/memory, and large factors are clamped by max_long_side.\nAdd "
-            "a bigger factor if small faces are frequently missed, or drop the 2.0 factor if runtime or memory "
-            "blows up on large images."
+            "How many times each photo is re-examined at a larger size, so small or "
+            "distant faces are still found.\n\n"
+            "[1.0] is a single fast pass and is weak on small faces; [1.0, 2.0] (default) "
+            "adds a doubled-size pass that recovers them. Add a bigger factor if small "
+            "faces are frequently missed, or drop the 2.0 if runtime or memory blows up on "
+            "large images."
         ),
+        json_schema_extra={
+            "details": (
+                "Image-pyramid factors for the SCRFD detector only (YOLO is unaffected) — "
+                "the full frame is resized by each factor and re-inferenced. Each extra "
+                "scale is a full forward pass, so a factor of 2.0 costs roughly 4x the "
+                "pixels, compute and memory; large factors are clamped by max_long_side."
+            )
+        },
     )
     scrfd_score: float = Field(
         default=0.30,
         title="SCRFD Score",
         description=(
-            "Confidence threshold (0-1) for the primary SCRFD detector, whose boxes are "
-            "the ones that keep facial landmarks. Typical values between 0.2 - 0.5, the default 0.30 leans "
-            "toward better recall. Lower it to recover profile/occluded/blurry faces at the "
-            "cost of more false positives feeding clustering, raise it if textured "
-            "backgrounds are being detected as faces. Re-run the extract stage to evaluate the effect."
+            "How sure the main face detector must be before it accepts something as a "
+            "face. Lower finds more faces, but also more things that aren't faces.\n\n"
+            "0-1, typical 0.2-0.5; the default 0.30 leans toward finding more. Lower it to "
+            "recover profile, occluded or blurry faces at the cost of false positives "
+            "feeding clustering; raise it if textured backgrounds are being detected as "
+            "faces."
         ),
+        json_schema_extra={
+            "details": (
+                "The confidence threshold for SCRFD, the primary detector whose boxes are "
+                "the ones that keep facial landmarks. Re-run the extract stage to evaluate "
+                "a change."
+            )
+        },
     )
     yolo_score: float = Field(
         default=0.35,
         title="YOLO Score",
         description=(
-            "Confidence threshold (0-1) for the secondary, recall-oriented YOLOv8-face "
-            "detector, whose unmatched boxes add faces SCRFD missed. Typical 0.25-0.5; "
-            "default 0.35, kept slightly above scrfd_score so its extra detections stay "
-            "trustworthy. Lower it to have YOLO contribute more novel faces (more false "
-            "positives); raise it if YOLO adds spurious boxes. Evaluate on the delta — "
-            "faces present only because YOLO fired. No effect if the YOLO model is absent. "
-            "Re-run the extract stage to evaluate the effect."
+            "How sure the secondary face detector must be. It exists to catch faces the "
+            "main detector missed.\n\n"
+            "0-1, typical 0.25-0.5; default 0.35, kept slightly above scrfd_score so its "
+            "extra detections stay trustworthy. Lower it to have it contribute more novel "
+            "faces (with more false positives); raise it if it adds spurious boxes. No "
+            "effect if the YOLO model is absent."
         ),
+        json_schema_extra={
+            "details": (
+                "The confidence threshold for the recall-oriented YOLOv8-face detector, "
+                "whose unmatched boxes become additional faces. Evaluate it on that delta "
+                "— the faces present only because YOLO fired. Re-run the extract stage to "
+                "evaluate a change."
+            )
+        },
     )
     nms_iou: float = Field(
         default=0.45,
         title="Intra-Detector NMS IoU",
         description=(
-            "Intersection over Union threshold for the per-detector Non-Max Suppression that de-duplicates "
-            "each detector's own multi-scale boxes (intra-detector, not the SCRFD ↔ YOLO "
-            "fusion). Typical 0.3-0.6; default 0.45. Lower it if one face gets "
-            "duplicate/stacked boxes (common with multiple scales); raise it if two "
-            "adjacent faces (cheek-to-cheek) collapse into one."
+            "How much two boxes from the same detector must overlap before they are "
+            "treated as one face. This cleans up duplicate boxes stacked on a single "
+            "face.\n\n"
+            "Typical 0.3-0.6; default 0.45. Lower it if one face ends up with several "
+            "boxes (common when using multiple scales); raise it if two adjacent faces "
+            "(cheek-to-cheek) collapse into one."
         ),
+        json_schema_extra={
+            "details": (
+                "The Intersection-over-Union threshold for per-detector Non-Max "
+                "Suppression, which de-duplicates each detector's own multi-scale boxes. "
+                "This is not the SCRFD ↔ YOLO fusion threshold — see cross_iou."
+            )
+        },
     )
     cross_iou: float = Field(
         default=0.50,
         title="SCRFD ↔ YOLO Fusion IoU",
         description=(
-            "Intersection over Union threshold for fusing SCRFD and YOLO detections: a YOLO box overlapping "
-            "an SCRFD box above this is treated as the same face (the SCRFD box and its "
-            "landmarks are kept); below it, the YOLO box is added as a new face. Typical "
-            "0.3-0.6; default 0.50. Lower it if the same face appears twice after fusion "
-            "(once per detector); raise it if two nearby distinct faces get merged into "
-            "one. No effect without the YOLO model."
+            "How much a box from each of the two detectors must overlap before they count "
+            "as one face rather than two.\n\n"
+            "Typical 0.3-0.6; default 0.50. Lower it if the same face appears twice after "
+            "fusion, once per detector; raise it if two nearby distinct faces get merged "
+            "into one. No effect without the YOLO model."
         ),
+        json_schema_extra={
+            "details": (
+                "The Intersection-over-Union threshold for fusing SCRFD and YOLO "
+                "detections. Above it the YOLO box is treated as the same face and the "
+                "SCRFD box with its landmarks is kept; below it the YOLO box is added as a "
+                "new face."
+            )
+        },
     )
     min_face_px: int = Field(
         default=20,
         title="Minimum Face Size (px)",
         description=(
-            "Minimum face size (shorter box side, in original-image pixels) to keep; "
-            "smaller detections are dropped. Typical 16-40; default 20. Tiny crops "
-            "produce weak, noisy embeddings that pollute clustering, so raise it if "
-            "clustering is degraded by garbage faces; lower it only if you genuinely "
-            "need distant/background faces. Tune together with scales, which recovers "
-            "small faces this filter may then discard."
+            "The smallest face worth keeping, in pixels. Smaller detections are thrown "
+            "away.\n\n"
+            "Typical 16-40; default 20. Raise it if clustering is being degraded by "
+            "garbage faces; lower it only if you genuinely need distant background faces."
         ),
+        json_schema_extra={
+            "details": (
+                "Measured on the shorter box side, in original-image pixels. Tiny crops "
+                "produce weak, noisy embeddings that pollute clustering. Tune together "
+                "with scales, which recovers small faces this filter may then discard."
+            )
+        },
     )
     max_long_side: int = Field(
         default=6000,
         title="Max Long Side (px)",
         description=(
-            "Upper cap (pixels) on SCRFD's upscaled long side, bounding memory from the "
-            "scales pyramid; an upscale factor is reduced so long_side × factor stays "
-            "under this. It caps upscaling only — it does not shrink an already-large "
-            "original. Typical 4000-8000, memory-bound; default 6000. Lower it on OOM or "
-            "slow high-megapixel images; raise it if your scales include 2.0+ but small "
-            "faces on large images still aren't recovered (the clamp is likely "
-            "cancelling the upscale). SCRFD only."
+            "A ceiling on how large an image may be blown up while looking for faces, so "
+            "big photos don't exhaust memory.\n\n"
+            "Typical 4000-8000, memory-bound; default 6000. Lower it if you hit "
+            "out-of-memory errors or high-megapixel images are slow; raise it if your "
+            "scales include 2.0 or more but small faces on large images still aren't "
+            "recovered — the clamp is probably cancelling the upscale."
         ),
+        json_schema_extra={
+            "details": (
+                "Caps SCRFD's upscaled long side in pixels, bounding the memory cost of "
+                "the scales pyramid; an upscale factor is reduced so long_side × factor "
+                "stays under it. It caps upscaling only and never shrinks an already-large "
+                "original. SCRFD only."
+            )
+        },
     )
     yolo_upscale_below_px: int = Field(
         default=1600,
         title="YOLO Upscale Threshold (px)",
         description=(
-            "Long-side threshold (pixels) below which YOLO does an extra 2× upscale pass "
-            "(YOLO always letterboxes to 640px, so small images otherwise waste "
-            "resolution). Typical 1000-2500; default 1600. Raise it if small faces in "
-            "medium-resolution (~640-1600px) images are missed; lower it if YOLO latency "
-            "dominates and small-face recall isn't needed. YOLO only; independent of "
-            "SCRFD's scales."
+            "Below this image size, the secondary detector takes a second look at double "
+            "resolution, so small faces in small photos aren't missed.\n\n"
+            "Typical 1000-2500; default 1600. Raise it if small faces in medium-resolution "
+            "(~640-1600px) images are missed; lower it if YOLO latency dominates and "
+            "small-face recall isn't needed."
         ),
+        json_schema_extra={
+            "details": (
+                "A long-side threshold in pixels. YOLO always letterboxes its input to "
+                "640px, so small images otherwise waste resolution. YOLO only; independent "
+                "of SCRFD's scales."
+            )
+        },
     )
 
 
@@ -253,67 +353,97 @@ class RestorationConfig(BaseModel):
         default=False,
         title="Enable Restoration",
         description=(
-            "Master switch for the optional CodeFormer face-restoration pass. "
-            "Restoration is advisory only, it never feeds clustering. Instead, it fills the "
-            "'restored' embedding variant and files restore_disagreement review flags.\n\n"
-            "Off (default): zero cost.\nOn: requires the [restore] extra (which pins old "
-            "torch/torchvision and is currently incompatible with the GPU extra — CPU inference "
-            "only) plus a vendored CodeFormer model; without those it fails at startup "
-            "or on the first crop. Leave off unless you have set restoration up "
-            "specifically as a QA aid."
+            "Turns on an optional pass that tries to clean up small or poor-quality face "
+            "crops before they are recognized.\n\n"
+            "Off by default, and free when off. Restoration never feeds clustering: it "
+            "only fills a second 'restored' embedding and flags faces where the cleanup "
+            "changed the identity too much, as a quality-assurance aid. Leave it off "
+            "unless you have set it up for exactly that."
         ),
+        json_schema_extra={
+            "details": (
+                "Requires the [restore] extra — which pins old torch/torchvision, is "
+                "currently incompatible with the GPU extra (CPU inference only) — plus a "
+                "vendored CodeFormer model; without those it fails at startup or on the "
+                "first crop. Fills the 'restored' embedding variant and files "
+                "restore_disagreement review flags."
+            )
+        },
     )
     trigger_px: int = Field(
         default=80,
         title="Restoration Trigger Size (px)",
         description=(
-            "Restore any face whose shorter bounding-box side is below this many pixels, "
-            "regardless of quality (OR'd with the quality gate). Default 80; practical "
-            "40-160. The effective restoration band is roughly [detection.min_face_px, "
-            "trigger_px). Raise it to restore mid-size faces (more compute, more "
-            "hallucination risk on faces that were fine); lower it to restore only "
-            "genuinely tiny crops. Watch which crops get restored (faces.restored=1 vs "
-            "bbox size)."
+            "Faces smaller than this are always restored, however good they look.\n\n"
+            "Default 80; practical 40-160. Raise it to also restore mid-size faces (more "
+            "compute, and more risk of hallucinating on faces that were fine); lower it to "
+            "restore only genuinely tiny crops."
         ),
+        json_schema_extra={
+            "details": (
+                "Measured on the shorter bounding-box side and OR'd with the quality gate "
+                "below, so the effective restoration band is roughly "
+                "[detection.min_face_px, trigger_px). Watch which crops actually get "
+                "restored via faces.restored=1 against bbox size."
+            )
+        },
     )
     quality_percentile: float = Field(
         default=15.0,
         title="Restoration Quality Percentile",
         description=(
-            "Restore faces in the bottom N% of each batch by MagFace embedding norm "
-            "(MagFace magnitude is the per-face quality signal). Default 15.0; range "
-            "0-100. This is relative per-batch, not an absolute cut — a fixed fraction "
-            "is always eligible even in an all-good batch, and 0 effectively disables "
-            "the quality gate. Raise for more coverage (more compute/hallucination "
-            "risk), lower to target only the worst faces. Evaluate on representative "
-            "batches, since composition matters."
+            "Also restore the worst-looking share of each batch of faces — this is that "
+            "percentage.\n\n"
+            "Default 15.0, range 0-100. Raise for more coverage (more compute, more "
+            "hallucination risk); lower to target only the worst faces; 0 effectively "
+            "disables this gate and leaves only the size trigger."
         ),
+        json_schema_extra={
+            "details": (
+                "Quality is the MagFace embedding norm, and the cut is relative per batch "
+                "rather than absolute — a fixed fraction is always eligible even in an "
+                "all-good batch. Evaluate on representative batches, since composition "
+                "matters."
+            )
+        },
     )
     fidelity: float = Field(
         default=0.7,
         title="Restoration Fidelity Weight",
         description=(
-            "CodeFormer's fidelity weight w in [0,1]: higher stays closer to the input "
-            "(preserves identity, less enhancement), lower is more generative "
-            "(better-looking, higher risk of altering identity). Default 0.7 leans "
-            "toward fidelity, appropriate for a recognition pipeline. This is the "
-            "primary knob against over-restoration — if lowering it pushes many faces "
-            "over disagreement_cos, CodeFormer is inventing identity, so raise it back. "
-            "Safe to A/B since restored embeddings never feed clustering."
+            "How closely restoration must stick to the original face. Higher stays "
+            "faithful but enhances less; lower looks better but risks quietly turning the "
+            "face into someone else.\n\n"
+            "0-1; the default 0.7 leans toward fidelity, which is what a recognition "
+            "pipeline wants. This is the primary knob against over-restoration — if "
+            "lowering it pushes many faces over disagreement_cos, the model is inventing "
+            "identity, so raise it back."
         ),
+        json_schema_extra={
+            "details": (
+                "CodeFormer's fidelity weight w. Safe to A/B, since restored embeddings "
+                "never feed clustering."
+            )
+        },
     )
     disagreement_cos: float = Field(
         default=0.30,
         title="Restoration Disagreement Cosine",
         description=(
-            "Flag a restored face for human review when its restored-vs-original "
-            "embedding disagreement (1 − cosine) exceeds this; 0.30 (default) ≈ cosine "
-            "0.70 between the two embeddings. Practical band ~0.1-0.6 (theoretical max "
-            "2.0). Lower it to catch subtle identity drift early (larger review queue); "
-            "raise it to flag only gross changes. This is the direct 'did restoration "
-            "hallucinate a different identity' detector — tune it together with fidelity "
-            "and watch the restore_disagreement queue volume."
+            "How different a restored face may look from the original before a human is "
+            "asked to check it.\n\n"
+            "Default 0.30; practical band ~0.1-0.6. Lower it to catch subtle identity "
+            "drift early, at the cost of a larger review queue; raise it to flag only "
+            "gross changes."
         ),
+        json_schema_extra={
+            "details": (
+                "Measured as 1 − cosine between the restored and original embeddings, so "
+                "0.30 ≈ cosine 0.70 (theoretical max 2.0). This is the direct 'did "
+                "restoration hallucinate a different identity' detector — tune it together "
+                "with fidelity and watch the restore_disagreement queue volume."
+            )
+        },
     )
 
 
@@ -322,97 +452,139 @@ class ClusteringConfig(BaseModel):
         default=64,
         title="kNN Neighbor Count",
         description=(
-            "Number of nearest neighbors retrieved per face when building the "
-            "cosine-similarity kNN graph — an upper bound on connectivity, not a cluster "
-            "size. Typical 20-128; default 64. Too low truncates neighbor lists below a "
-            "prolific person's true neighbor count, causing fragmentation that no "
-            "threshold can fix; too high adds cross-identity candidate edges and "
-            "quadratic compute. Changing it (or fusion_weights) invalidates the graph "
-            "cache and forces a full recompute, unlike edge_threshold. Raise until "
-            "recall (bcubed_recall in `eval`) plateaus."
+            "How many look-alike candidates each face is compared against when faces are "
+            "grouped into people.\n\n"
+            "Typical 20-128; default 64. Too low and someone who appears in hundreds of "
+            "photos gets fragmented in a way no threshold can fix; too high adds "
+            "wrong-person candidates and costs quadratic compute. Raise it until recall "
+            "(bcubed_recall in `eval`) plateaus."
         ),
+        json_schema_extra={
+            "details": (
+                "The number of nearest neighbors retrieved per face when building the "
+                "cosine-similarity kNN graph — an upper bound on connectivity, not a "
+                "cluster size. Changing it (or fusion_weights) invalidates the graph cache "
+                "and forces a full recompute, unlike edge_threshold."
+            )
+        },
     )
     edge_threshold: float = Field(
         default=0.50,
         title="Edge Threshold",
         description=(
-            "Cosine-similarity cutoff for keeping a graph edge in Chinese Whispers "
-            "(ignored by HDBSCAN); faces with no surviving edge become singletons. Range "
-            "0-1; sweet spot ~0.40-0.60; default 0.50. Too low lets weak/cross-identity "
-            "edges chain distinct people into giant merged clusters; too high fragments "
-            "identities into singletons on pose/age/lighting variation. This is the "
-            "primary, cheapest-to-sweep knob (it doesn't invalidate the cache) — sweep "
-            "via `recluster --set` or `eval grid-search` and watch the precision/recall "
-            "(bcubed) tradeoff."
+            "How similar two faces must look to be treated as the same person. This is the "
+            "single most important clustering knob.\n\n"
+            "0-1, sweet spot ~0.40-0.60; default 0.50. Too low lets weak links chain "
+            "distinct people into giant merged groups; too high fragments one identity "
+            "over pose, age and lighting variation. Faces left with no surviving link "
+            "become one-face groups."
         ),
+        json_schema_extra={
+            "details": (
+                "The cosine-similarity cutoff for keeping an edge in the graph Chinese "
+                "Whispers runs on; HDBSCAN ignores it. It is the cheapest knob to sweep, "
+                "since it does not invalidate the graph cache — use `recluster --set` or "
+                "`eval grid-search` and watch the bcubed precision/recall tradeoff."
+            )
+        },
     )
     algorithm: Literal["chinese_whispers", "hdbscan"] = Field(
         default="chinese_whispers",
         title="Clustering Algorithm",
         description=(
-            "Clustering routine. 'chinese_whispers' (default) is iterative "
-            "label-propagation on the thresholded graph: fast, no extra dependency, "
-            "tuned by edge_threshold — every face gets a label. 'hdbscan' is density "
-            "clustering that actively rejects low-density faces as noise (higher "
-            "precision, lower recall, more explicit singletons), tuned by "
-            "min_cluster_size and needing the optional hdbscan dependency; it ignores "
-            "edge_threshold and cw_iterations. Compare both on the same holdout with "
-            "`eval grid-search` — the cache is reused, so the A/B is cheap."
+            "Which method is used to group faces into people.\n\n"
+            "'chinese_whispers' (default) gives every face a group and is tuned with "
+            "edge_threshold — fast, with no extra dependency. 'hdbscan' instead rejects "
+            "faces in sparse regions as noise: higher precision, lower recall, more "
+            "explicit one-offs, and tuned with min_cluster_size."
         ),
+        json_schema_extra={
+            "details": (
+                "chinese_whispers is iterative label propagation on the thresholded graph. "
+                "hdbscan is density clustering, needs the optional hdbscan dependency, and "
+                "ignores edge_threshold and cw_iterations. Compare the two on the same "
+                "holdout with `eval grid-search` — the graph cache is reused, so the A/B "
+                "is cheap."
+            )
+        },
     )
     cw_iterations: int = Field(
         default=30,
         title="Chinese Whispers Iterations",
         description=(
-            "Number of label-propagation sweeps in Chinese Whispers (no early stopping — "
-            "it always runs this many). Typical 10-50; default 30 is over-provisioned. "
-            "Too few leaves labels unconverged and identities under-merged; more than "
-            "needed just wastes time (it does not cause over-merging — topology is fixed "
-            "by edge_threshold). Tune manually with `recluster --set "
-            "clustering.cw_iterations=N`: raise if assignments still shift between 30 and "
-            "40, lower if identical from 15 up. HDBSCAN ignores it."
+            "How many passes the default grouping method makes over the faces before it "
+            "stops.\n\n"
+            "Typical 10-50; the default 30 is deliberately over-provisioned. Too few "
+            "leaves identities under-merged; more than needed only wastes time and cannot "
+            "cause over-merging. HDBSCAN ignores it."
         ),
+        json_schema_extra={
+            "details": (
+                "Label-propagation sweeps, with no early stopping — it always runs exactly "
+                "this many. Graph topology is fixed by edge_threshold, not by this. Tune "
+                "with `recluster --set clustering.cw_iterations=N`: raise it if "
+                "assignments still shift between 30 and 40, lower it if they are identical "
+                "from 15 up."
+            )
+        },
     )
     min_cluster_size: int = Field(
         default=2,
         title="HDBSCAN Minimum Cluster Size",
         description=(
-            "HDBSCAN only — has no effect under the default chinese_whispers algorithm. "
-            "Minimum faces for a cluster (connected components smaller than this are "
-            "pruned to noise); also used as min_samples, so larger values label more "
-            "faces as noise. Integer ≥ 2 (clamped up); default 2 maximizes recall. Raise "
-            "to 3-5 for higher purity at the cost of losing real small identities "
-            "(people with only 2-3 photos) to noise. For the minimum size to propose a "
-            "brand-new person, see crossref.new_person_min_faces instead."
+            "The fewest faces HDBSCAN needs before it will call them a group. Has no "
+            "effect under the default chinese_whispers algorithm.\n\n"
+            "Default 2 (the minimum) maximizes recall. Raise it to 3-5 for purer groups, "
+            "at the cost of losing real people who only appear in two or three photos. For "
+            "the minimum size to propose a brand-new person, see "
+            "crossref.new_person_min_faces instead."
         ),
+        json_schema_extra={
+            "details": (
+                "Connected components smaller than this are pruned to noise, and the value "
+                "is also used as min_samples, so larger values label more faces as noise. "
+                "Integers below 2 are clamped up."
+            )
+        },
     )
     seed: int = Field(
         default=42,
         title="Chinese Whispers RNG Seed",
         description=(
-            "RNG seed for Chinese Whispers' per-iteration node visit order, making runs "
-            "byte-identical given the same inputs (HDBSCAN doesn't use it). Not a quality "
-            "knob — keep it fixed (default 42) for reproducible review queues and "
-            "comparable grid searches. Only vary it to probe robustness: large swings in "
-            "cluster assignments across seeds indicate an over-connected graph near a "
-            "percolation point, so raise edge_threshold rather than hunting for a 'good' "
-            "seed."
+            "A fixed number that makes repeated runs come out identical. Not a quality "
+            "knob — leave it as it is.\n\n"
+            "Keeping it fixed (default 42) makes review queues reproducible and grid "
+            "searches comparable. Only vary it to probe robustness: large swings in group "
+            "assignments across seeds mean the graph is over-connected, so raise "
+            "edge_threshold rather than hunting for a 'good' seed."
         ),
+        json_schema_extra={
+            "details": (
+                "Seeds Chinese Whispers' per-iteration node visit order; HDBSCAN does not "
+                "use it. High cross-seed variance indicates a graph near a percolation "
+                "point."
+            )
+        },
     )
     fusion_weights: dict[str, float] = Field(
         default_factory=dict,
         title="Per-Model Fusion Weights",
         description=(
-            "Per-model weights (keyed by embedding model name, e.g. "
-            "arcface/adaface/magface; a missing model = 1.0) controlling each model's "
-            "relative contribution to the fused cosine similarity. Each model block is "
-            "L2-normalized first, so a model's share of the final similarity scales with "
-            "weight²; only ratios matter. Empty (default) weights all models equally. Set "
-            "a weight toward 0 to suppress a model that is noisy on your data; "
-            "over-weighting one model discards the ensemble benefit. Changing any weight "
-            "invalidates the graph cache; tune manually with `recluster --set` + `eval "
-            "holdout` (bcubed_f1), and make sure names match the embeddings table exactly."
+            "How much each recognition model counts when deciding whether two faces match. "
+            "Empty (default) weights them all equally.\n\n"
+            "Keyed by embedding model name (arcface, adaface, magface); a model that isn't "
+            "listed counts as 1.0, and only the ratios matter. Push a weight toward 0 to "
+            "suppress a model that is noisy on your data — but over-weighting one model "
+            "discards the benefit of using an ensemble at all."
         ),
+        json_schema_extra={
+            "details": (
+                "Each model block is L2-normalized before fusing, so a model's share of "
+                "the final similarity scales with weight². Changing any weight invalidates "
+                "the graph cache. Tune with `recluster --set` plus `eval holdout` "
+                "(bcubed_f1), and make sure the names match the embeddings table exactly."
+            )
+        },
     )
 
 
@@ -421,82 +593,114 @@ class CrossrefConfig(BaseModel):
         default=0.60,
         title="Majority Fraction",
         description=(
-            "Fraction of a cluster's *labeled* faces that must agree on one Synology "
-            "person before the cluster is trusted as that person's (paired with "
-            "min_labeled). This mapping gates every downstream suggestion — assign, "
-            "reassign, and cluster-pair merges. Range ~0.50-0.80; default 0.60 tolerates "
-            "one dissenting label at min_labeled=3. Raise it if wrong-person assigns "
-            "appear (impure clusters mapping); lower it if coherent, well-labeled "
-            "clusters produce no assigns. Too low also inflates false merges."
+            "How much of a face group must already carry the same Synology name before "
+            "Synopticon accepts that the group is that person.\n\n"
+            "~0.50-0.80; the default 0.60 tolerates one dissenting label at min_labeled=3. "
+            "Raise it if wrong-person assigns appear; lower it if coherent, well-labeled "
+            "groups produce no assigns at all. Too low also inflates false merges."
         ),
+        json_schema_extra={
+            "details": (
+                "The fraction is over the cluster's *labeled* faces only, and is paired "
+                "with min_labeled. This mapping gates every downstream suggestion — "
+                "assign, reassign and cluster-pair merges."
+            )
+        },
     )
     min_labeled: int = Field(
         default=3,
         title="Minimum Labeled Faces",
         description=(
-            "Minimum number of labeled (Synology-tagged) faces a cluster needs before "
-            "its majority vote is trusted at all; below this the cluster is ignored (no "
-            "assign/merge). Also the leave-one-out support floor for reassigns. Sensible "
-            "2-6; default 3. With min_labeled=1 a single tagged face maps the whole "
-            "cluster (fragile). Raise it if clusters get mapped/assigned off one or two "
-            "faces that turn out wrong; lower toward 2 if your library is sparsely "
-            "tagged and real clusters rarely reach 3 labels."
+            "How many faces in a group must already be tagged in Synology before its "
+            "majority name is trusted at all.\n\n"
+            "Sensible 2-6; default 3. At 1, a single tagged face maps the whole group, "
+            "which is fragile. Raise it if groups get mapped off one or two faces that "
+            "turn out wrong; lower it toward 2 if your library is sparsely tagged and real "
+            "groups rarely reach three labels."
         ),
+        json_schema_extra={
+            "details": (
+                "Below this the cluster is ignored entirely — no assign, no merge. Also "
+                "the leave-one-out support floor for reassigns."
+            )
+        },
     )
     assign_sim: float = Field(
         default=0.55,
         title="Assign Similarity Cutoff",
         description=(
-            "Cosine-similarity cutoff separating a confident 'assign' from a "
-            "'low_confidence' flag: an unlabeled face's mean similarity to the cluster's "
-            "labeled faces at/above this is an assign, below it is queued as "
-            "low_confidence (both still reviewable). Also the floor below which reassign "
-            "claims are discarded as noise. Range [-1,1]; practical 0.40-0.70; default "
-            "0.55. This is the confidence score shown in the review UI. Raise it if "
-            "wrong faces land in 'assign'; lower it if many correct faces are stuck in "
-            "'low_confidence'."
+            "How confident a match must be before it is proposed as a straightforward "
+            "assignment rather than flagged as uncertain.\n\n"
+            "Practical 0.40-0.70; default 0.55. Both outcomes are still reviewable — this "
+            "only decides which queue a face lands in, and it is the confidence score "
+            "shown in the review UI. Raise it if wrong faces land in 'assign'; lower it if "
+            "many correct faces are stuck in 'low_confidence'."
         ),
+        json_schema_extra={
+            "details": (
+                "An unlabeled face's mean cosine similarity to the cluster's labeled "
+                "faces, range [-1,1]. Also the floor below which reassign claims are "
+                "discarded as noise."
+            )
+        },
     )
     new_person_min_faces: int = Field(
         default=5,
         title="New Person Minimum Faces",
         description=(
-            "Minimum size of a fully-unlabeled cluster (zero Synology matches) before it "
-            "is proposed as a brand-new person. Default 5; sensible 3-15. This is a size "
-            "floor, not a similarity — it filters small, likely-spurious clusters "
-            "(noise, one-off detections). Raise it if the new_person queue is full of "
-            "junk (blurry/partial faces, single-event strangers); lower it if genuine "
-            "recurring people who appear in few photos are missed. Quality here depends "
-            "on upstream clustering coherence."
+            "How many photos a completely unknown person must appear in before Synopticon "
+            "proposes creating them as a new person.\n\n"
+            "Default 5; sensible 3-15. Raise it if the new_person queue fills with junk "
+            "(blurry or partial faces, one-off strangers); lower it if genuine recurring "
+            "people who appear in few photos are missed."
         ),
+        json_schema_extra={
+            "details": (
+                "A size floor on fully-unlabeled clusters (zero Synology matches), not a "
+                "similarity — it filters small, likely-spurious clusters. Quality here "
+                "depends on upstream clustering coherence."
+            )
+        },
     )
     merge_vote_fraction: float = Field(
         default=0.30,
         title="Merge Vote Fraction",
         description=(
-            "First merge trigger (intra-cluster): when two different Synology persons "
-            "each hold at least this share of the *same* cluster, they're suggested as "
-            "the same identity Synology split. Fraction ~0.20-0.50; default 0.30 (below "
-            "0.5, so a cluster can nominate more than two co-dominant persons). Raise it "
-            "for fewer, more confident merge suggestions; lower it to catch more Synology "
-            "over-splits at the cost of false merges from a few stray mislabeled faces. "
-            "Watch the merge/merge_named queue for false merges."
+            "When one face group carries two different Synology names, this is how much of "
+            "the group each name needs before Synopticon suggests that Synology split one "
+            "person in two.\n\n"
+            "~0.20-0.50; default 0.30, deliberately below 0.5 so a group can nominate more "
+            "than two co-dominant persons. Raise it for fewer, more confident merge "
+            "suggestions; lower it to catch more Synology over-splits, at the cost of "
+            "false merges from a few stray mislabeled faces."
         ),
+        json_schema_extra={
+            "details": (
+                "The first merge trigger (intra-cluster). Watch the merge/merge_named "
+                "queues for false merges."
+            )
+        },
     )
     merge_centroid_sim: float = Field(
         default=0.60,
         title="Merge Centroid Similarity",
         description=(
-            "Second merge trigger (inter-cluster): two clusters that mapped to "
-            "*different* persons but whose mean-embedding centroids are closer than this "
-            "cosine are suggested as the same person split across clusters. Range "
-            "[-1,1]; practical 0.50-0.75; default 0.60 (centroid-to-centroid similarity "
-            "runs lower than face-to-face). Raise it so only near-identical clusters "
-            "merge; lower it if one person is clearly fragmented across clusters that "
-            "never get proposed. Tune together with merge_vote_fraction and judge by the "
-            "combined false-merge rate. Both merge kinds still require explicit "
-            "apply-time gates before anything is written."
+            "How alike two separate face groups must be on average before Synopticon "
+            "suggests their two Synology people are really the same person.\n\n"
+            "Practical 0.50-0.75; default 0.60, lower than face-to-face thresholds because "
+            "averaged faces are less distinctive. Raise it so only near-identical groups "
+            "merge; lower it if one person is clearly fragmented across groups that never "
+            "get proposed."
         ),
+        json_schema_extra={
+            "details": (
+                "The second merge trigger (inter-cluster) — clusters that mapped to "
+                "*different* persons but whose mean-embedding centroids are closer than "
+                "this cosine, range [-1,1]. Tune together with merge_vote_fraction and "
+                "judge by the combined false-merge rate. Both merge kinds still require "
+                "explicit apply-time gates before anything is written."
+            )
+        },
     )
 
 

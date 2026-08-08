@@ -60,6 +60,9 @@ export interface FieldDescriptor {
    *  key when unset, so this is normally present. */
   title?: string
   description?: string
+  /** `json_schema_extra={"details": ...}` — the technical half of the help text,
+   *  rendered as a collapsed, de-emphasized block under the description. */
+  details?: string
   isSecret: boolean
 }
 
@@ -164,6 +167,7 @@ export function sectionFields(root: JsonSchema, section: string): FieldDescripto
       info,
       title: typeof title === 'string' ? title : undefined,
       description: typeof resolved.description === 'string' ? resolved.description : undefined,
+      details: typeof resolved.details === 'string' ? resolved.details : undefined,
       isSecret: info.kind === 'password',
     }
   })

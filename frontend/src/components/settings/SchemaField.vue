@@ -83,6 +83,10 @@ const envMessage = computed(
       <input v-else class="input" type="text" v-model="strValue" />
 
       <div v-if="field.description" class="field-desc">{{ field.description }}</div>
+      <details v-if="field.details" class="field-details">
+        <summary>Technical details</summary>
+        <div class="field-details-body">{{ field.details }}</div>
+      </details>
       <span v-if="envOverride" class="env-chip">{{ envMessage }}</span>
       <div v-if="error" class="field-error">{{ error }}</div>
     </div>
@@ -136,6 +140,36 @@ const envMessage = computed(
 .field-desc {
   font-size: var(--fs-sm);
   color: var(--text-2);
+  white-space: pre-wrap;
+}
+.field-details {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  max-width: 68ch;
+}
+.field-details > summary {
+  cursor: pointer;
+  width: fit-content;
+  list-style: none;
+  color: var(--text-3);
+  opacity: 0.85;
+}
+.field-details > summary::-webkit-details-marker {
+  display: none;
+}
+.field-details > summary::before {
+  content: '▸ ';
+}
+.field-details[open] > summary::before {
+  content: '▾ ';
+}
+.field-details > summary:hover {
+  color: var(--text-2);
+}
+.field-details-body {
+  margin-top: var(--sp-1);
+  padding-left: 0.9em;
+  border-left: 1px solid var(--border-soft);
   white-space: pre-wrap;
 }
 .field-error {

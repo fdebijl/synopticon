@@ -1,18 +1,17 @@
 <script setup lang="ts">
-// Maintenance page: one card per destructive command with live "what will be
-// removed" counts (/api/maintenance/counts). Ports maintenance.html.j2 +
-// maintenance.js. Consent (plan §6) is enforced by the shared confirm dialog:
-// clear-queue / delete-crops / reset take a plain confirm; dedupe --apply and
-// reset --all take typed phrases ("delete duplicates" / "reset all"). Each
-// action submits a job so the shared JobPanel streams its progress. The server's
-// validate_consent re-checks every gate regardless.
+// Maintenance page: one card per destructive local-state command with live
+// "what will be removed" counts (/api/maintenance/counts). Consent (plan §6) is
+// enforced by the shared confirm dialog: clear-queue / delete-crops / reset take
+// a plain confirm, reset --all takes the typed phrase "reset all". Each action
+// submits a job so the shared JobPanel streams its progress. The server's
+// validate_consent re-checks every gate regardless. Photo deduplication lives on
+// the Utilities page — it acts on the NAS library, not on local pipeline state.
 import { ref, reactive, onMounted } from 'vue'
 import JobPanel from '../components/JobPanel.vue'
 import { getJSON, ApiError } from '../api/client'
 import { toast } from '../stores/toasts'
 import { confirm } from '../composables/useConfirm'
 
-const PHRASE_DEDUPE = 'delete duplicates'
 const PHRASE_RESET_ALL = 'reset all'
 
 interface Counts {
@@ -26,7 +25,6 @@ interface Counts {
 const counts = ref<Counts | null>(null)
 const panel = ref<InstanceType<typeof JobPanel> | null>(null)
 
-const dedupe = reactive({ exact: true, visual: false, threshold: '' })
 const reset = reactive({ all: false, keepCrops: false })
 
 function fmtBytes(n: number | null | undefined): string {
@@ -71,38 +69,6 @@ function startJob(
       if (e instanceof ApiError && e.status === 428) toast('Consent required.', 'error')
       else toast((e as Error).message || 'Failed to start job', 'error')
     })
-}
-
-function dedupeParams(): Record<string, unknown> {
-  const params: Record<string, unknown> = { exact: dedupe.exact, visual: dedupe.visual }
-  const t = dedupe.threshold.trim()
-  if (t !== '') params.threshold = t
-  return params
-}
-
-function dedupePreview(): void {
-  if (!dedupe.exact && !dedupe.visual) {
-    toast('Pick exact and/or visual.', 'error')
-    return
-  }
-  startJob('dedupe', dedupeParams())
-}
-
-async function dedupeApply(): Promise<void> {
-  if (!dedupe.exact && !dedupe.visual) {
-    toast('Pick exact and/or visual.', 'error')
-    return
-  }
-  const ok = await confirm({
-    title: 'Delete duplicate photos',
-    message: 'This permanently deletes duplicate photos from the NAS.',
-    phrase: PHRASE_DEDUPE,
-    okLabel: 'Delete duplicates',
-  })
-  if (!ok) return
-  const params = dedupeParams()
-  params.apply = true
-  startJob('dedupe', params, { confirm: true, confirm_phrase: PHRASE_DEDUPE })
 }
 
 async function clearQueue(): Promise<void> {
@@ -153,40 +119,6 @@ onMounted(() => void loadCounts())
     <JobPanel ref="panel" @done="loadCounts" />
 
     <div class="maint-grid" style="margin-top: var(--sp-4)">
-      <section class="card maint-card">
-        <h3>Deduplicate photos</h3>
-        <p class="muted">
-          Delete duplicate photos from the NAS using stored hashes. Dry run is free; applying
-          deletes on the NAS.
-        </p>
-        <div class="maint-opts">
-          <label class="opt-check"
-            ><input type="checkbox" v-model="dedupe.exact" /> exact (sha256 identical)</label
-          >
-          <label class="opt-check"
-            ><input type="checkbox" v-model="dedupe.visual" /> visual (pHash near-duplicates)</label
-          >
-          <div class="opt-row">
-            <label for="dd-threshold">Hamming threshold</label>
-            <input
-              class="input input-sm"
-              id="dd-threshold"
-              type="number"
-              min="0"
-              max="64"
-              placeholder="default"
-              v-model="dedupe.threshold"
-            />
-          </div>
-        </div>
-        <div class="maint-actions">
-          <button type="button" class="btn" @click="dedupePreview">Dry run</button>
-          <button type="button" class="btn btn-danger" @click="dedupeApply">
-            Delete duplicates…
-          </button>
-        </div>
-      </section>
-
       <section class="card maint-card">
         <h3>Clear review queue</h3>
         <p class="muted">Remove pending review items. Approved/applied decisions are unaffected.</p>

@@ -27,10 +27,16 @@ _MIGRATIONS = [
 ]
 
 
-def connect(db_path: Path | str) -> sqlite3.Connection:
+def connect(db_path: Path | str, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a configured connection.
+
+    `check_same_thread=False` is only for a connection whose every use is
+    already serialized by the caller's own lock (the web process' long-lived
+    NAS-session connection, which hops threadpool workers between requests).
+    """
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=60)
+    conn = sqlite3.connect(db_path, timeout=60, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

@@ -408,6 +408,9 @@ def create_app(
         finally:
             watchdog.cancel()
             jm.shutdown()
+            nas_session = getattr(app.state, "nas_session", None)
+            if nas_session is not None:
+                nas_session.reset()
 
     app = FastAPI(title="Synopticon", lifespan=lifespan)
     _add_gzip(app)
@@ -1280,6 +1283,10 @@ def create_app(
     from .configio import register_config_routes
 
     register_config_routes(app, settings, conn, jm)
+
+    from .quickmerger import register_quickmerger_routes
+
+    register_quickmerger_routes(app, settings, conn)
 
     # -- SPA shell (catch-all, registered LAST) ----------------------------- #
     @app.get("/{path:path}")

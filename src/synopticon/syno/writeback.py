@@ -95,6 +95,8 @@ class PersonWriter(Protocol):
 
     def rename(self, person_id: int, name: str) -> WriteResult: ...
 
+    def set_show(self, person_id: int, show: bool) -> WriteResult: ...
+
     def delete_face(self, space: Space, face_id: int, person_id: int) -> WriteResult: ...
 
     def reassign(
@@ -141,6 +143,9 @@ class DryRunWriter:
     def rename(self, person_id, name) -> WriteResult:
         return self._record("rename", {"person_id": person_id, "name": name})
 
+    def set_show(self, person_id, show) -> WriteResult:
+        return self._record("set_show", {"person_id": person_id, "show": bool(show)})
+
     def delete_face(self, space, face_id, person_id) -> WriteResult:
         return self._record(
             "delete_face", {"space": space, "face_id": face_id, "person_id": person_id}
@@ -162,14 +167,29 @@ class DryRunWriter:
 
 
 class SynoWriter:
-    """Real writer: talks to the NAS via `SynoClient`, audits every step."""
+    """Real writer: talks to the NAS via `SynoClient`, audits every step.
+
+    `action_prefix` names the caller in `audit_log.action` — the review-queue
+    apply path leaves it at `writeback`, interactive tools (QuickMerger) pass
+    their own so the audit trail says which surface issued the write.
+    """
 
     dry_run = False
 
-    def __init__(self, client: SynoClient, conn: sqlite3.Connection, space: Space):
+    def __init__(
+        self,
+        client: SynoClient,
+        conn: sqlite3.Connection,
+        space: Space,
+        action_prefix: str = "writeback",
+    ):
         self.client = client
         self.conn = conn
         self.space = space
+        self.action_prefix = action_prefix
+
+    def _action(self, suffix: str) -> str:
+        return f"{self.action_prefix}.{suffix}"
 
     def _simple_call(self, api: str, method: str, version: int, params: dict, action: str) -> WriteResult:
         log.info("%s -> %s.%s v%s params=%s", action, api, method, version, params)
@@ -225,7 +245,7 @@ class SynoWriter:
 
         audit.record(
             self.conn,
-            action="writeback.assign.add_face",
+            action=self._action("assign.add_face"),
             api=f"{api}.add_face",
             params={**params, "version": version},
             response=data,
@@ -268,7 +288,7 @@ class SynoWriter:
             )
             audit.record(
                 self.conn,
-                action="writeback.assign.upload_face",
+                action=self._action("assign.upload_face"),
                 api=f"{upload_api}.upload",
                 params={"face_id": real_face_id},
                 response=upload_data,
@@ -286,7 +306,7 @@ class SynoWriter:
                 verify_success = False
         audit.record(
             self.conn,
-            action="writeback.assign.verify",
+            action=self._action("assign.verify"),
             api=f"{api}.list_face",
             params={"id_item": item_id, "face_id": real_face_id},
             response=None,
@@ -308,13 +328,24 @@ class SynoWriter:
         api = self.client.api_name(self.space, "Browse.Person")
         version = self.client.version_for(api, 2)
         params = {"target_id": target_id, "merged_id": merged_ids, "name": QuotedString(name)}
-        return self._simple_call(api, "merge", version, params, "writeback.merge")
+        return self._simple_call(api, "merge", version, params, self._action("merge"))
 
     def rename(self, person_id: int, name: str) -> WriteResult:
         api = self.client.api_name(self.space, "Browse.Person")
         version = self.client.version_for(api, 1)
         params = {"id": person_id, "name": QuotedString(name)}
-        return self._simple_call(api, "set", version, params, "writeback.rename")
+        return self._simple_call(api, "set", version, params, self._action("rename"))
+
+    def set_show(self, person_id: int, show: bool) -> WriteResult:
+        """Hide/unhide a person in Synology Photos (`Browse.Person.show`).
+
+        Reversible: the person and its faces are untouched, only the People
+        view's visibility flag changes.
+        """
+        api = self.client.api_name(self.space, "Browse.Person")
+        version = self.client.version_for(api, 1)
+        params = {"id": [person_id], "show": bool(show)}
+        return self._simple_call(api, "show", version, params, self._action("set_show"))
 
     def delete_face(self, space: Space, face_id: int, person_id: int) -> WriteResult:
         """Remove a face detection from a photo.
@@ -326,7 +357,7 @@ class SynoWriter:
         api = self.client.api_name(space, "Browse.Person")
         version = self.client.version_for(api, 1)
         params = {"face_id": [face_id], "person_id": person_id}
-        return self._simple_call(api, "delete_face", version, params, "writeback.delete_face")
+        return self._simple_call(api, "delete_face", version, params, self._action("delete_face"))
 
     def reassign(
         self,
@@ -350,7 +381,7 @@ class SynoWriter:
             "target_id": target_person_id,
             "name": QuotedString(target_name),
         }
-        result = self._simple_call(api, "separate", version, params, "writeback.reassign.separate")
+        result = self._simple_call(api, "separate", version, params, self._action("reassign.separate"))
         if not result.success:
             return result
 
@@ -365,7 +396,7 @@ class SynoWriter:
             verify_success = False
         audit.record(
             self.conn,
-            action="writeback.reassign.verify",
+            action=self._action("reassign.verify"),
             api=f"{api}.list_face",
             params={"id_item": item_id, "face_id": syno_face_id},
             response=None,
