@@ -26,6 +26,7 @@ type Field =
 interface CardDef {
   cmd: string
   title: string
+  primary: boolean;
   desc: string
   disclosure?: string
   fields: Field[]
@@ -36,6 +37,7 @@ const CARDS: CardDef[] = [
   {
     cmd: 'sync',
     title: 'Sync',
+    primary: true,
     desc: 'Pull the photo library, persons and faces from the NAS.',
     disclosure: 'Options',
     fields: [
@@ -49,6 +51,7 @@ const CARDS: CardDef[] = [
   {
     cmd: 'extract',
     title: 'Extract',
+    primary: true,
     desc: 'Detect, align and embed faces for synced photos.',
     disclosure: 'Options',
     fields: [
@@ -60,12 +63,14 @@ const CARDS: CardDef[] = [
   {
     cmd: 'cluster',
     title: 'Cluster',
+    primary: true,
     desc: 'Build the kNN graph, cluster faces and cross-reference labels.',
     fields: [],
   },
   {
     cmd: 'recluster',
     title: 'Recluster',
+    primary: false,
     desc: 'Re-run clustering offline with parameter overrides.',
     disclosure: 'Overrides',
     fields: [],
@@ -74,6 +79,7 @@ const CARDS: CardDef[] = [
   {
     cmd: 'report',
     title: 'Report',
+    primary: false,
     desc: 'Regenerate the static HTML review report.',
     disclosure: 'Options',
     fields: [{ kind: 'number', param: 'run_id', label: 'Run id', placeholder: 'latest', min: 1 }],
@@ -81,6 +87,7 @@ const CARDS: CardDef[] = [
   {
     cmd: 'regen-crops',
     title: 'Regenerate crops',
+    primary: false,
     desc: 'Rebuild face crop images from stored bboxes.',
     disclosure: 'Options',
     fields: [
@@ -92,6 +99,7 @@ const CARDS: CardDef[] = [
   {
     cmd: 'benchmark',
     title: 'Benchmark',
+    primary: false,
     desc: 'Time the detection/embedding pipeline on a sample.',
     disclosure: 'Options',
     fields: [
@@ -103,6 +111,7 @@ const CARDS: CardDef[] = [
   {
     cmd: 'models-download',
     title: 'Download models',
+    primary: false,
     desc: 'Fetch and verify model weights from the manifest.',
     disclosure: 'Options',
     fields: [
@@ -119,6 +128,11 @@ const CARDS: CardDef[] = [
       },
     ],
   },
+]
+
+const GROUPS = [
+  { key: 'primary', cards: CARDS.filter((c) => c.primary) },
+  { key: 'ops', cards: CARDS.filter((c) => !c.primary) },
 ]
 
 // Per-card reactive form state, seeded from the field defaults.
@@ -211,92 +225,104 @@ function fmtDuration(m: Job): string {
   <div class="page">
     <JobPanel ref="panel" @done="refreshJobs" />
 
-    <div class="cmd-grid" style="margin-top: var(--sp-4)">
-      <section
-        v-for="card in CARDS"
-        :key="card.cmd"
-        class="card cmd-card"
-        :class="{ open: open[card.cmd] }"
-      >
-        <div class="cmd-head">
-          <div>
-            <div class="cmd-title">{{ card.title }}</div>
-            <div class="cmd-desc">{{ card.desc }}</div>
+    <template v-for="group in GROUPS" :key="group.key">
+      <div v-if="group.key === 'ops'" class="ops-divider">
+        <span class="ops-divider-label">Other operations</span>
+      </div>
+
+      <div class="cmd-grid" :class="`cmd-grid-${group.key}`">
+        <section
+          v-for="card in group.cards"
+          :key="card.cmd"
+          class="card cmd-card"
+          :class="{ open: open[card.cmd] }"
+        >
+          <div class="cmd-head">
+            <div>
+              <div class="cmd-title">{{ card.title }}</div>
+              <div class="cmd-desc">{{ card.desc }}</div>
+            </div>
+            <template v-if="card.disclosure">
+              <div class="cmd-head-spacer"></div>
+              <button type="button" class="disclosure" @click="toggle(card.cmd)">
+                {{ card.disclosure }}
+              </button>
+            </template>
           </div>
-          <template v-if="card.disclosure">
-            <div class="cmd-head-spacer"></div>
-            <button type="button" class="disclosure" @click="toggle(card.cmd)">
-              {{ card.disclosure }}
-            </button>
-          </template>
-        </div>
 
-        <div v-if="card.disclosure" class="cmd-opts">
-          <template v-if="card.overrides">
-            <p class="muted">
-              Only <code>clustering.*</code> / <code>crossref.*</code> keys are accepted (the server
-              validates too). Values are JSON: <code>0.55</code>, <code>true</code>,
-              <code>"cw"</code>.
-            </p>
-            <div class="kv-editor">
-              <div v-for="(row, i) in overrides[card.cmd]" :key="i" class="kv-row">
-                <input class="input" v-model="row.key" placeholder="clustering.threshold" />
-                <input class="input" v-model="row.val" placeholder="0.55" />
-                <button
-                  type="button"
-                  class="btn btn-sm btn-ghost"
-                  aria-label="Remove"
-                  @click="removeKv(card.cmd, i)"
-                >
-                  &times;
-                </button>
+          <div v-if="card.disclosure" class="cmd-opts">
+            <template v-if="card.overrides">
+              <p class="muted">
+                Only <code>clustering.*</code> / <code>crossref.*</code> keys are accepted (the server
+                validates too). Values are JSON: <code>0.55</code>, <code>true</code>,
+                <code>"cw"</code>.
+              </p>
+              <div class="kv-editor">
+                <div v-for="(row, i) in overrides[card.cmd]" :key="i" class="kv-row">
+                  <input class="input" v-model="row.key" placeholder="clustering.threshold" />
+                  <input class="input" v-model="row.val" placeholder="0.55" />
+                  <button
+                    type="button"
+                    class="btn btn-sm btn-ghost"
+                    aria-label="Remove"
+                    @click="removeKv(card.cmd, i)"
+                  >
+                    &times;
+                  </button>
+                </div>
               </div>
-            </div>
-            <button type="button" class="btn btn-sm" @click="addKv(card.cmd)">
-              + add override
+              <button type="button" class="btn btn-sm" @click="addKv(card.cmd)">
+                + add override
+              </button>
+            </template>
+
+            <template v-for="f in card.fields" :key="f.param">
+              <div v-if="f.kind === 'space'" class="opt-row">
+                <label>Space</label>
+                <select class="select" v-model="params[card.cmd][f.param]">
+                  <option v-for="[v, l] in SPACES" :key="v" :value="v">{{ l }}</option>
+                </select>
+              </div>
+              <label v-else-if="f.kind === 'check'" class="opt-check">
+                <input type="checkbox" v-model="params[card.cmd][f.param]" /> {{ f.label }}
+              </label>
+              <div v-else-if="f.kind === 'number'" class="opt-row">
+                <label>{{ f.label }}</label>
+                <input
+                  class="input input-sm"
+                  type="number"
+                  :min="f.min"
+                  :max="f.max"
+                  :placeholder="f.placeholder"
+                  v-model="params[card.cmd][f.param]"
+                />
+              </div>
+              <div v-else class="opt-row">
+                <label>{{ f.label }}</label>
+                <input
+                  class="input"
+                  type="text"
+                  :placeholder="f.placeholder"
+                  v-model="params[card.cmd][f.param]"
+                />
+              </div>
+            </template>
+          </div>
+
+          <div class="cmd-actions">
+            <button
+              type="button"
+              class="btn"
+              :class="group.key === 'primary' ? 'btn-action' : 'btn-quiet'"
+              :disabled="running"
+              @click="run(card)"
+            >
+              Run
             </button>
-          </template>
-
-          <template v-for="f in card.fields" :key="f.param">
-            <div v-if="f.kind === 'space'" class="opt-row">
-              <label>Space</label>
-              <select class="select" v-model="params[card.cmd][f.param]">
-                <option v-for="[v, l] in SPACES" :key="v" :value="v">{{ l }}</option>
-              </select>
-            </div>
-            <label v-else-if="f.kind === 'check'" class="opt-check">
-              <input type="checkbox" v-model="params[card.cmd][f.param]" /> {{ f.label }}
-            </label>
-            <div v-else-if="f.kind === 'number'" class="opt-row">
-              <label>{{ f.label }}</label>
-              <input
-                class="input input-sm"
-                type="number"
-                :min="f.min"
-                :max="f.max"
-                :placeholder="f.placeholder"
-                v-model="params[card.cmd][f.param]"
-              />
-            </div>
-            <div v-else class="opt-row">
-              <label>{{ f.label }}</label>
-              <input
-                class="input"
-                type="text"
-                :placeholder="f.placeholder"
-                v-model="params[card.cmd][f.param]"
-              />
-            </div>
-          </template>
-        </div>
-
-        <div class="cmd-actions">
-          <button type="button" class="btn btn-action" :disabled="running" @click="run(card)">
-            Run
-          </button>
-        </div>
-      </section>
-    </div>
+          </div>
+        </section>
+      </div>
+    </template>
 
     <div class="card" style="margin-top: var(--sp-4)">
       <h3>Job history</h3>
@@ -334,10 +360,53 @@ function fmtDuration(m: Job): string {
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--sp-3);
 }
+.cmd-grid-primary {
+  margin-top: var(--sp-4);
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+.cmd-grid-primary .cmd-card {
+  min-height: 180px;
+  padding: var(--sp-5);
+  gap: var(--sp-3);
+}
+.cmd-grid-primary .cmd-title {
+  font-size: var(--fs-xl);
+}
+.cmd-grid-ops .cmd-card {
+  padding: var(--sp-3) var(--sp-4);
+}
 .cmd-card {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
+}
+.ops-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin: var(--sp-5) 0 var(--sp-3);
+}
+.ops-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
+}
+.ops-divider-label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.btn-quiet {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-2);
+}
+.btn-quiet:hover:not(:disabled) {
+  background: var(--bg-sunken);
+  color: var(--text);
 }
 .cmd-head {
   display: flex;
@@ -402,6 +471,7 @@ function fmtDuration(m: Job): string {
   display: flex;
   gap: var(--sp-2);
   align-items: center;
+  margin-top: auto;
 }
 .disclosure {
   background: transparent;

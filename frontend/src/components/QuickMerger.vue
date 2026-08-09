@@ -1,10 +1,6 @@
 <script setup lang="ts">
 // QuickMerger: triage the backlog of unnamed Synology people, one card at a
-// time. Port of har/quickmerger.js — same flow (type a name to set it, pick a
-// suggestion to merge into that person, `11` to hide, empty Enter to skip) with
-// the same keyboard-first shape, driven by /api/quickmerger/*.
-//
-// Writes hit the NAS directly (not the review queue), so the first write of a
+// time. Writes hit the NAS directly (not the review queue), so the first write of a
 // session asks for confirmation once; after that the flow stays uninterrupted.
 // The server enforces its own gates regardless: `confirm: true` on every write
 // and a hard refusal to merge a person that has a name on the NAS.
@@ -27,6 +23,7 @@ interface Status {
   web_base: string | null
 }
 
+// The HIDE_CODE is quickly typeable to prevent interrupting the flow of merging faces quickly
 const HIDE_CODE = '11'
 const SUGGEST_DEBOUNCE = 300
 
@@ -256,7 +253,7 @@ void loadStatus()
       <div>
         <h3>QuickMerger</h3>
         <p class="muted">
-          Work through people Synology has not named yet: type a name to set it, pick a suggestion
+          Quickly work through people Synology has not named yet: type a name to set it, pick a suggestion
           to merge into that person, or hide the ones that are not people at all.
         </p>
       </div>
@@ -278,13 +275,13 @@ void loadStatus()
     </p>
 
     <p v-else-if="!loaded && !loading" class="muted">
-      Nothing loaded yet. Loading walks the whole People list on the NAS, so it is a deliberate
-      click.
+      Nothing loaded yet, click 'Load unnamed people' to get started. 
+      The QuickMerger uses a different way to get the faces than the sync job, so you can run this anytime, regardless of the sync status.
     </p>
 
     <p v-else-if="loading" class="muted">Fetching people from the NAS…</p>
 
-    <p v-else-if="!people.length" class="muted">No unnamed people in this space. Nothing to do.</p>
+    <p v-else-if="!people.length" class="muted">No unnamed people in this space - nothing to do :D</p>
 
     <p v-else-if="done" class="muted">
       Processing complete — {{ people.length }} people handled or skipped.
@@ -304,7 +301,7 @@ void loadStatus()
         <div class="qm-arrow" aria-hidden="true">→</div>
         <figure class="qm-fig">
           <img v-if="target?.thumb_url" class="qm-thumb" :src="target.thumb_url" alt="" />
-          <div v-else class="qm-thumb qm-thumb-empty">merge target</div>
+          <div v-else class="qm-thumb qm-thumb-empty">Start typing a name to see their preview.</div>
           <figcaption class="muted">{{ target ? target.name : '—' }}</figcaption>
         </figure>
       </div>
@@ -411,6 +408,7 @@ void loadStatus()
   justify-content: center;
   font-size: var(--fs-sm);
   color: var(--text-2);
+  padding: 5px;
   border: 1px dashed var(--border-soft);
 }
 .qm-arrow {

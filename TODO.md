@@ -4,16 +4,18 @@
 
 6. Reset no's on reviews
 
-7. Add extensive explanations for each setting field
-
-8. Align apssword fields to full length, add left margin
+8. Align password fields to full length, add left margin
 
 10. Add 'Last ran at ...' to pipeline operations in the web UI
 
-12. Hide unnamed for all types in review ui
+12. Add toggle to Hide unnamed for all operations in review ui
 
-13. Reassign if synopticon got a match wrong
+13. Let users reassign if synopticon got a match wrong
 
 14. Click to focus card in review ui
 
 15. UI should have a quick redirect to /login if not logged in, instead of waiting for the server
+
+16. Let users schedule jobs (pipeline, utilities and apply), with cronjob syntax
+
+17. Backup settings and download database
