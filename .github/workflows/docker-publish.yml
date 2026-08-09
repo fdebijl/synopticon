@@ -91,7 +91,7 @@ jobs:
 
       - name: Derive tags and labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           # `latest` is added explicitly below, gated on the cpu variant.
