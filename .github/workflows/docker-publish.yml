@@ -58,7 +58,7 @@ jobs:
           - variant: gpu
             ort_extra: gpu
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # onnxruntime-gpu[cuda,cudnn] pulls several GB of NVIDIA runtime wheels,
       # which overruns the default runner disk during the export step. Reclaim
