@@ -281,6 +281,68 @@ export interface ModelsResponse {
   items: ModelStatus[]
 }
 
+// ---------------------------------------------------------------------------
+// Saved schedules (web/schedules.py + schedule_routes.py). The job catalog is
+// served alongside the list rather than duplicated here: the param whitelist
+// lives in web/jobs.py, so the form must be described by the server or the two
+// drift apart.
+export type ScheduleFieldType = 'bool' | 'int' | 'text' | 'select' | 'multiselect'
+
+export interface ScheduleFormField {
+  key: string
+  label: string
+  type: ScheduleFieldType
+  options: string[]
+  help: string
+  default: unknown
+}
+
+export interface ScheduleJobForm {
+  job: string
+  label: string
+  description: string
+  fields: ScheduleFormField[]
+  needs_confirm: boolean
+  warning: string
+}
+
+export type ScheduleRunStatus = 'submitted' | 'skipped' | 'missed' | 'error'
+
+export interface ScheduleRun {
+  id: number
+  schedule_id: number
+  fired_at: number
+  job_id: string | null
+  status: ScheduleRunStatus
+  detail: string | null
+  /** Live state of the job that firing started, when it is still known. */
+  job_state?: JobState | null
+}
+
+export interface Schedule {
+  id: number
+  name: string
+  job: string
+  job_label: string
+  params: Record<string, unknown>
+  confirm: boolean
+  cron: string
+  timezone: string | null
+  enabled: boolean
+  created_at: number
+  updated_at: number
+  next_run_at: number | null
+  last_run_at: number | null
+  last_job_id: string | null
+  last_status: ScheduleRunStatus | null
+  runs?: ScheduleRun[]
+}
+
+export interface SchedulesResponse {
+  items: Schedule[]
+  jobs: ScheduleJobForm[]
+}
+
 export interface AboutInfo {
   version: string
   repo_url: string

@@ -400,12 +400,22 @@ def create_app(
                     _in_flight_report(now),
                 )
 
+    # Saved cron schedules. Its own thread (a tick opens SQLite and can block on
+    # the job-manager lock — neither belongs on the event loop), started with the
+    # app so a container that only runs `synopticon web` still gets recurring
+    # jobs without a cron daemon inside the image.
+    from .scheduler import Scheduler
+
+    scheduler = Scheduler(lambda: store.connect(db_path), jm)
+
     @asynccontextmanager
     async def lifespan(app):
         watchdog = asyncio.create_task(_watchdog())
+        scheduler.start()
         try:
             yield
         finally:
+            scheduler.stop()
             watchdog.cancel()
             jm.shutdown()
             nas_session = getattr(app.state, "nas_session", None)
@@ -1288,6 +1298,10 @@ def create_app(
 
     register_quickmerger_routes(app, settings, conn)
 
+    from .schedule_routes import register_schedule_routes
+
+    register_schedule_routes(app, settings, conn, jm, scheduler)
+
     # -- SPA shell (catch-all, registered LAST) ----------------------------- #
     @app.get("/{path:path}")
     def spa_catch_all(request: Request, path: str):
@@ -1321,6 +1335,7 @@ def create_app(
         )
 
     app.state.job_manager = jm
+    app.state.scheduler = scheduler
     # Exposed so the routes that revoke a credential (API-key revoke, password
     # change) can drop the middleware's cached verdict immediately instead of
     # leaving it valid for the rest of the TTL.

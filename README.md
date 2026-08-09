@@ -188,7 +188,7 @@ If you start `synopticon web` without a built frontend it exits with instruction
 | `--host TEXT` | `127.0.0.1` | Bind address. Keep it on loopback and put a reverse proxy in front for anything but local access (see [Reverse proxy / TLS](#reverse-proxy--tls)). |
 | `--port INTEGER` | `8686` | Bind port. |
 
-It serves a **Dashboard** (library stats, a sync→extract→cluster→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report, in a switchable **Grid** or **Focus** layout — Focus shows one large card plus a carousel of neighbouring items, with ←/→ to navigate; the choice persists in `localStorage` and as `?view=focus`), **Apply** (dry-run preview then consent-gated writes), **Utilities** (tools that act on the NAS library itself: **QuickMerger** and photo deduplication), **Maintenance** (the destructive local-state housekeeping commands behind typed-phrase confirmations), **Settings** (edit every `config.toml` section, manage API keys, change your password), and **About** (version, pipeline version, environment details ready to paste into a bug report, and links to the GitHub repository). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
+It serves a **Dashboard** (library stats, a sync→extract→cluster→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report, in a switchable **Grid** or **Focus** layout — Focus shows one large card plus a carousel of neighbouring items, with ←/→ to navigate; the choice persists in `localStorage` and as `?view=focus`), **Apply** (dry-run preview then consent-gated writes), **Utilities** (tools that act on the NAS library itself: **QuickMerger** and photo deduplication), **Schedules** (put jobs on a cron timer), **Maintenance** (the destructive local-state housekeeping commands behind typed-phrase confirmations), **Settings** (edit every `config.toml` section, manage API keys, change your password), and **About** (version, pipeline version, environment details ready to paste into a bug report, and links to the GitHub repository). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
 
 ### First-run setup wizard
 
@@ -212,6 +212,26 @@ On a fresh install the GUI redirects to a setup wizard, resumable at each step:
 These are direct NAS writes, not review-queue items, so the page asks for one confirmation before its first write of a session and then stays out of the way. Naming and hiding are reversible; a merge is not. The server refuses to merge a person that has a name on the NAS (re-checked immediately before the write), so a named↔named merge — the one write that destroys a human label — is unreachable from here; that path stays in the review queue behind its typed phrase. Every write lands in the audit log as `quickmerger.*`.
 
 QuickMerger is a port of the `har/quickmerger.js` userscript, which remains usable standalone against Synology Photos itself.
+
+### Schedules
+
+**Schedules** puts recurring work on a cron timer without a cron daemon in the image — the intended setup for a container, where `synopticon web` is the only long-running process. Pick a job, fill in the same parameters the Pipeline/Utilities/Apply pages expose, give it a 5-field cron expression (or one of the presets), and optionally a timezone; the form previews the next five firings as you type.
+
+```
+minute  hour  day-of-month  month  day-of-week
+0       3     *             *      *            # nightly at 03:00
+0       */6   *             *      *            # every six hours
+0       4     *             *      SUN          # Sunday mornings
+```
+
+Ranges, lists, steps (`*/15`, `1-5`, `0,30`), month/day names, and the `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` macros all work. Times are the server's local zone (set `TZ` in the container) unless you name one per schedule.
+
+- Schedulable: `sync`, `extract`, `cluster`, `recluster`, `regen-crops`, `report`, `apply`, `dedupe` (dry run), `clear-queue`, `delete-crops`.
+- **Not schedulable: anything behind a typed phrase.** Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely.
+- A firing is **skipped** when the same command is still in flight (a long `extract` never stacks) and **missed** — recorded, not backfilled — for occurrences that fell while the server was down.
+- Each schedule keeps a short history of its firings, linking to the job log of each run. **Run now** fires one immediately without disturbing the next scheduled time.
+
+Running the GUI bare-metal rather than in a container? Plain `cron` calling the CLI works just as well and survives the server being stopped.
 
 ### Authentication
 
@@ -549,6 +569,7 @@ Every tool that can change your library is opt-in and leaves an audit trail:
 - Only reviewer-**approved** queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`, and a reassign is a single `Person.separate` call that can be reversed by moving the face back.
 - A cluster can propose both a merge of persons A/B and reassigns between them; if the merge is applied first the reassigns become no-ops (the pre-write NAS check skips them).
 - `dedupe` follows the same model: **dry-run by default**, `--apply` (plus a confirmation prompt) required to delete, a per-id idempotency check before each deletion, and every attempt audit-logged. Duplicate deletion is not reversible from Synopticon — confirm your DSM's recycle-bin behavior first.
+- [Schedules](#schedules) replay a *saved submission*, not a stored command line: every firing goes back through the same allowlist, parameter whitelist and consent validation a human's click does. Nothing gated behind a typed phrase can be scheduled — the server rejects such a schedule when you try to save it, and the scheduler never supplies a phrase when it fires.
 - [QuickMerger](#quickmerger) is the one GUI surface that writes to the NAS outside `apply`. It is interactive by nature (you act on one person at a time), so it confirms once per session rather than per card — but every write needs an explicit consent flag on the API call, a merge re-reads both people from the NAS first and is **refused** if the merged-away side has a name, and every attempt is audit-logged.
 - Recommended first write of any kind: scope narrowly (`--person-id <id>` for a test person, a single known duplicate for `dedupe`) and verify in the Photos UI.
 

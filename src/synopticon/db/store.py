@@ -23,6 +23,7 @@ _MIGRATIONS = [
     _SCHEMA_DIR / "migrations" / "0005_split_merge_named.sql",  # version 5
     _SCHEMA_DIR / "migrations" / "0006_web_auth.sql",  # version 6
     _SCHEMA_DIR / "migrations" / "0007_similar_top_pick.sql",  # version 7
+    _SCHEMA_DIR / "migrations" / "0008_schedules.sql",  # version 8
     # Future migrations: append db/migrations/000N_*.sql paths here.
 ]
 

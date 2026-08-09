@@ -16,6 +16,6 @@
 
 15. UI should have a quick redirect to /login if not logged in, instead of waiting for the server
 
-16. Let users schedule jobs (pipeline, utilities and apply), with cronjob syntax
-
 17. Backup settings and download database
+
+18. Allow non-local SQl databases  (mysql, postgresql, mariadb, etc.) to be used rather than sqlite (should still be the default for ease of use)
