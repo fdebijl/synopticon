@@ -18,9 +18,10 @@ deletion candidates (`drop`).
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
+
+from .db import Connection, Row
 
 from synopticon.config import Space
 from synopticon.sync.hashes import phash_hamming
@@ -32,15 +33,15 @@ class DuplicateGroup:
 
     space: Space
     kind: str  # "exact" | "visual"
-    keep: sqlite3.Row
-    drop: list[sqlite3.Row]
+    keep: Row
+    drop: list[Row]
 
     @property
     def reclaimable_bytes(self) -> int:
         return sum(int(r["filesize"] or 0) for r in self.drop)
 
 
-def _sort_key(row: sqlite3.Row) -> tuple[int, int, int]:
+def _sort_key(row: Row) -> tuple[int, int, int]:
     """Keep-rule ordering: highest resolution, then largest file, then lowest id.
 
     Sorting ascending by this key puts the photo to keep first. For exact
@@ -53,19 +54,19 @@ def _sort_key(row: sqlite3.Row) -> tuple[int, int, int]:
     return (-(width * height), -filesize, int(row["id"]))
 
 
-def _pick_keep(rows: Iterable[sqlite3.Row]) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
+def _pick_keep(rows: Iterable[Row]) -> tuple[Row, list[Row]]:
     ordered = sorted(rows, key=_sort_key)
     return ordered[0], ordered[1:]
 
 
-def find_exact(conn: sqlite3.Connection, space: Space) -> list[DuplicateGroup]:
+def find_exact(conn: Connection, space: Space) -> list[DuplicateGroup]:
     """Groups of byte-identical photos (same `sha256`), keep-rule applied."""
     rows = conn.execute(
         "SELECT * FROM photos WHERE space = ? AND deleted = 0 AND sha256 IS NOT NULL",
         (space,),
     ).fetchall()
 
-    by_hash: dict[str, list[sqlite3.Row]] = {}
+    by_hash: dict[str, list[Row]] = {}
     for row in rows:
         by_hash.setdefault(row["sha256"], []).append(row)
 
@@ -78,7 +79,7 @@ def find_exact(conn: sqlite3.Connection, space: Space) -> list[DuplicateGroup]:
     return groups
 
 
-def find_visual(conn: sqlite3.Connection, space: Space, threshold: int) -> list[DuplicateGroup]:
+def find_visual(conn: Connection, space: Space, threshold: int) -> list[DuplicateGroup]:
     """Groups of visually-near photos: phashes within `threshold` bits.
 
     Builds connected components over the pairwise "hamming <= threshold" graph
@@ -106,7 +107,7 @@ def find_visual(conn: sqlite3.Connection, space: Space, threshold: int) -> list[
             if phash_hamming(rows[i]["phash"], rows[j]["phash"]) <= threshold:
                 union(i, j)
 
-    components: dict[int, list[sqlite3.Row]] = {}
+    components: dict[int, list[Row]] = {}
     for idx, row in enumerate(rows):
         components.setdefault(find(idx), []).append(row)
 

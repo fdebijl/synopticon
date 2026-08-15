@@ -27,16 +27,14 @@ sync ``def`` (Starlette threadpools them) or ``async def`` + ``run_in_threadpool
 where a JSON body has to be awaited first — nothing here may block the loop.
 """
 
-import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import quote
 
 from ..config import Settings
-from ..db import store
+from ..db import Connection, store
 from ..syno import foto
 from ..syno.client import SynoApiError, SynoClient, SynoError
 from ..syno.models import Person
@@ -61,18 +59,17 @@ class NasSession:
     API-level ``SynoApiError`` (the NAS answering "no") leaves it alone.
     """
 
-    def __init__(self, settings: Settings, db_path: Path):
+    def __init__(self, settings: Settings):
         self._settings = settings
-        self._db_path = db_path
         self._lock = threading.RLock()
         self._client: SynoClient | None = None
-        self._conn: sqlite3.Connection | None = None
+        self._conn: Connection | None = None
 
     @contextmanager
     def use(self) -> Iterator[SynoClient]:
         with self._lock:
             if self._client is None:
-                self._conn = store.connect(self._db_path, check_same_thread=False)
+                self._conn = store.connect(self._settings, check_same_thread=False)
                 self._client = SynoClient(self._settings, self._conn)
             try:
                 yield self._client
@@ -129,7 +126,7 @@ class _PersonCache:
 def register_quickmerger_routes(
     app,
     settings: Settings,
-    conn: Callable[[], sqlite3.Connection],
+    conn: Callable[[], Connection],
 ) -> None:
     """Attach the QuickMerger API to ``app``.
 
@@ -144,7 +141,7 @@ def register_quickmerger_routes(
     from ..review.queries import person_url, syno_web_base
     from ..syno.writeback import SynoWriter
 
-    session = NasSession(settings, Path(settings.storage.db_path))
+    session = NasSession(settings)
     # The lifespan handler closes it on shutdown (it owns a live HTTPS
     # connection pool and a SQLite connection of its own).
     app.state.nas_session = session
@@ -276,7 +273,7 @@ def register_quickmerger_routes(
         return {"suggestions": [_person_json(p, resolved) for p in people]}
 
     # -- write ------------------------------------------------------------- #
-    def _writer(client: SynoClient, c: sqlite3.Connection, space: str) -> SynoWriter:
+    def _writer(client: SynoClient, c: Connection, space: str) -> SynoWriter:
         return SynoWriter(client, c, space, action_prefix="quickmerger")
 
     def _write_failed(result) -> JSONResponse:

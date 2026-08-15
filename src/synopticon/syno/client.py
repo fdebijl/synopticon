@@ -12,7 +12,6 @@ Centralizes the things that silently break integrations:
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 import time
 from dataclasses import asdict, is_dataclass
@@ -27,7 +26,7 @@ from tenacity import (
 )
 
 from synopticon.config import Settings, Space
-from synopticon.db import store
+from synopticon.db import Connection, store
 
 if TYPE_CHECKING:
     from synopticon.syno.auth import AuthSession
@@ -133,7 +132,7 @@ class _TokenBucket:
 class SynoClient:
     """Synchronous Synology Photos API client (httpx.Client under the hood)."""
 
-    def __init__(self, settings: Settings, conn: sqlite3.Connection):
+    def __init__(self, settings: Settings, conn: Connection):
         self._settings = settings
         self._conn = conn
         self.http = httpx.Client(
@@ -162,7 +161,7 @@ class SynoClient:
         return self._settings
 
     @property
-    def conn(self) -> sqlite3.Connection:
+    def conn(self) -> Connection:
         return self._conn
 
     @property

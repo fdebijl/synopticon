@@ -18,9 +18,10 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+
+from ..db import Connection, Row
 
 from ..config import Settings, Space
 from ..db import store
@@ -34,7 +35,7 @@ log = logging.getLogger(__name__)
 # an image-stack import inside a request handler.
 
 Progress = Callable[[int, int | None], None]
-FetchOriginal = Callable[[sqlite3.Row], Path]
+FetchOriginal = Callable[[Row], Path]
 
 
 def _crops_present(crops_dir: Path, face_id: int) -> bool:
@@ -45,7 +46,7 @@ def _crops_present(crops_dir: Path, face_id: int) -> bool:
     return crop_path.exists() and ctx_path.exists()
 
 
-def _photos_with_faces(conn: sqlite3.Connection, space: Space) -> list[sqlite3.Row]:
+def _photos_with_faces(conn: Connection, space: Space) -> list[Row]:
     return conn.execute(
         "SELECT p.* FROM photos p WHERE p.space = ? AND p.deleted = 0 "
         "AND EXISTS (SELECT 1 FROM faces f WHERE f.space = p.space AND f.photo_id = p.id) "
@@ -55,7 +56,7 @@ def _photos_with_faces(conn: sqlite3.Connection, space: Space) -> list[sqlite3.R
 
 
 def regen_crops(
-    conn: sqlite3.Connection,
+    conn: Connection,
     settings: Settings,
     fetch_original: FetchOriginal,
     space: Space,

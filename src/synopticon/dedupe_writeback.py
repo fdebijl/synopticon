@@ -22,8 +22,9 @@ Safety, mirroring `apply_reviewed`:
 from __future__ import annotations
 
 import logging
-import sqlite3
 from typing import Iterable
+
+from .db import Connection
 
 from synopticon import audit
 from synopticon.config import Space
@@ -40,7 +41,7 @@ log = logging.getLogger("synopticon.apply")
 _DELETE_BATCH = 100
 
 
-def _mark_deleted(conn: sqlite3.Connection, space: Space, item_ids: Iterable[int]) -> None:
+def _mark_deleted(conn: Connection, space: Space, item_ids: Iterable[int]) -> None:
     ids = list(item_ids)
     if not ids:
         return
@@ -53,7 +54,7 @@ def _mark_deleted(conn: sqlite3.Connection, space: Space, item_ids: Iterable[int
 
 
 def delete_items(
-    conn: sqlite3.Connection,
+    conn: Connection,
     client: SynoClient | None,
     space: Space,
     item_ids: Iterable[int],

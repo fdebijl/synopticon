@@ -26,12 +26,13 @@ Safety model (this is the load-bearing part — see CLAUDE.md's "Safety model"):
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone as dt_timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from ..db import Connection, Row
 
 from .. import cron
 from .jobs import ConsentError, JobParamError, resolve_argv
@@ -323,7 +324,7 @@ def preview(expression: str, tz_name: str | None, count: int = 5) -> list[int]:
 # --------------------------------------------------------------------------- #
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
+def _row_to_dict(row: Row) -> dict:
     data = dict(row)
     try:
         data["params"] = json.loads(data.pop("params_json") or "{}")
@@ -336,7 +337,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return data
 
 
-def list_schedules(conn: sqlite3.Connection) -> list[dict]:
+def list_schedules(conn: Connection) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM schedules ORDER BY enabled DESC, next_run_at IS NULL, "
         "next_run_at ASC, id ASC"
@@ -344,14 +345,14 @@ def list_schedules(conn: sqlite3.Connection) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
-def get_schedule(conn: sqlite3.Connection, schedule_id: int) -> dict | None:
+def get_schedule(conn: Connection, schedule_id: int) -> dict | None:
     row = conn.execute(
         "SELECT * FROM schedules WHERE id = ?", (int(schedule_id),)
     ).fetchone()
     return _row_to_dict(row) if row else None
 
 
-def create(conn: sqlite3.Connection, valid: ValidatedSchedule) -> dict:
+def create(conn: Connection, valid: ValidatedSchedule) -> dict:
     now = int(time.time())
     next_run = compute_next(valid.expr, valid.timezone) if valid.enabled else None
     cur = conn.execute(
@@ -377,7 +378,7 @@ def create(conn: sqlite3.Connection, valid: ValidatedSchedule) -> dict:
     return created
 
 
-def update(conn: sqlite3.Connection, schedule_id: int, valid: ValidatedSchedule) -> dict | None:
+def update(conn: Connection, schedule_id: int, valid: ValidatedSchedule) -> dict | None:
     if get_schedule(conn, schedule_id) is None:
         return None
     next_run = compute_next(valid.expr, valid.timezone) if valid.enabled else None
@@ -402,7 +403,7 @@ def update(conn: sqlite3.Connection, schedule_id: int, valid: ValidatedSchedule)
     return get_schedule(conn, schedule_id)
 
 
-def set_enabled(conn: sqlite3.Connection, schedule_id: int, enabled: bool) -> dict | None:
+def set_enabled(conn: Connection, schedule_id: int, enabled: bool) -> dict | None:
     row = get_schedule(conn, schedule_id)
     if row is None:
         return None
@@ -420,7 +421,7 @@ def set_enabled(conn: sqlite3.Connection, schedule_id: int, enabled: bool) -> di
     return get_schedule(conn, schedule_id)
 
 
-def delete(conn: sqlite3.Connection, schedule_id: int) -> bool:
+def delete(conn: Connection, schedule_id: int) -> bool:
     cur = conn.execute("DELETE FROM schedules WHERE id = ?", (int(schedule_id),))
     conn.execute(
         "DELETE FROM schedule_runs WHERE schedule_id = ?", (int(schedule_id),)
@@ -435,7 +436,7 @@ def delete(conn: sqlite3.Connection, schedule_id: int) -> bool:
 
 
 def record_run(
-    conn: sqlite3.Connection,
+    conn: Connection,
     schedule_id: int,
     status: str,
     *,
@@ -467,7 +468,7 @@ def record_run(
     conn.commit()
 
 
-def runs(conn: sqlite3.Connection, schedule_id: int, limit: int = _RUNS_KEPT) -> list[dict]:
+def runs(conn: Connection, schedule_id: int, limit: int = _RUNS_KEPT) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM schedule_runs WHERE schedule_id = ? "
         "ORDER BY fired_at DESC, id DESC LIMIT ?",
@@ -476,7 +477,7 @@ def runs(conn: sqlite3.Connection, schedule_id: int, limit: int = _RUNS_KEPT) ->
     return [dict(r) for r in rows]
 
 
-def due(conn: sqlite3.Connection, now: float) -> list[dict]:
+def due(conn: Connection, now: float) -> list[dict]:
     """Enabled schedules whose next firing is at or before ``now``."""
     rows = conn.execute(
         "SELECT * FROM schedules WHERE enabled = 1 AND next_run_at IS NOT NULL "
@@ -486,7 +487,7 @@ def due(conn: sqlite3.Connection, now: float) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
-def set_next_run(conn: sqlite3.Connection, schedule_id: int, next_run_at: int | None) -> None:
+def set_next_run(conn: Connection, schedule_id: int, next_run_at: int | None) -> None:
     conn.execute(
         "UPDATE schedules SET next_run_at = ? WHERE id = ?",
         (next_run_at, int(schedule_id)),

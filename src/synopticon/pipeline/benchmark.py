@@ -13,13 +13,14 @@ that would otherwise dominate a small sample and misrepresent steady-state speed
 from __future__ import annotations
 
 import logging
-import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
+
+from ..db import Connection, Row
 
 from ..config import Settings
 from . import align
@@ -77,8 +78,8 @@ class BenchmarkStats:
 
 
 def _fetch_bench_photos(
-    conn: sqlite3.Connection, space: str, limit: int, photo_id: int | None
-) -> list[sqlite3.Row]:
+    conn: Connection, space: str, limit: int, photo_id: int | None
+) -> list[Row]:
     if photo_id is not None:
         return conn.execute(
             "SELECT * FROM photos WHERE space = ? AND id = ? AND deleted = 0",
@@ -97,7 +98,7 @@ def _fetch_bench_photos(
 
 
 def run_benchmark(
-    conn: sqlite3.Connection,
+    conn: Connection,
     settings: Settings,
     fetch_original: FetchOriginal,
     limit: int = 25,

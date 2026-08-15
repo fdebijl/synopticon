@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -12,7 +11,7 @@ from pathlib import Path
 import typer
 
 from synopticon.config import Settings, load_settings
-from synopticon.db import store
+from synopticon.db import Connection, Row, store
 from synopticon.progress import get_emitter, install_log_bridge
 
 app = typer.Typer(help=__doc__, no_args_is_help=True)
@@ -39,8 +38,8 @@ def _settings() -> Settings:
     return load_settings()
 
 
-def _conn(settings: Settings) -> sqlite3.Connection:
-    return store.connect(settings.storage.db_path)
+def _conn(settings: Settings) -> Connection:
+    return store.connect(settings)
 
 
 def _spaces(settings: Settings, space: str | None) -> list[str]:
@@ -260,7 +259,7 @@ def sync(
             if hash_:
                 emitter.phase("sync.hashes", space=sp)
 
-                def fetch(row: sqlite3.Row) -> Path:
+                def fetch(row: Row) -> Path:
                     return downloads.ensure_original(conn, client, settings, row)
 
                 stats = hashes.sync_hashes(conn, fetch, sp, progress=_progress(sp, "hashes"))
@@ -294,7 +293,7 @@ def extract(
         for sp in _spaces(settings, space):
             emitter.phase("extract", space=sp)
 
-            def fetch(row: sqlite3.Row) -> Path:
+            def fetch(row: Row) -> Path:
                 return downloads.ensure_original(conn, client, settings, row)
 
             stats = run_extract(conn, settings, fetch, limit=limit, photo_id=photo_id, space=sp)
@@ -329,7 +328,7 @@ def benchmark(
     emitter = get_emitter()
     emitter.phase("benchmark", space=space)
     with SynoClient(settings, conn) as client:
-        def fetch(row: sqlite3.Row) -> Path:
+        def fetch(row: Row) -> Path:
             return downloads.ensure_original(conn, client, settings, row)
 
         stats = run_benchmark(
@@ -410,7 +409,7 @@ def reset(
     total = sum(counts.values())
 
     scope = "ALL data (including synced NAS metadata)" if all_ else "pipeline-derived data"
-    typer.echo(f"Reset {scope} in {settings.storage.db_path}:")
+    typer.echo(f"Reset {scope} in {store.describe(settings)}:")
     for t in tables:
         if counts[t]:
             typer.echo(f"  {t}: {counts[t]} rows")
@@ -475,7 +474,7 @@ def clear_queue(
         typer.echo("no pending items to clear")
         return
 
-    typer.echo(f"Clear {n} pending review-queue item(s) in {settings.storage.db_path}")
+    typer.echo(f"Clear {n} pending review-queue item(s) in {store.describe(settings)}")
     if not yes:
         typer.confirm("Proceed?", abort=True)
 
@@ -519,7 +518,7 @@ def regen_crops_cmd(
         for sp in _spaces(settings, space):
             emitter.phase("crops.regen", space=sp)
 
-            def fetch(row: sqlite3.Row) -> Path:
+            def fetch(row: Row) -> Path:
                 return downloads.ensure_original(conn, client, settings, row)
 
             stats = regen_crops(
@@ -680,6 +679,78 @@ def reset_password(
     if revoked:
         typer.echo(f"revoked {revoked} active session(s) — log in again")
     get_emitter().result(stats={"username": user["username"], "sessions_revoked": revoked})
+
+
+@app.command("db-migrate")
+def db_migrate(
+    source: str = typer.Option(
+        None,
+        "--from",
+        help="Database to copy out of (default: the SQLite file under data_dir).",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """Copy an existing library into the configured database backend.
+
+    Switching `[database] backend` to postgres points Synopticon at an empty
+    database — this copies a library across so the switch does not cost a fresh
+    sync and a multi-hour re-extract. Run it once, with nothing else touching
+    either database, after the new backend is configured.
+
+    The destination is whatever `[database]` currently selects; the source
+    defaults to the SQLite file that backend replaced. Refuses to run if the
+    destination already holds data.
+    """
+    from .db import copy as db_copy
+
+    settings = _settings()
+    target_desc = store.describe(settings)
+    source_target = source or settings.storage.db_path
+    if str(source_target) == target_desc:
+        typer.echo(
+            "source and destination are the same database — set [database] to the "
+            "backend you want to copy *into* first",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    src = store.connect(source_target)
+    dst = store.connect(settings)
+    try:
+        existing = db_copy.non_empty_tables(dst)
+        if existing:
+            typer.echo(f"destination {target_desc} is not empty:", err=True)
+            for table, n in sorted(existing.items()):
+                typer.echo(f"  {table}: {n} rows", err=True)
+            typer.echo("refusing to copy into a populated database", err=True)
+            raise typer.Exit(1)
+
+        counts = db_copy.non_empty_tables(src)
+        total = sum(counts.values())
+        typer.echo(f"Copy {total} rows from {source_target} to {target_desc}:")
+        for table, n in sorted(counts.items()):
+            typer.echo(f"  {table}: {n} rows")
+        if not total:
+            typer.echo("nothing to copy")
+            return
+        if not yes:
+            typer.confirm("Proceed?", abort=True)
+
+        emitter = get_emitter()
+        emitter.phase("db.copy")
+
+        def on_progress(table: str, done: int, total: int | None) -> None:
+            emitter.progress("db.copy", done, total, space=table)
+            if not emitter.enabled and total and done == total:
+                typer.echo(f"  {table}: {done} rows copied")
+
+        copied = db_copy.copy_database(src, dst, progress=on_progress)
+        moved = sum(copied.values())
+        typer.echo(f"copied {moved} rows into {target_desc}")
+        emitter.result(stats={"rows": moved, "tables": copied})
+    finally:
+        src.close()
+        dst.close()
 
 
 @app.command()
@@ -904,7 +975,7 @@ def dedupe(
             typer.echo(f"[{sp}] no duplicate groups")
             continue
         typer.echo(f"\n[{sp}] {len(groups)} duplicate group(s):")
-        unique_drop: dict[int, sqlite3.Row] = {}
+        unique_drop: dict[int, Row] = {}
         for grp in groups:
             keep = grp.keep
             kurl = _item_web_url(settings, sp, store.link_photo_id(conn, sp, keep["id"]))

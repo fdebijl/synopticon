@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,7 +18,7 @@ import numpy as np
 import scipy.fft
 
 from synopticon.config import Space
-from synopticon.db import store
+from synopticon.db import Connection, Row, store
 
 log = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ _PHASH_SIZE = 8          # 8x8 low-frequency block -> 64-bit hash
 _PHASH_HIGHFREQ = 4      # DCT input is (size * highfreq)^2 = 32x32
 
 Progress = Callable[[int, int | None], None]
-FetchOriginal = Callable[[sqlite3.Row], Path]
+FetchOriginal = Callable[[Row], Path]
 
 _HEIF_REGISTERED = False
 
@@ -86,7 +85,7 @@ def phash_hamming(a_hex: str, b_hex: str) -> int:
     return (int(a_hex, 16) ^ int(b_hex, 16)).bit_count()
 
 
-def _fetch_work(conn: sqlite3.Connection, space: Space) -> list[sqlite3.Row]:
+def _fetch_work(conn: Connection, space: Space) -> list[Row]:
     # `IS NOT` is SQLite's null-safe comparison: a photo whose cache_key
     # changed on the NAS (edited/replaced) gets re-hashed.
     return conn.execute(
@@ -99,7 +98,7 @@ def _fetch_work(conn: sqlite3.Connection, space: Space) -> list[sqlite3.Row]:
 
 
 def sync_hashes(
-    conn: sqlite3.Connection,
+    conn: Connection,
     fetch_original: FetchOriginal,
     space: Space,
     progress: Progress | None = None,

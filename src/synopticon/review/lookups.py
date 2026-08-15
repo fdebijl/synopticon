@@ -24,10 +24,11 @@ them and, crucially, does *not* change when a review decision writes to
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from dataclasses import dataclass
 from typing import Any
+
+from ..db import Connection, errors as db_errors
 
 from ..config import Settings
 
@@ -51,12 +52,15 @@ SELECT
 """
 
 
-def fingerprint(conn: sqlite3.Connection) -> tuple:
+def fingerprint(conn: Connection) -> tuple:
     """Cheap change-detector over the tables the cached lookups derive from."""
     try:
         return tuple(conn.execute(_FINGERPRINT_SQL).fetchone())
-    except sqlite3.Error:
+    except db_errors.DatabaseError:
         # A table missing (fresh DB mid-migration) means "don't trust the cache".
+        # The rollback is what lets the caller keep using this connection:
+        # PostgreSQL aborts the transaction on a failed statement. No-op on SQLite.
+        conn.rollback()
         return (None,)
 
 
@@ -82,7 +86,7 @@ class LookupCache:
         self._key: Any = None
         self._value: ReviewLookups | None = None
 
-    def get(self, conn: sqlite3.Connection, settings: Settings) -> ReviewLookups:
+    def get(self, conn: Connection, settings: Settings) -> ReviewLookups:
         key = fingerprint(conn)
         with self._lock:
             if self._value is not None and key == self._key and key != (None,):
@@ -96,7 +100,7 @@ class LookupCache:
             self._key, self._value = None, None
 
     @staticmethod
-    def _build(conn: sqlite3.Connection, settings: Settings) -> ReviewLookups:
+    def _build(conn: Connection, settings: Settings) -> ReviewLookups:
         from . import queries
 
         return ReviewLookups(

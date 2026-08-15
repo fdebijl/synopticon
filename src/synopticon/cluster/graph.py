@@ -7,10 +7,11 @@ only the ``embeddings`` table (variant='orig' always — restored is advisory).
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from pathlib import Path
 
 import numpy as np
+
+from ..db import Connection
 
 from ..config import Settings
 from ..db import store
@@ -25,7 +26,7 @@ def _l2_normalize(mat: np.ndarray, axis: int = -1) -> np.ndarray:
 
 
 def load_fused(
-    conn: sqlite3.Connection, settings: Settings
+    conn: Connection, settings: Settings
 ) -> tuple[np.ndarray, np.ndarray]:
     """Load per-model embeddings, fuse them, return ``(face_ids, X)``.
 

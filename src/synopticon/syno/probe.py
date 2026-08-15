@@ -14,8 +14,9 @@ connection.
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import asdict, dataclass, field
+
+from ..db import Connection
 
 from synopticon.config import Settings
 
@@ -68,7 +69,7 @@ def _failed_step_name(steps: list[Step]) -> str:
     return _STEP_ORDER[-1]
 
 
-def probe(settings: Settings, conn: sqlite3.Connection) -> ProbeResult:
+def probe(settings: Settings, conn: Connection) -> ProbeResult:
     """Run the read-only NAS connectivity checks and return structured results.
 
     Catches :class:`~synopticon.syno.client.SynoError` (covers unreachable NAS,

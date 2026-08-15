@@ -39,7 +39,6 @@ import json
 import logging
 import sys
 import os
-import sqlite3
 import threading
 import time
 from collections import deque
@@ -47,6 +46,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+from ..db import Connection
 
 from ..config import Settings
 from ..db import store
@@ -278,11 +279,10 @@ def create_app(
             response.headers["Cache-Control"] = self._cache_control
             return response
 
-    db_path = Path(settings.storage.db_path)
     crops_dir = Path(settings.storage.crops_dir)
     crops_dir.mkdir(parents=True, exist_ok=True)
     # Ensure the schema (incl. migration 0006 web tables) exists before serving.
-    store.connect(db_path).close()
+    store.connect(settings).close()
 
     jobs_dir = Path(settings.storage.data_dir) / "jobs"
     # Jobs share this machine with the server that launched them. Unconstrained,
@@ -406,7 +406,7 @@ def create_app(
     # jobs without a cron daemon inside the image.
     from .scheduler import Scheduler
 
-    scheduler = Scheduler(lambda: store.connect(db_path), jm)
+    scheduler = Scheduler(lambda: store.connect(settings), jm)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -441,8 +441,8 @@ def create_app(
         name="crops",
     )
 
-    def conn() -> sqlite3.Connection:
-        return store.connect(db_path)
+    def conn() -> Connection:
+        return store.connect(settings)
 
     # Whole-library review lookups (crops / hidden persons / person->faces),
     # cached on a DB fingerprint. See review/lookups.py for why this is not a TTL.
@@ -479,7 +479,7 @@ def create_app(
             else:
                 auth_cache.pop(credential, None)
 
-    def _authenticate(request: Request, c: sqlite3.Connection):
+    def _authenticate(request: Request, c: Connection):
         """Return ``("user", id)`` / ``("apikey", id)`` or ``None``."""
         header = request.headers.get("authorization", "")
         if header.startswith("Bearer "):
@@ -1033,6 +1033,15 @@ def create_app(
                 "data_dir": str(settings.storage.data_dir),
                 "models_dir": str(settings.storage.models_dir),
                 "db_path": str(settings.storage.db_path),
+            },
+            # Never the DSN: it carries the password. Host/database only.
+            "database": {
+                "backend": settings.database.backend,
+                "target": (
+                    str(settings.storage.db_path)
+                    if settings.database.backend == "sqlite"
+                    else f"{settings.database.host}:{settings.database.port}/{settings.database.database}"
+                ),
             },
             "packages": {
                 name: dist(name)

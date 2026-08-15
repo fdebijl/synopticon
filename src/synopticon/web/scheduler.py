@@ -30,10 +30,11 @@ Deliberate behaviours:
 from __future__ import annotations
 
 import logging
-import sqlite3
 import threading
 import time
 from typing import Callable
+
+from ..db import Connection
 
 from . import schedules
 from .jobs import ConsentError, JobError, JobParamError, QueueFullError
@@ -52,7 +53,7 @@ class Scheduler:
 
     def __init__(
         self,
-        conn_factory: Callable[[], sqlite3.Connection],
+        conn_factory: Callable[[], Connection],
         job_manager,
         *,
         tick: float = _TICK,
@@ -158,7 +159,7 @@ class Scheduler:
 
     def fire(
         self,
-        conn: sqlite3.Connection,
+        conn: Connection,
         row: dict,
         *,
         now: float | None = None,

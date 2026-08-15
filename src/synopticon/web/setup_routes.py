@@ -20,16 +20,17 @@ job of ``PUT /api/config`` (a separate endpoint), not this module.
 
 import os
 import shutil
-import sqlite3
 from pathlib import Path
 from typing import Any, Callable
+
+from ..db import Connection, errors as db_errors
 
 
 def register_setup_routes(
     app,
     *,
     settings,
-    conn: Callable[[], sqlite3.Connection],
+    conn: Callable[[], Connection],
     auth,
 ) -> None:
     """Attach the setup-wizard routes to ``app``.
@@ -78,7 +79,7 @@ def register_setup_routes(
 # --------------------------------------------------------------------------- #
 # status                                                                        #
 # --------------------------------------------------------------------------- #
-def _status(c: sqlite3.Connection, settings, auth) -> dict[str, Any]:
+def _status(c: Connection, settings, auth) -> dict[str, Any]:
     from ..config import _config_file
 
     nas = settings.nas
@@ -93,7 +94,12 @@ def _status(c: sqlite3.Connection, settings, auth) -> dict[str, Any]:
         "nas_configured": nas_configured,
         "models_ready": not missing,
         "models_missing": missing,
-        "db_exists": Path(storage.db_path).exists(),
+        # An external database is reachable by definition here: `c` came from it.
+        "db_exists": (
+            Path(storage.db_path).exists()
+            if settings.database.backend == "sqlite"
+            else True
+        ),
         "photos_synced": _count(c, "SELECT COUNT(*) FROM photos WHERE deleted = 0"),
         "extract_done": _count(c, "SELECT COUNT(*) FROM extract_log"),
         "cluster_runs": _count(c, "SELECT COUNT(*) FROM cluster_runs"),
@@ -114,10 +120,14 @@ def _status(c: sqlite3.Connection, settings, auth) -> dict[str, Any]:
     }
 
 
-def _count(c: sqlite3.Connection, sql: str) -> int:
+def _count(c: Connection, sql: str) -> int:
     try:
         row = c.execute(sql).fetchone()
-    except sqlite3.OperationalError:
+    except db_errors.OperationalError:
+        # Rolling back is what makes the *next* _count call work: PostgreSQL
+        # aborts the transaction on a failed statement, so one missing table
+        # would otherwise zero every count after it. No-op on SQLite.
+        c.rollback()
         return 0
     return int(row[0]) if row else 0
 

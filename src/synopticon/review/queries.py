@@ -1,6 +1,6 @@
 """Shared data layer for the review queue.
 
-Pure ``sqlite3`` + :class:`~synopticon.config.Settings` — **no fastapi/jinja2
+Pure :mod:`synopticon.db` + :class:`~synopticon.config.Settings` — **no fastapi/jinja2
 import** so it works without the ``[review]`` extra. Both the legacy review app
 (``review/app.py``) and the upcoming web GUI build their review views on top of
 these helpers.
@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 from typing import Any
+
+from ..db import Connection
 
 from ..config import Settings
 from ..db import store
@@ -87,7 +88,7 @@ def crop_url_mapper(crops_dir: Path):
     return to_url
 
 
-def face_crops(conn: sqlite3.Connection, settings: Settings) -> dict[int, str | None]:
+def face_crops(conn: Connection, settings: Settings) -> dict[int, str | None]:
     """Map every ``face_id`` to its ``/crops/...`` URL (or ``None``)."""
     to_url = crop_url_mapper(Path(settings.storage.crops_dir))
     return {
@@ -123,7 +124,7 @@ def item_url(base: str | None, space: str | None, photo_id: Any) -> str | None:
 
 
 def _link_map(
-    conn: sqlite3.Connection, payloads: list[dict]
+    conn: Connection, payloads: list[dict]
 ) -> dict[tuple[str, int], int]:
     """``(space, photo_id) -> similar-group top pick`` for a whole page.
 
@@ -156,7 +157,7 @@ def _link_map(
 # --------------------------------------------------------------------------- #
 # Ground-truth lookups (static during a review session; caller may cache)
 # --------------------------------------------------------------------------- #
-def hidden_persons(conn: sqlite3.Connection) -> set[tuple[str, int]]:
+def hidden_persons(conn: Connection) -> set[tuple[str, int]]:
     """``(space, person_id)`` pairs that are hidden on the NAS (persons.show=0)."""
     return {
         (r["space"], int(r["id"]))
@@ -167,7 +168,7 @@ def hidden_persons(conn: sqlite3.Connection) -> set[tuple[str, int]]:
 
 
 def person_faces(
-    conn: sqlite3.Connection, settings: Settings
+    conn: Connection, settings: Settings
 ) -> dict[tuple[str, int], list[int]]:
     """``(space, person_id)`` -> our face_ids labeled to that person.
 
@@ -246,7 +247,7 @@ def _where(kind: str, status: str) -> tuple[str, list[Any]]:
 
 
 def count_review_items(
-    conn: sqlite3.Connection, kind: str = "", status: str = "pending"
+    conn: Connection, kind: str = "", status: str = "pending"
 ) -> int:
     """Total ``review_queue`` rows matching ``kind``/``status`` (no pagination)."""
     where, args = _where(kind, status)
@@ -257,7 +258,7 @@ def count_review_items(
 
 
 def load_review_items(
-    conn: sqlite3.Connection,
+    conn: Connection,
     settings: Settings,
     kind: str = "",
     status: str = "pending",
@@ -359,7 +360,7 @@ def load_review_items(
     return items
 
 
-def queue_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
+def queue_counts(conn: Connection) -> dict[str, dict[str, int]]:
     """Nested ``{status: {kind: count}}`` over the whole ``review_queue``."""
     out: dict[str, dict[str, int]] = {}
     for row in conn.execute(
@@ -369,7 +370,7 @@ def queue_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     return out
 
 
-def named_merge_pairs(conn: sqlite3.Connection) -> list[dict]:
+def named_merge_pairs(conn: Connection) -> list[dict]:
     """Approved ``merge_named`` rows with both person names/ids.
 
     Mirrors the named->named warning payload that ``cli.py``'s ``apply-all``
@@ -400,7 +401,7 @@ def named_merge_pairs(conn: sqlite3.Connection) -> list[dict]:
 # Mutations (review_queue only)
 # --------------------------------------------------------------------------- #
 def decide_item(
-    conn: sqlite3.Connection, item_id: int, decision: str
+    conn: Connection, item_id: int, decision: str
 ) -> str | None:
     """Approve/reject a queue item. Returns the new status, or ``None`` if the
     decision is not ``approve``/``reject`` (DB untouched)."""
@@ -416,7 +417,7 @@ def decide_item(
     return status
 
 
-def undo_decision(conn: sqlite3.Connection, item_id: int) -> str | None:
+def undo_decision(conn: Connection, item_id: int) -> str | None:
     """Revert an approve/reject back to ``pending``.
 
     Resets ``status`` to ``pending`` and clears ``decided_at``/``decided_by`` —
@@ -440,7 +441,7 @@ def undo_decision(conn: sqlite3.Connection, item_id: int) -> str | None:
 
 
 def bulk_approve(
-    conn: sqlite3.Connection, kind: str, min_confidence: float = 0.0
+    conn: Connection, kind: str, min_confidence: float = 0.0
 ) -> int:
     """Approve all pending rows of ``kind`` at/above ``min_confidence``.
 
@@ -457,7 +458,7 @@ def bulk_approve(
 
 
 def set_suggested_name(
-    conn: sqlite3.Connection, item_id: int, name: str
+    conn: Connection, item_id: int, name: str
 ) -> bool:
     """Set ``suggested_name`` on a ``new_person`` item.
 

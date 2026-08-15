@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import os
-import sqlite3
 from pathlib import Path
+
+from ..db import Connection
 
 from synopticon.config import Settings, Space
 from synopticon.syno import foto
@@ -28,7 +29,7 @@ def original_path(settings: Settings, photo_row) -> Path:
 
 
 def ensure_original(
-    conn: sqlite3.Connection, client: SynoClient, settings: Settings, photo_row
+    conn: Connection, client: SynoClient, settings: Settings, photo_row
 ) -> Path:
     """Download the original if not already cached; atomic `.part` -> rename."""
     final_path = original_path(settings, photo_row)

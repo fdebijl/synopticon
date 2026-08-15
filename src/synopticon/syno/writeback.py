@@ -14,14 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Protocol
 
 from synopticon import audit
 from synopticon.config import Space
-from synopticon.db import store
+from synopticon.db import Connection, store
 from synopticon.progress import EventLogHandler, get_emitter
 from synopticon.syno import foto
 from synopticon.syno.client import QuotedString, SynoApiError, SynoClient
@@ -114,7 +113,7 @@ class DryRunWriter:
 
     dry_run = True
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: Connection):
         self.conn = conn
         self.client = None
         self.space: Space | None = None
@@ -179,7 +178,7 @@ class SynoWriter:
     def __init__(
         self,
         client: SynoClient,
-        conn: sqlite3.Connection,
+        conn: Connection,
         space: Space,
         action_prefix: str = "writeback",
     ):
@@ -424,7 +423,7 @@ class ApplyStats:
     failed: int = 0
 
 
-def _mark(conn: sqlite3.Connection, review_item_id: int, status: str) -> None:
+def _mark(conn: Connection, review_item_id: int, status: str) -> None:
     conn.execute(
         "UPDATE review_queue SET status = ?, decided_at = ? WHERE item_id = ?",
         (status, store.now(), review_item_id),
@@ -432,14 +431,14 @@ def _mark(conn: sqlite3.Connection, review_item_id: int, status: str) -> None:
     conn.commit()
 
 
-def _person_name(conn: sqlite3.Connection, space: str, person_id: int) -> str | None:
+def _person_name(conn: Connection, space: str, person_id: int) -> str | None:
     row = conn.execute(
         "SELECT name FROM persons WHERE space = ? AND id = ?", (space, person_id)
     ).fetchone()
     return row["name"] if row else None
 
 
-def _merge_order(conn: sqlite3.Connection, person_a: dict, person_b: dict) -> tuple[dict, dict]:
+def _merge_order(conn: Connection, person_a: dict, person_b: dict) -> tuple[dict, dict]:
     """Pick the merge target: prefer a named person, then the larger item_count."""
 
     def rank(p: dict) -> tuple[int, int]:
@@ -455,7 +454,7 @@ def _merge_order(conn: sqlite3.Connection, person_a: dict, person_b: dict) -> tu
 
 
 def apply_reviewed(
-    conn: sqlite3.Connection,
+    conn: Connection,
     writer: PersonWriter,
     kinds: Iterable[str],
     person_id: int | None = None,

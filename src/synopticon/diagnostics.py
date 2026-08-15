@@ -248,11 +248,17 @@ def _disk_row(label: str, path: Path) -> tuple[str, str]:
 
 
 def _storage_section(settings: Settings) -> Section:
+    from .db import store
+
     st = settings.storage
     db = st.db_path
+    if settings.database.backend == "sqlite":
+        db_row = _human_bytes(db.stat().st_size) if db.is_file() else "not created yet"
+    else:
+        db_row = store.describe(settings)
     rows = [
         ("data_dir", str(st.data_dir)),
-        ("database", f"{_human_bytes(db.stat().st_size)}" if db.is_file() else "not created yet"),
+        ("database", db_row),
         ("keep_originals", str(st.keep_originals)),
         ("originals_cache_gb", str(st.originals_cache_gb)),
         _disk_row("data_dir disk", st.data_dir),

@@ -19,12 +19,13 @@ from __future__ import annotations
 
 import json
 import logging
-import sqlite3
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
+
+from ..db import Connection, Row
 
 from ..config import Settings
 from ..db import store
@@ -40,7 +41,7 @@ log = logging.getLogger(__name__)
 
 DetectorFactory = Callable[[], object]
 EnsembleFactory = Callable[[], object]
-FetchOriginal = Callable[[sqlite3.Row], Path]
+FetchOriginal = Callable[[Row], Path]
 RestoreFn = Callable[[np.ndarray, float], np.ndarray]
 
 
@@ -123,12 +124,12 @@ def load_image_bgr(path: Path | str) -> np.ndarray:
 
 
 def _fetch_work(
-    conn: sqlite3.Connection,
+    conn: Connection,
     space: str,
     version: str,
     limit: int | None,
     photo_id: int | None,
-) -> list[sqlite3.Row]:
+) -> list[Row]:
     if photo_id is not None:
         # Explicit reprocess: bypass the extract_log skip filter.
         return conn.execute(
@@ -163,7 +164,7 @@ def _aligned_crop(img_bgr: np.ndarray, det: Detection) -> np.ndarray:
 
 
 def run_extract(
-    conn: sqlite3.Connection,
+    conn: Connection,
     settings: Settings,
     fetch_original: FetchOriginal,
     limit: int | None = None,

@@ -70,6 +70,118 @@ class StorageConfig(BaseModel):
         return self.data_dir / "report"
 
 
+class DatabaseConfig(BaseModel):
+    backend: Literal["sqlite", "postgres"] = Field(
+        default="sqlite",
+        title="Backend",
+        description=(
+            "Where Synopticon keeps its own database — the photo index, the faces "
+            "it found, and your review decisions. This is never your NAS.\n\n"
+            "'sqlite' (default) is a single file under the data directory. It needs "
+            "no setup, no server and no maintenance, and it is the right choice "
+            "unless you specifically want otherwise.\n"
+            "'postgres' points Synopticon at an existing PostgreSQL server instead, "
+            "using the connection settings below. Useful if you already run one, "
+            "want the database on different storage from the photo cache, or want "
+            "to back it up with the tools you already have.\n\n"
+            "Switching backends does not move your data: use `synopticon db-migrate` "
+            "to copy an existing library across."
+        ),
+        json_schema_extra={
+            "details": (
+                "PostgreSQL needs the optional 'postgres' extra "
+                "(uv sync --extra postgres), which installs psycopg 3 and its "
+                "connection pool.\n\n"
+                "Schema and SQL are shared: db/schema.sql and every migration are "
+                "authored in SQLite's dialect and translated per backend at "
+                "migration time (db/dialect.py). Schema versioning uses "
+                "PRAGMA user_version on SQLite and a synopticon_schema_version "
+                "table on PostgreSQL, with a session advisory lock so a web server "
+                "and a job subprocess starting together cannot both migrate.\n\n"
+                "MySQL/MariaDB are not supported: their upsert syntax differs from "
+                "the ON CONFLICT form every sync path uses, and TEXT columns cannot "
+                "be primary keys there."
+            )
+        },
+    )
+    host: str = Field(
+        default="localhost",
+        title="Host",
+        description="Hostname or IP address of the PostgreSQL server.",
+    )
+    port: int = Field(
+        default=5432,
+        title="Port",
+        description="Port the PostgreSQL server listens on. The default is 5432.",
+    )
+    user: str = Field(
+        default="synopticon",
+        title="User",
+        description="PostgreSQL role to connect as. It needs to own the database.",
+    )
+    password: SecretStr = Field(
+        default=SecretStr(""),
+        title="Password",
+        description="Password for that role. Leave empty if the server trusts the connection.",
+    )
+    database: str = Field(
+        default="synopticon",
+        title="Database",
+        description=(
+            "Name of the database to use. It has to exist already — Synopticon "
+            "creates its tables inside it, but it will not create the database."
+        ),
+    )
+    sslmode: str = Field(
+        default="prefer",
+        title="SSL mode",
+        description=(
+            "How hard to insist on an encrypted connection. 'prefer' (default) "
+            "encrypts when the server offers it, 'require' refuses to connect "
+            "otherwise, 'disable' never encrypts."
+        ),
+        json_schema_extra={
+            "details": (
+                "Passed straight through to libpq as the sslmode parameter; the "
+                "full set is disable, allow, prefer, require, verify-ca, verify-full."
+            )
+        },
+    )
+    pool_size: int = Field(
+        default=5,
+        title="Connection pool size",
+        description=(
+            "How many PostgreSQL connections Synopticon keeps open at once. The "
+            "default suits a single web server; raise it only if the interface "
+            "feels queued under heavy use."
+        ),
+        json_schema_extra={
+            "details": (
+                "The web app opens a connection per request, so without pooling "
+                "every dashboard poll would cost a TCP round trip plus "
+                "authentication. One pool per DSN per process; job subprocesses "
+                "build their own."
+            )
+        },
+    )
+    url: SecretStr = Field(
+        default=SecretStr(""),
+        title="Connection URL",
+        description=(
+            "Optional. A complete postgresql:// connection string, which overrides "
+            "every field above. Managed providers usually hand you one of these "
+            "ready to paste."
+        ),
+        json_schema_extra={
+            "details": (
+                "Passed to libpq verbatim, so any parameter it accepts works here "
+                "(sslmode, connect_timeout, options, …). Stored as a secret because "
+                "it normally embeds the password."
+            )
+        },
+    )
+
+
 class InferenceConfig(BaseModel):
     device: Literal["auto", "cpu", "cuda"] = Field(
         default="auto",
@@ -714,6 +826,7 @@ class Settings(BaseSettings):
 
     nas: NasConfig = Field(default_factory=NasConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
     restoration: RestorationConfig = Field(default_factory=RestorationConfig)

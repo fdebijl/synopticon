@@ -10,9 +10,10 @@ Synopticon supplements Synology Photos' face recognition: it syncs a photo libra
 
 ```bash
 uv sync --extra cpu --extra review --extra faiss   # dev setup (cpu/gpu are mutually exclusive; torch extras are opt-in)
+uv sync --extra postgres                    # optional: the PostgreSQL backend (psycopg 3 + its pool)
 uv run pytest tests/unit/ -q                # full suite (~350 tests, fully mocked, fast)
 uv run pytest tests/unit/test_client.py -q  # one file; -k <name> for one test
-uv run synopticon --help                    # CLI: check|hwinfo|sync|extract|benchmark|cluster|recluster|reset|clear-queue|delete-crops|regen-crops|report|web|review|reset-password|apply|apply-all|dedupe|eval|models
+uv run synopticon --help                    # CLI: check|hwinfo|sync|extract|benchmark|cluster|recluster|reset|clear-queue|delete-crops|regen-crops|report|web|review|reset-password|db-migrate|apply|apply-all|dedupe|eval|models
 cd frontend && npm ci && npm run build       # build the Vue SPA once → src/synopticon/web/dist (gitignored; Node 22+)
 uv run --extra review synopticon web         # full web GUI (setup wizard, jobs, review, apply) — needs [review] extra + a built frontend
 uv run synopticon check                     # fast read-only NAS connectivity + auth probe
@@ -33,7 +34,7 @@ Tests must never contact a real NAS; all HTTP is mocked with respx. Live verific
 
 ## Architecture
 
-Pipeline of five CLI phases with **SQLite as the only contract between them** (`data/synopticon.db`; schema in `src/synopticon/db/schema.sql`, migrations appended to `_MIGRATIONS` in `db/store.py`, versioned by `PRAGMA user_version`):
+Pipeline of five CLI phases with **one database as the only contract between them** (schema in `src/synopticon/db/schema.sql`, migrations appended to `_MIGRATIONS` in `db/store.py`). SQLite (`data/synopticon.db`) is the default and the dialect everything is authored in; PostgreSQL is opt-in — see "Database layer" below:
 
 ```
 syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writeback.py
@@ -43,6 +44,21 @@ syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writ
 ```
 
 **Hard module boundary:** `cluster/` must never import from `syno/` or `pipeline/` — reclustering is guaranteed to work offline from cached embeddings. `pipeline/runner.py` takes a `fetch_original(row) -> Path` callable instead of importing `sync/` for the same reason; the CLI (`cli.py`) is where the layers get wired together.
+
+### Database layer (`db/`)
+
+SQLite is the default and needs no configuration; PostgreSQL is selected by `[database] backend = "postgres"` and needs the `[postgres]` extra (`psycopg[binary,pool]`). MySQL/MariaDB are deliberately out of scope — no `ON CONFLICT`, and `TEXT` cannot be a key column, so both would fork the schema.
+
+- **Write SQL in SQLite's dialect, always.** `schema.sql`, every migration and all ~140 call-site queries are authored once, in SQLite's dialect, with `?` placeholders; `db/dialect.py` translates per backend. The upsert form every sync path uses (`ON CONFLICT (cols) DO UPDATE SET x = excluded.x`) is byte-identical in both, which is why no upsert needed rewriting. Never add a SQLite-only function (`json_extract` is translated; `strftime`/`printf`/`group_concat` are not — do the work in Python instead).
+- **Translation is driven by a character scanner, not bare regexes** (`_chunks`): a `?` inside a string literal is data and a `;` inside one is not a statement boundary. DDL rules: `INTEGER PRIMARY KEY AUTOINCREMENT` → identity column, `BLOB` → `BYTEA`, **`REAL` → `DOUBLE PRECISION`** (PostgreSQL `REAL` is float4, and face bboxes take part in a `UNIQUE` key — narrowing them would collide distinct detections), `json_extract` → a `jsonb` path, comments dropped before any of it.
+- **`cur.lastrowid` works on both.** PostgreSQL has none, so `Connection.execute` appends `RETURNING <pk>` to inserts into identity tables and reads the value back. The table→column map is *scanned out of the migration DDL* (`scan_identity_columns`), not hand-maintained, so a new autoincrement table needs no change — `test_db_dialect.py` asserts the full expected map.
+- **The wrapper preserves `sqlite3`'s contract exactly** (`db/connection.py`, `db/rows.py`): `conn.execute(sql, params)` returns a cursor, and a row indexes by name *and* position, iterates **values** (`tuple(row)` — `lookups.fingerprint` depends on this), and answers `keys()`/`dict(row)`. A row is therefore not a `collections.abc.Mapping`: that would iterate keys and silently turn `fingerprint()` into a tuple of column names. `with conn:` is deliberately unimplemented — `sqlite3` gives it commit/rollback rather than close semantics and no call site uses it.
+- **Catching a database error means rolling back.** This is the one real semantic difference: SQLite shrugs off a failed statement, PostgreSQL aborts the entire transaction, so every later statement on that connection fails too. The four recovery sites (`web/auth.create_user`, `review/lookups.fingerprint`, `ops_routes._count`, `setup_routes._count`) all call `rollback()` before continuing — a no-op on SQLite. Any new `except db_errors.*` that keeps using the connection must do the same. Driver exceptions never escape the wrapper: they arrive as `db.errors.DatabaseError`/`IntegrityError`/`OperationalError`.
+- **Schema versioning differs, migrations do not.** SQLite uses `PRAGMA user_version` (unchanged, so existing databases are untouched); PostgreSQL uses a `synopticon_schema_version` table plus a **session** advisory lock, taken only on the slow path, so a web server and a job subprocess starting together cannot both migrate. The version check result is latched per DSN per process (`_pg_migrated`) because `store.connect` runs *per web request* and the check is a network round trip.
+- **Pooling is not optional under PostgreSQL.** `web/app.py` opens a connection per request; unpooled that is a TCP round trip plus auth on every dashboard poll, which breaks the responsiveness invariants outright. `db/postgres.py` keeps one `psycopg_pool.ConnectionPool` per DSN per process, and `Connection.close()` is what returns the connection — every caller must close. It rolls back first: psycopg opens a transaction on the first statement of *any* kind, so a read-only request would otherwise hand back a connection still holding a snapshot.
+- **`store.connect(settings)` is the normal call** — `Settings` carries the backend choice. A `Path`/URI still works for callers that already know which database they mean (tests, `db-migrate --from`). `store.describe(settings)` names the database for a human without leaking credentials; use it instead of printing `storage.db_path`.
+- **`db-migrate` (`db/copy.py`) is CLI-only** — like `eval` and `reset-password`, it must never gain a `JOB_SPECS` entry: it rewrites the destination wholesale. It copies `TABLES` in FK-safe order, preserves primary keys verbatim, refuses a non-empty destination, and then `setval`s every identity sequence past the copied ids (skip that and the next insert collides).
+- **Tests:** `test_db_dialect.py` covers translation with no database and always runs. `test_postgres_backend.py` is the real round trip — schema application, upserts, `RETURNING`, blob/float fidelity, error recovery, the copy, and the web API — and skips unless `SYNOPTICON_TEST_POSTGRES_DSN` points at a throwaway server. It drops and recreates `public` per test, which re-proves the migrations apply from nothing on every run.
 
 ### Synology API layer (`syno/`)
 
@@ -80,6 +96,8 @@ syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writ
 ### Config (`config.py`)
 
 Precedence: init kwargs > env vars (`SYNOPTICON_<SECTION>__<KEY>`) > `.env` file > TOML. Config file search order: `$SYNOPTICON_CONFIG`, `./config.toml`, `./data/config.toml`, `/data/config.toml`. Storage defaults are repo-root `./data` and `./models`; the Docker image overrides both via env to its volume mounts — same directories on disk either way.
+
+`DatabaseConfig` carries the backend choice (see "Database layer"). Its `password` and `url` are `SecretStr`, which is what makes `configio`'s masking cover them — never add a credential field as a plain `str`. Adding a config section means adding it to `frontend/src/utils/schema.ts`'s `SECTIONS`/`LABELS` too, or the Settings UI silently omits the tab.
 
 ### Safety model (do not weaken)
 
@@ -143,6 +161,7 @@ The GUI is a **Vue 3 + TypeScript SPA** (Vite) served by a lazy-imported FastAPI
 - When adding new commands or when changing the data model, do a pass on CLAUDE.md as well to ensure the content is up to date
 - Don't add comments unless you're doing something arcane
 - This project is very fluid, when you come across a solution that no longer works, feel free to adapt it. If you find yourself planning an extremely complex workaround, see if the underlying architecture should not be changed.
+- The README is not for referencing past architectural decisions, it should be an up-to-date reflection of, primarily, how to run the project and, secondarily, the current architecutre.
 
 ## Tasks
 - When asked to bump the version, adjust the version in ./pyproject.toml and ./frontend/package.json with the given strategy (major, minor or patch) and run `uv sync` and `cd frontend && npm install` to sync the lockfiles.

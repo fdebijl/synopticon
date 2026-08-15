@@ -8,12 +8,11 @@ restarts (avoids re-prompting `otp_code` on every run).
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from synopticon.config import Settings
-from synopticon.db import store
+from synopticon.db import Connection, store
 from synopticon.syno.client import SynoApiError, encode_params
 
 if TYPE_CHECKING:
@@ -74,7 +73,7 @@ def _auth_path(client: "SynoClient") -> str:
     return info.get("path", _DEFAULT_AUTH_PATH)
 
 
-def login(client: "SynoClient", settings: Settings, conn: sqlite3.Connection) -> AuthSession:
+def login(client: "SynoClient", settings: Settings, conn: Connection) -> AuthSession:
     """POST SYNO.API.Auth login; returns an AuthSession (sid + synotoken + did)."""
     version = client.version_for(AUTH_API, 3)
     did = store.get_state(conn, AUTH_DID_KEY)

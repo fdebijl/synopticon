@@ -1,19 +1,19 @@
 ![Synopticon logo](assets/Synopticon%20Hero.png)
 
-A quality-first **toolkit for Synology Photos**, consisting of a set of standalone, batch-oriented utilities that run alongside your library and take on the jobs DSM currently does poorly or doesn't do at all. They share one local SQLite cache, one hardened Synology API layer, and one safety model: **read-only toward the NAS until you explicitly want to make a change**, every write is logged and (where possible) reversible, and the operations can be ran on any hardware, even very slow machines - batch runs of hours or days are expected and fully resumable. Synopticon runs anywhere Docker or Python runs (a homelab box is ideal; running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available.
+A quality-first **toolkit for Synology Photos**, consisting of a set of standalone, batch-oriented utilities that run alongside your library and take on the jobs DSM currently does poorly or doesn't do at all. They share one local database (SQLite by default, PostgreSQL optional), one hardened Synology API layer, and one safety model: **read-only toward the NAS until you explicitly want to make a change**, every write is logged and (where possible) reversible, and the operations can be ran on any hardware, even very slow machines - batch runs of hours or days are expected and fully resumable. Synopticon runs anywhere Docker or Python runs (a homelab box is ideal; running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available.
 
 ## What's in the box
 
 - **Enhanced face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
 - **Deduplication** — finds duplicate photos (byte-identical *or* visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API (dry-run by default).
 
-Both build on the same foundation, so new tools slot in without new plumbing: a resumable NAS sync into SQLite, a rate-limited API client that discovers endpoint versions at runtime, and a dry-run-first write path.
+Both build on the same foundation, so new tools slot in without new plumbing: a resumable NAS sync into a local database, a rate-limited API client that discovers endpoint versions at runtime, and a dry-run-first write path.
 
 ## How it works
 
 ### The face-recognition pipeline
 
-The pipeline runs in a fixed order, each stage consuming the previous stage's output from the local SQLite cache:
+The pipeline runs in a fixed order, each stage consuming the previous stage's output from the local database:
 
 ```
 sync  →  extract  →  cluster  →  report  →  review  →  apply
@@ -25,7 +25,7 @@ sync  →  extract  →  cluster  →  report  →  review  →  apply
 `recluster` and `eval` are side-loops off `cluster` — they re-run clustering from the cached embeddings with different parameters and never touch the NAS.
 
 1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels become ground truth.
-2. **`extract`** — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into a local SQLite cache. Interrupt any time; it resumes.
+2. **`extract`** — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into the local database. Interrupt any time; it resumes.
 3. **`cluster`** — builds an exact k-NN similarity graph over all faces, clusters (Chinese Whispers by default), and maps clusters onto Synology persons by majority vote. Produces proposals: *new face assignments*, *wrong-label corrections* (a face Synology tagged as one person that clearly belongs to another), *merge candidates*, and *new people*.
 4. **`report` / `review`** — a static HTML report and an interactive web UI to approve or reject each proposal. Nothing is written until you approve it.
 5. **`apply`** — pushes approved assignments back via the `add_face` API (works even on photos Synology found no face in). Dry-run by default; merges require a second explicit flag; every write is audit-logged and assignments are individually reversible.
@@ -360,7 +360,7 @@ Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, setting
 Deprecated alias of `web`, kept for one release. Serves the same app and prints the `/review` URL; new usage should call `synopticon web`. Same `--host`/`--port` options.
 
 #### `reset-password`
-Reset a web GUI account's password from the shell — the recovery path when the admin password is lost. It rewrites the scrypt hash in `data/synopticon.db` directly, so it needs filesystem access to the DB but no login, and it never touches the NAS. All of that account's sessions are revoked (so a stolen cookie can't outlive the credential) unless `--keep-sessions`. With a single account the username can be omitted. This is CLI-only by design and is not exposed as a web job.
+Reset a web GUI account's password from the shell — the recovery path when the admin password is lost. It rewrites the scrypt hash in the configured database directly, so it needs access to that database but no login, and it never touches the NAS. All of that account's sessions are revoked (so a stolen cookie can't outlive the credential) unless `--keep-sessions`. With a single account the username can be omitted. This is CLI-only by design and is not exposed as a web job.
 
 ```bash
 uv run synopticon reset-password              # prompts twice, hidden
@@ -477,12 +477,54 @@ Rebuild face crop images from the stored bboxes/landmarks and the originals (re-
 | `--only-missing` / `--all` | `--only-missing` | Only rebuild crops whose files are missing (skips photos already fully on disk, so re-runs are cheap); `--all` rewrites every face's crops. |
 | `--limit INTEGER` | none | Process at most N photos. |
 
+#### `db-migrate`
+Copy an existing library into the configured database backend — the one-time move you need after switching `[database] backend` to `postgres`, so the switch doesn't cost a fresh `sync` and a multi-hour re-`extract`. See [Database backend](#database-backend). **Never touches the NAS.**
+
+The destination is whatever `[database]` currently selects; the source defaults to the SQLite file that backend replaced. It refuses to run if the destination already holds data, and it copies primary keys verbatim, so deep links, review decisions and the audit trail all survive.
+
+| Option | Default | Description |
+|---|---|---|
+| `--from TEXT` | the SQLite file under `data_dir` | Database to copy out of (a path, or a `postgresql://` URL). |
+| `--yes` / `-y` | off | Skip the confirmation prompt. |
+
+Run it once, with nothing else touching either database.
+
+### Database backend
+
+By default Synopticon keeps its own data — the photo index, the faces it found, your review decisions — in a single SQLite file at `data/synopticon.db`. That needs no setup and is the right choice for almost everyone. (This is never your NAS; Synopticon only ever reads Synology's own database through its API.)
+
+If you already run PostgreSQL, want the database on different storage from the photo cache, or want to back it up with the tools you already have, point Synopticon at it instead:
+
+```toml
+[database]
+backend  = "postgres"
+host     = "db.example.internal"
+port     = 5432
+user     = "synopticon"
+database = "synopticon"
+sslmode  = "require"
+```
+
+The password is best passed env-only: `SYNOPTICON_DATABASE__PASSWORD=...`. Managed providers that hand you a ready-made connection string can skip the individual fields and set `SYNOPTICON_DATABASE__URL` instead, which overrides them all.
+
+**Setup:**
+
+1. `uv sync --extra postgres` (or use a Docker image — the extra is not in the default install).
+2. Create the database and a role that owns it. Synopticon creates its own tables inside it, but it will not create the database itself.
+3. Set `[database]` as above. Synopticon applies its schema on first connection.
+4. Moving an existing library across: `synopticon db-migrate`.
+
+The schema, every migration and all the queries are shared between backends and authored once; only column types and placeholder syntax are translated. PostgreSQL 13 or newer.
+
+**MySQL/MariaDB are not supported.** Their upsert syntax differs from the `ON CONFLICT` form every sync path uses, and `TEXT` columns cannot be primary keys there — both would mean a second copy of the schema and of several queries, which is exactly what the translation layer exists to avoid.
+
 ### Configuration
 
 Everything lives in `config.toml` (see `config.example.toml`) and can be overridden per-key with environment variables: `SYNOPTICON_<SECTION>__<KEY>`, e.g. `SYNOPTICON_NAS__URL`. Credentials are best passed env-only. Notable settings:
 
 - `nas.spaces` — `["personal"]` and/or `["shared"]` (Personal vs Shared Space libraries).
 - `nas.requests_per_second` — default 4; the NAS also serves your family, be gentle. Writes are throttled separately (1/s).
+- `database.backend` — `sqlite` (default, a file under `data_dir`) or `postgres`; see [Database backend](#database-backend).
 - `storage.keep_originals` / `storage.originals_cache_gb` — by default originals are evicted after processing under a 50 GB LRU budget; only ~10–30 KB of crops per face are kept. Set `keep_originals = true` (needs roughly your library's size in free disk) to make future detector re-runs NAS-traffic-free.
 - `inference.device` — `auto` (default), `cpu`, or `cuda`; see [GPU acceleration](#gpu-acceleration). `inference.device_id` selects the CUDA GPU on multi-GPU hosts.
 - `inference.job_threads` / `inference.job_nice` — how much of the machine a job launched from the web GUI may take. By default a job gets `nproc - 1` BLAS/OpenMP threads and runs at niceness 10, which keeps the GUI responsive while it works; see [Jobs and the GUI's responsiveness](#jobs-and-the-guis-responsiveness).
@@ -583,6 +625,10 @@ Works against any NAS running Synology Photos (DSM 7.x). API versions are discov
 uv sync --extra cpu --extra review --extra faiss   # or --extra gpu instead of cpu
 uv run pytest            # unit tests; fully mocked, never touch a NAS
 cd frontend && npm ci && npm run build   # GUI only: build the Vue SPA (Node 22+); npm run dev for hot-reload
+
+# PostgreSQL backend tests; skipped unless a throwaway server is pointed at
+SYNOPTICON_TEST_POSTGRES_DSN=postgresql://user@127.0.0.1:5432/synopticon_test \
+    uv run pytest tests/unit/test_postgres_backend.py -q
 ```
 
 (`--all-extras` no longer works: the `cpu`/`gpu` extras are mutually exclusive, so pick one explicitly.) The Python test suite needs no Node — the frontend build (typechecked by `vue-tsc`) runs as its own CI job. See [Web GUI](#web-gui) for the two-server dev loop.

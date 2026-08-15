@@ -1,7 +1,7 @@
 """Web GUI authentication: users, sessions, API keys, login rate limiting.
 
 Stdlib-only and framework-free by design: every function operates over a
-sqlite3.Connection (the same one the rest of the app uses) so the FastAPI layer
+Connection (the same one the rest of the app uses) so the FastAPI layer
 that lands later can wire these in without this module knowing anything about
 HTTP. Secrets are never stored in plaintext -- passwords are scrypt-hashed with a
 per-user salt, session tokens and API keys are stored as their sha256 hash, and
@@ -13,9 +13,10 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-import sqlite3
 import time
 from typing import Any, Callable
+
+from ..db import Connection, errors as db_errors
 
 # scrypt work factors. n must be a power of two; these are the interactive-login
 # parameters recommended for scrypt (n=2**14, r=8, p=1) -- a good balance for a
@@ -61,7 +62,7 @@ class UsernameTakenError(ValueError):
     """Raised when create_user is given a username that already exists."""
 
 
-def create_user(conn: sqlite3.Connection, username: str, password: str) -> int:
+def create_user(conn: Connection, username: str, password: str) -> int:
     """Create a user with a scrypt-hashed password; returns the new user id.
 
     Raises UsernameTakenError if the username is already registered.
@@ -74,13 +75,17 @@ def create_user(conn: sqlite3.Connection, username: str, password: str) -> int:
             "VALUES (?, ?, ?, ?)",
             (username, derived, salt, int(time.time())),
         )
-    except sqlite3.IntegrityError as exc:
+    except db_errors.IntegrityError as exc:
+        # Recovering from a failed statement means rolling back: PostgreSQL
+        # aborts the whole transaction on error, so without this every later
+        # statement on this connection fails too. A no-op on SQLite.
+        conn.rollback()
         raise UsernameTakenError(username) from exc
     conn.commit()
     return int(cur.lastrowid)
 
 
-def verify_password(conn: sqlite3.Connection, username: str, password: str) -> int | None:
+def verify_password(conn: Connection, username: str, password: str) -> int | None:
     """Return the user id if the password is correct, else None (constant-time)."""
     row = conn.execute(
         "SELECT id, password_scrypt, salt FROM web_users WHERE username = ?",
@@ -96,12 +101,12 @@ def verify_password(conn: sqlite3.Connection, username: str, password: str) -> i
     return None
 
 
-def has_users(conn: sqlite3.Connection) -> bool:
+def has_users(conn: Connection) -> bool:
     """True once at least one admin account exists (drives first-boot claim flow)."""
     return conn.execute("SELECT 1 FROM web_users LIMIT 1").fetchone() is not None
 
 
-def list_users(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_users(conn: Connection) -> list[dict[str, Any]]:
     """List accounts (id/username/created_at only -- never the hash or salt)."""
     rows = conn.execute("SELECT id, username, created_at FROM web_users ORDER BY id").fetchall()
     return [
@@ -110,7 +115,7 @@ def list_users(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
-def change_password(conn: sqlite3.Connection, user_id: int, new_password: str) -> None:
+def change_password(conn: Connection, user_id: int, new_password: str) -> None:
     """Set a new scrypt-hashed password (fresh salt) for an existing user."""
     salt = secrets.token_bytes(_SALT_BYTES)
     derived = _scrypt(new_password, salt)
@@ -124,7 +129,7 @@ def change_password(conn: sqlite3.Connection, user_id: int, new_password: str) -
 # -- sessions ----------------------------------------------------------------
 
 
-def create_session(conn: sqlite3.Connection, user_id: int, ttl_days: int = 30) -> str:
+def create_session(conn: Connection, user_id: int, ttl_days: int = 30) -> str:
     """Create a session and return the opaque token (only its sha256 hash is stored)."""
     token = secrets.token_urlsafe(_SESSION_TOKEN_BYTES)
     now = int(time.time())
@@ -137,7 +142,7 @@ def create_session(conn: sqlite3.Connection, user_id: int, ttl_days: int = 30) -
     return token
 
 
-def validate_session(conn: sqlite3.Connection, token: str) -> int | None:
+def validate_session(conn: Connection, token: str) -> int | None:
     """Return the user id for a live session, else None.
 
     Expired sessions return None (and are removed). last_seen_at is bumped at most
@@ -166,13 +171,13 @@ def validate_session(conn: sqlite3.Connection, token: str) -> int | None:
     return int(row["user_id"])
 
 
-def delete_session(conn: sqlite3.Connection, token: str) -> None:
+def delete_session(conn: Connection, token: str) -> None:
     """Log out: remove the session for this token (no-op if unknown)."""
     conn.execute("DELETE FROM web_sessions WHERE token_hash = ?", (_sha256_hex(token),))
     conn.commit()
 
 
-def delete_user_sessions(conn: sqlite3.Connection, user_id: int) -> int:
+def delete_user_sessions(conn: Connection, user_id: int) -> int:
     """Revoke every session of one user; returns the number removed.
 
     Used after an out-of-band password reset so a leaked cookie can't outlive the
@@ -183,7 +188,7 @@ def delete_user_sessions(conn: sqlite3.Connection, user_id: int) -> int:
     return cur.rowcount
 
 
-def purge_expired(conn: sqlite3.Connection) -> int:
+def purge_expired(conn: Connection) -> int:
     """Delete all expired sessions; returns the number removed."""
     cur = conn.execute("DELETE FROM web_sessions WHERE expires_at <= ?", (int(time.time()),))
     conn.commit()
@@ -193,7 +198,7 @@ def purge_expired(conn: sqlite3.Connection) -> int:
 # -- API keys ----------------------------------------------------------------
 
 
-def create_api_key(conn: sqlite3.Connection, name: str) -> str:
+def create_api_key(conn: Connection, name: str) -> str:
     """Create a named API key and return the plaintext `syn_<32hex>` (shown once).
 
     Only the sha256 hash and a short non-secret prefix are stored.
@@ -208,7 +213,7 @@ def create_api_key(conn: sqlite3.Connection, name: str) -> str:
     return key
 
 
-def validate_api_key(conn: sqlite3.Connection, key: str) -> int | None:
+def validate_api_key(conn: Connection, key: str) -> int | None:
     """Return the key id for a live (non-revoked) key, else None; bumps last_used_at."""
     if not key:
         return None
@@ -226,13 +231,13 @@ def validate_api_key(conn: sqlite3.Connection, key: str) -> int | None:
     return int(row["id"])
 
 
-def revoke_api_key(conn: sqlite3.Connection, key_id: int) -> None:
+def revoke_api_key(conn: Connection, key_id: int) -> None:
     """Mark a key revoked; subsequent validate_api_key calls return None."""
     conn.execute("UPDATE web_api_keys SET revoked = 1 WHERE id = ?", (key_id,))
     conn.commit()
 
 
-def list_api_keys(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def list_api_keys(conn: Connection) -> list[dict[str, Any]]:
     """List keys for the UI. Never returns key_hash -- only the non-secret prefix."""
     rows = conn.execute(
         "SELECT id, name, key_prefix, created_at, last_used_at, revoked "

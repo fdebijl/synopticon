@@ -10,8 +10,9 @@ web GUI can share it; this module is a thin FastAPI wrapper over it.
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
+
+from ..db import Connection
 
 from ..config import Settings
 from ..db import store
@@ -30,7 +31,7 @@ def _require_fastapi():
         ) from exc
 
 
-def create_app(db_path: Path | str, settings: Settings):
+def create_app(settings: Settings):
     """Build the FastAPI app. Requires the [review] extra."""
     _require_fastapi()
     from fastapi import FastAPI, Form
@@ -38,7 +39,6 @@ def create_app(db_path: Path | str, settings: Settings):
     from fastapi.staticfiles import StaticFiles
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-    db_path = Path(db_path)
     crops_dir = Path(settings.storage.crops_dir)
     crops_dir.mkdir(parents=True, exist_ok=True)
 
@@ -50,8 +50,8 @@ def create_app(db_path: Path | str, settings: Settings):
     app = FastAPI(title="Synopticon review")
     app.mount("/crops", StaticFiles(directory=str(crops_dir)), name="crops")
 
-    def conn() -> sqlite3.Connection:
-        return store.connect(db_path)
+    def conn() -> Connection:
+        return store.connect(settings)
 
     # persons/faces are static while the review server runs, so cache the two
     # ground-truth lookups for the app's lifetime (queries.py rebuilds on each
@@ -59,7 +59,7 @@ def create_app(db_path: Path | str, settings: Settings):
     _hidden: set[tuple[str, int]] | None = None
     _person_faces: dict[tuple[str, int], list[int]] | None = None
 
-    def _cached_lookups(c: sqlite3.Connection):
+    def _cached_lookups(c: Connection):
         nonlocal _hidden, _person_faces
         if _hidden is None:
             _hidden = queries.hidden_persons(c)
@@ -126,5 +126,5 @@ def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8686) -> None
     _require_fastapi()
     import uvicorn
 
-    app = create_app(settings.storage.db_path, settings)
+    app = create_app(settings)
     uvicorn.run(app, host=host, port=port)

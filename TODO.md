@@ -18,4 +18,20 @@
 
 17. Backup settings and download database
 
-18. Allow non-local SQl databases  (mysql, postgresql, mariadb, etc.) to be used rather than sqlite (should still be the default for ease of use)
+19. Ensure the health endpoint always responds when the container is live, still gets bogged down by jobs.
+
+20. Bug on extract: /opt/venv/lib/python3.11/site-packages/PIL/Image.py:1136: UserWarning: Palette images with Transparency expressed in bytes should be converted to RGBA images
+
+21. Scheduled jobs should have an indicator that they were ran from a schedule, ideally with a link back to the schedule
+
+22. Extract: print reason for skipping a photo
+
+23. Investigate why jobs sometimes exit with code 9 (might be host oom'ing)
+
+24. Guided onboarding: do an initial sync, initial extract and initial clustering
+
+25. Rename extract to 'Detect faces' in user-facing contexts
+
+26. Rename cluster to 'Group faces' in user-facing contexts
+
+27. Add object detection

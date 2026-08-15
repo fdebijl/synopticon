@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 
 from synopticon.config import Settings, Space
-from synopticon.db import store
+from synopticon.db import Connection, store
 from synopticon.syno import foto
 from synopticon.syno.client import SynoApiError, SynoClient
 
@@ -31,7 +30,7 @@ def _item_web_url(settings: Settings, space: Space, photo_id: int) -> str | None
 
 
 def sync_persons(
-    conn: sqlite3.Connection,
+    conn: Connection,
     client: SynoClient,
     space: Space,
     progress: Progress | None = None,
@@ -87,7 +86,7 @@ def _cursor_key(space: Space) -> str:
 
 
 def sync_faces(
-    conn: sqlite3.Connection,
+    conn: Connection,
     client: SynoClient,
     space: Space,
     only_tagged: bool = True,

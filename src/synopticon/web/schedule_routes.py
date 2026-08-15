@@ -19,8 +19,9 @@ inside the registrar. With postponed evaluation every route silently degrades it
 ``Request`` parameter to a required query field.
 """
 
-import sqlite3
 from typing import Callable
+
+from ..db import Connection
 
 from ..config import Settings
 from . import schedules
@@ -29,7 +30,7 @@ from . import schedules
 def register_schedule_routes(
     app,
     settings: Settings,
-    conn: Callable[[], sqlite3.Connection],
+    conn: Callable[[], Connection],
     job_manager,
     scheduler,
 ) -> None:
@@ -60,7 +61,7 @@ def register_schedule_routes(
             return {}
 
     def _runs_with_state(
-        c: sqlite3.Connection, schedule_id: int, states: dict[str, str]
+        c: Connection, schedule_id: int, states: dict[str, str]
     ) -> list[dict]:
         out = []
         for run in schedules.runs(c, schedule_id, limit=10):
@@ -70,7 +71,7 @@ def register_schedule_routes(
             out.append(run)
         return out
 
-    def _decorate(rows: list[dict], c: sqlite3.Connection) -> list[dict]:
+    def _decorate(rows: list[dict], c: Connection) -> list[dict]:
         """Attach each schedule's recent firings and their jobs' states."""
         states = _job_states()
         for row in rows:

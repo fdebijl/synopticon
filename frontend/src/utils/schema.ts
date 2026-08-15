@@ -77,6 +77,7 @@ export interface SectionDescriptor {
 export const SECTIONS = [
   'nas',
   'storage',
+  'database',
   'inference',
   'detection',
   'restoration',
@@ -88,6 +89,7 @@ export const SECTIONS = [
 export const LABELS: Record<string, string> = {
   nas: 'NAS',
   storage: 'Storage',
+  database: 'Database',
   inference: 'Inference',
   detection: 'Detection',
   restoration: 'Restoration',

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import itertools
 import json
-import sqlite3
 from dataclasses import dataclass, field
 
 import numpy as np
+
+from ..db import Connection
 
 from ..config import Settings
 from ..db import store
@@ -40,7 +41,7 @@ def _iou(box: tuple[float, float, float, float], other: tuple) -> float:
     return inter / union if union > 0 else 0.0
 
 
-def _load_face_meta(conn: sqlite3.Connection) -> dict[int, dict]:
+def _load_face_meta(conn: Connection) -> dict[int, dict]:
     """face_id -> {space, photo_id, bbox_norm:[x1,y1,x2,y2]} in normalized coords."""
     dims: dict[tuple[str, int], tuple[int, int]] = {}
     for row in conn.execute("SELECT space, id, width, height FROM photos"):
@@ -71,13 +72,13 @@ def _load_face_meta(conn: sqlite3.Connection) -> dict[int, dict]:
     return meta
 
 
-def label_faces(conn: sqlite3.Connection, settings: Settings) -> dict[int, PersonKey]:
+def label_faces(conn: Connection, settings: Settings) -> dict[int, PersonKey]:
     """Map our detected faces to ground-truth persons (labels only)."""
     return label_faces_with_ids(conn, settings)[0]
 
 
 def label_faces_with_ids(
-    conn: sqlite3.Connection, settings: Settings
+    conn: Connection, settings: Settings
 ) -> tuple[dict[int, PersonKey], dict[int, int]]:
     """Map our detected faces to ground-truth persons.
 
@@ -502,7 +503,7 @@ def _cluster_labels(indices, sims, settings: Settings) -> np.ndarray:
     )
 
 
-def _load_person_photos(conn: sqlite3.Connection) -> set[tuple[str, int, int]]:
+def _load_person_photos(conn: Connection) -> set[tuple[str, int, int]]:
     return {
         (row["space"], int(row["person_id"]), int(row["photo_id"]))
         for row in conn.execute(
@@ -511,14 +512,14 @@ def _load_person_photos(conn: sqlite3.Connection) -> set[tuple[str, int, int]]:
     }
 
 
-def _load_person_names(conn: sqlite3.Connection) -> dict[PersonKey, str | None]:
+def _load_person_names(conn: Connection) -> dict[PersonKey, str | None]:
     return {
         (row["space"], int(row["id"])): row["name"]
         for row in conn.execute("SELECT space, id, name FROM persons")
     }
 
 
-def _existing_identities(conn: sqlite3.Connection) -> dict[str, set]:
+def _existing_identities(conn: Connection) -> dict[str, set]:
     """Payload identities already pending/approved/applied from ANY run."""
     assigns: set[tuple[int, int]] = set()
     merges: set[tuple] = set()
@@ -566,7 +567,7 @@ def _existing_identities(conn: sqlite3.Connection) -> dict[str, set]:
     }
 
 
-def run_clustering(conn: sqlite3.Connection, settings: Settings) -> int:
+def run_clustering(conn: Connection, settings: Settings) -> int:
     """Full clustering + cross-reference pass. Returns the new run_id.
 
     Deterministic given ``settings.clustering.seed``.

@@ -18,8 +18,9 @@ without model/runtime deps must still render the Maintenance page).
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Callable
+
+from ..db import Connection, errors as db_errors
 
 from ..config import Settings
 
@@ -27,18 +28,22 @@ from ..config import Settings
 _CROPS_TTL = 60.0
 
 
-def _count(conn: sqlite3.Connection, table: str) -> int:
+def _count(conn: Connection, table: str) -> int:
     try:
         row = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()
         return int(row["n"])
-    except sqlite3.Error:
+    except db_errors.DatabaseError:
+        # Rolling back is what makes the *next* _count call work: PostgreSQL
+        # aborts the transaction on a failed statement, so a single missing
+        # table would otherwise zero every count after it. No-op on SQLite.
+        conn.rollback()
         return 0
 
 
 def register_ops_routes(
     app,
     settings: Settings,
-    conn: Callable[[], sqlite3.Connection],
+    conn: Callable[[], Connection],
 ) -> None:
     """Attach the ops (pipeline/apply/maintenance) read-only API to ``app``.
 

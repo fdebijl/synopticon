@@ -241,7 +241,7 @@ def write_config(settings: Settings, partial: dict) -> list[dict] | None:
 def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
     """Wire the config + access (auth) API onto an existing FastAPI ``app``.
 
-    ``conn`` is the per-request ``sqlite3.Connection`` factory and ``job_manager``
+    ``conn`` is the per-request ``Connection`` factory and ``job_manager``
     the running :class:`~synopticon.web.jobs.JobManager` (a running job blocks a
     config write). Called once from ``create_app`` right before it returns.
     """

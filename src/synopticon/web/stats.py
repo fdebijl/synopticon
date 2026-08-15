@@ -1,8 +1,8 @@
 """Dashboard statistics gathered from the pipeline DB (NAS-free, read-only).
 
-Pure ``sqlite3`` + :class:`~synopticon.config.Settings`; no ``syno``/``pipeline``
-import at module scope. The one place that needs the model manifest
-(``pipeline_version`` / extract coverage) imports it lazily and wraps every
+Pure :mod:`synopticon.db` + :class:`~synopticon.config.Settings`; no
+``syno``/``pipeline`` import at module scope. The one place that needs the model
+manifest (``pipeline_version`` / extract coverage) imports it lazily and wraps every
 failure so a fresh install with no model weights degrades to
 ``models_ready: false`` and ``pipeline_version: null`` instead of crashing the
 ``/api/stats`` endpoint.
@@ -15,22 +15,13 @@ see :func:`_pipeline_version_cached`.
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Any
 
 from ..config import Settings
+from ..db import Connection
 
 
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-        ).fetchone()
-        is not None
-    )
-
-
-def _photo_stats(conn: sqlite3.Connection, spaces: list[str]) -> dict[str, dict[str, int]]:
+def _photo_stats(conn: Connection, spaces: list[str]) -> dict[str, dict[str, int]]:
     out: dict[str, dict[str, int]] = {}
     for space in spaces:
         row = conn.execute(
@@ -96,7 +87,7 @@ def _pipeline_version_cached(settings: Settings) -> tuple[bool, str | None]:
     return result
 
 
-def _extract_stats(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+def _extract_stats(conn: Connection, settings: Settings) -> dict[str, Any]:
     """Extract coverage against the current pipeline_version.
 
     Degrades to ``pipeline_version: null`` / ``models_ready: false`` when the
@@ -130,7 +121,7 @@ def _extract_stats(conn: sqlite3.Connection, settings: Settings) -> dict[str, An
     }
 
 
-def _cluster_stats(conn: sqlite3.Connection) -> dict[str, Any] | None:
+def _cluster_stats(conn: Connection) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT run_id, created_at FROM cluster_runs ORDER BY run_id DESC LIMIT 1"
     ).fetchone()
@@ -148,7 +139,7 @@ def _cluster_stats(conn: sqlite3.Connection) -> dict[str, Any] | None:
     }
 
 
-def gather_stats(conn: sqlite3.Connection, settings: Settings) -> dict[str, Any]:
+def gather_stats(conn: Connection, settings: Settings) -> dict[str, Any]:
     """Assemble the dashboard stats payload. DB-only; never contacts the NAS."""
     spaces = list(settings.nas.spaces) or ["personal"]
     faces = int(conn.execute("SELECT COUNT(*) AS n FROM faces").fetchone()["n"])

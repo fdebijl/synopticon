@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import csv
 import itertools
-import sqlite3
 from pathlib import Path
 
 import numpy as np
+
+from ..db import Connection
 
 from ..cluster import crossref, graph
 from ..config import Settings
@@ -43,7 +44,7 @@ def _stratified_mask(
     return masked
 
 
-def _cluster_in_memory(conn: sqlite3.Connection, settings: Settings, label_map):
+def _cluster_in_memory(conn: Connection, settings: Settings, label_map):
     face_ids, X = graph.load_fused(conn, settings)
     indices, sims = graph.build_or_load_graph(settings, face_ids, X)
     labels = crossref._cluster_labels(indices, sims, settings)
@@ -110,7 +111,7 @@ def _pairwise_and_bcubed(
 
 
 def run_holdout(
-    conn: sqlite3.Connection,
+    conn: Connection,
     settings: Settings,
     mask_fraction: float = 0.2,
     seed: int = 42,
@@ -170,7 +171,7 @@ def _print_table(metrics: dict) -> None:
 
 
 def grid_search(
-    conn: sqlite3.Connection,
+    conn: Connection,
     settings: Settings,
     grid: dict[str, list],
     mask_fraction: float = 0.2,

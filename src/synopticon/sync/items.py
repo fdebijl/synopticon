@@ -8,11 +8,10 @@ un-marked automatically by the per-item upsert.
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 
 from synopticon.config import Space
-from synopticon.db import store
+from synopticon.db import Connection, store
 from synopticon.syno import foto
 from synopticon.syno.client import SynoClient
 
@@ -23,7 +22,7 @@ Progress = Callable[[int, int | None], None]
 
 
 def sync_items(
-    conn: sqlite3.Connection,
+    conn: Connection,
     client: SynoClient,
     space: Space,
     progress: Progress | None = None,
@@ -89,7 +88,7 @@ def sync_items(
 
 
 def sync_similar(
-    conn: sqlite3.Connection,
+    conn: Connection,
     client: SynoClient,
     space: Space,
     progress: Progress | None = None,
@@ -123,7 +122,7 @@ def sync_similar(
     return {"groups": total, "members": members}
 
 
-def stale_photo_ids(conn: sqlite3.Connection, space: Space) -> list[int]:
+def stale_photo_ids(conn: Connection, space: Space) -> list[int]:
     """Photo ids with no rows at all in `faces` for this space.
 
     Cheap, correct-today subset of "needs pipeline attention" -- there is no

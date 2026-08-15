@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+from ..db import Connection
 
 from ..config import Settings
 
@@ -31,7 +32,7 @@ def _crop_rel(crop_path: str | None, report_dir: Path, crops_dir: Path) -> str |
         return str(p)
 
 
-def _face_crops(conn: sqlite3.Connection) -> dict[int, dict]:
+def _face_crops(conn: Connection) -> dict[int, dict]:
     out: dict[int, dict] = {}
     for row in conn.execute("SELECT face_id, crop_path, ctx_crop_path FROM faces"):
         out[int(row["face_id"])] = {
@@ -41,7 +42,7 @@ def _face_crops(conn: sqlite3.Connection) -> dict[int, dict]:
     return out
 
 
-def generate(conn: sqlite3.Connection, settings: Settings, run_id: int) -> Path:
+def generate(conn: Connection, settings: Settings, run_id: int) -> Path:
     """Render ``{reports_dir}/{run_id}/index.html`` and ``decisions.jsonl``."""
     report_dir = settings.storage.reports_dir / str(run_id)
     report_dir.mkdir(parents=True, exist_ok=True)

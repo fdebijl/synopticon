@@ -22,6 +22,24 @@ models_dir = "./models"             # ONNX models (populate via `synopticon mode
 keep_originals = false              # true = keep every downloaded original (needs ~1TB+)
 originals_cache_gb = 50.0           # LRU eviction budget when keep_originals = false
 
+[database]
+# Where Synopticon keeps its own data (photo index, faces, review decisions).
+# Never your NAS. The default needs no setup at all: a single SQLite file under
+# data_dir. Switch to postgres only if you already run one -- and use
+# `synopticon db-migrate` to carry an existing library across.
+backend = "sqlite"                  # sqlite | postgres
+# Everything below is ignored unless backend = "postgres". Needs the [postgres]
+# extra: uv sync --extra postgres
+# host = "localhost"
+# port = 5432
+# user = "synopticon"
+# database = "synopticon"           # must already exist; Synopticon creates the tables
+# sslmode = "prefer"                # disable | allow | prefer | require | verify-ca | verify-full
+# pool_size = 5
+# Pass the password env-only: SYNOPTICON_DATABASE__PASSWORD=...
+# A managed provider's ready-made connection string overrides every field above:
+# SYNOPTICON_DATABASE__URL=postgresql://user:pass@host:5432/synopticon
+
 [inference]
 device = "auto"                     # auto | cpu | cuda; "auto"/"cuda" use the GPU
                                     # only if onnxruntime-gpu is installed (see
