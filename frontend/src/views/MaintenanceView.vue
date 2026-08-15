@@ -104,7 +104,7 @@ async function runReset(): Promise<void> {
   } else {
     const ok = await confirm({
       title: 'Reset local database',
-      message: 'Drop faces, embeddings, clusters and the review queue from the local DB?',
+      message: 'Drop faces, embeddings, face groups and the review queue from the local DB?',
       okLabel: 'Reset',
     })
     if (ok) startJob('reset', params, { confirm: true })
@@ -144,7 +144,7 @@ onMounted(() => void loadCounts())
         <p class="muted">Drop pipeline data from the local DB. This does not touch the NAS.</p>
         <p>
           Faces: <span class="maint-count">{{ show(counts?.faces) }}</span> · Embeddings:
-          <span class="maint-count">{{ show(counts?.embeddings) }}</span> · Cluster runs:
+          <span class="maint-count">{{ show(counts?.embeddings) }}</span> · Grouping runs:
           <span class="maint-count">{{ show(counts?.cluster_runs) }}</span> · Photos:
           <span class="maint-count">{{ show(counts?.photos) }}</span>
         </p>

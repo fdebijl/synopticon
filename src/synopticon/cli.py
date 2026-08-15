@@ -16,7 +16,7 @@ from synopticon.progress import get_emitter, install_log_bridge
 
 app = typer.Typer(help=__doc__, no_args_is_help=True)
 models_app = typer.Typer(help="Model weight management.", no_args_is_help=True)
-eval_app = typer.Typer(help="Evaluate clustering quality against held-out labels.", no_args_is_help=True)
+eval_app = typer.Typer(help="Evaluate face-grouping quality against held-out labels.", no_args_is_help=True)
 app.add_typer(models_app, name="models")
 app.add_typer(eval_app, name="eval")
 
@@ -194,7 +194,7 @@ def _item_web_url(settings: Settings, space: str, photo_id: int) -> str | None:
 
 @app.command()
 def hwinfo():
-    """Print hardware/environment stats relevant to extraction & clustering (for bug reports)."""
+    """Print hardware/environment stats relevant to face detection & grouping (for bug reports)."""
     from synopticon import diagnostics
 
     typer.echo(diagnostics.render(_settings()), nl=False)
@@ -278,7 +278,7 @@ def extract(
     photo_id: int = typer.Option(None, help="Process a single photo id."),
     space: str = typer.Option(None, help="Limit to one space (default: all configured)."),
 ):
-    """Detect faces and compute ensemble embeddings (resumable)."""
+    """Detect faces: scan synced photos and record every face found (resumable)."""
     from dataclasses import asdict
 
     from synopticon.pipeline.runner import run_extract
@@ -312,7 +312,7 @@ def benchmark(
     space: str = typer.Option("personal", help="Space to pull benchmark photos from."),
     warmup: int = typer.Option(2, help="Photos to process before timing (absorbs ONNX startup cost)."),
 ):
-    """Measure extraction throughput (detect+embed) without writing anything.
+    """Measure face-detection throughput without writing anything.
 
     Read-only: reuses the extract pipeline but persists no faces/embeddings/crops.
     Originals are downloaded (and cached) exactly as `extract` would.
@@ -341,13 +341,13 @@ def benchmark(
 
 @app.command()
 def cluster():
-    """Cluster all embeddings and cross-reference against Synology persons."""
+    """Group faces by person and cross-reference against Synology persons."""
     from synopticon.cluster.crossref import run_clustering
 
     settings = _settings()
     conn = _conn(settings)
     run_id = run_clustering(conn, settings)
-    typer.echo(f"cluster run {run_id} complete; next: synopticon report")
+    typer.echo(f"grouping run {run_id} complete; next: synopticon report")
 
 
 @app.command()
@@ -356,7 +356,7 @@ def recluster(
         [], "--set", help="Override, e.g. --set clustering.edge_threshold=0.47 (repeatable)."
     ),
 ):
-    """Re-run clustering from cached embeddings with parameter overrides. Never hits the NAS."""
+    """Group faces again from stored data with parameter overrides. Never hits the NAS."""
     from synopticon.cluster.crossref import run_clustering
 
     settings = _apply_overrides(_settings(), set_)
@@ -364,7 +364,7 @@ def recluster(
     if set_:
         typer.echo(f"overrides: {', '.join(set_)}")
     run_id = run_clustering(conn, settings)
-    typer.echo(f"cluster run {run_id} complete")
+    typer.echo(f"grouping run {run_id} complete")
 
 
 # Tables produced by the local pipeline (safe to wipe and rebuild). Ordered
@@ -565,7 +565,7 @@ def delete_crops_cmd(
 
 
 @app.command()
-def report(run_id: int = typer.Option(None, help="Cluster run to report on (default: latest).")):
+def report(run_id: int = typer.Option(None, help="Grouping run to report on (default: latest).")):
     """Generate the static HTML review report."""
     from synopticon.review.report import generate
 
@@ -574,11 +574,11 @@ def report(run_id: int = typer.Option(None, help="Cluster run to report on (defa
     if run_id is None:
         row = conn.execute("SELECT MAX(run_id) AS r FROM cluster_runs").fetchone()
         if row["r"] is None:
-            typer.echo("no cluster runs yet — run: synopticon cluster", err=True)
+            typer.echo("faces have not been grouped yet — run: synopticon cluster", err=True)
             raise typer.Exit(1)
         run_id = row["r"]
     get_emitter().phase("report", run_id=run_id)
-    typer.echo(f"rendering report for cluster run {run_id}")
+    typer.echo(f"rendering report for grouping run {run_id}")
     path = generate(conn, settings, run_id)
     typer.echo(f"report: {path}")
     get_emitter().result(stats={"run_id": run_id, "path": str(path)})

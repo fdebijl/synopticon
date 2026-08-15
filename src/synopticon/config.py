@@ -585,7 +585,7 @@ class ClusteringConfig(BaseModel):
         title="Edge Threshold",
         description=(
             "How similar two faces must look to be treated as the same person. This is the "
-            "single most important clustering knob.\n\n"
+            "single most important face-grouping setting.\n\n"
             "0-1, sweet spot ~0.40-0.60; default 0.50. Too low lets weak links chain "
             "distinct people into giant merged groups; too high fragments one identity "
             "over pose, age and lighting variation. Faces left with no surviving link "
@@ -602,7 +602,7 @@ class ClusteringConfig(BaseModel):
     )
     algorithm: Literal["chinese_whispers", "hdbscan"] = Field(
         default="chinese_whispers",
-        title="Clustering Algorithm",
+        title="Grouping Algorithm",
         description=(
             "Which method is used to group faces into people.\n\n"
             "'chinese_whispers' (default) gives every face a group and is tuned with "
@@ -642,7 +642,7 @@ class ClusteringConfig(BaseModel):
     )
     min_cluster_size: int = Field(
         default=2,
-        title="HDBSCAN Minimum Cluster Size",
+        title="HDBSCAN Minimum Group Size",
         description=(
             "The fewest faces HDBSCAN needs before it will call them a group. Has no "
             "effect under the default chinese_whispers algorithm.\n\n"

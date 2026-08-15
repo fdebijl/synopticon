@@ -16,7 +16,7 @@
 
 15. UI should have a quick redirect to /login if not logged in, instead of waiting for the server
 
-17. Backup settings and download database
+17. Under utilities: Add button to backup settings and one to download the database (full dump)
 
 19. Ensure the health endpoint always responds when the container is live, still gets bogged down by jobs.
 
@@ -29,9 +29,5 @@
 23. Investigate why jobs sometimes exit with code 9 (might be host oom'ing)
 
 24. Guided onboarding: do an initial sync, initial extract and initial clustering
-
-25. Rename extract to 'Detect faces' in user-facing contexts
-
-26. Rename cluster to 'Group faces' in user-facing contexts
 
 27. Add object detection

@@ -513,9 +513,11 @@ onMounted(async () => {
           <p>
             AdaFace and MagFace cannot be downloaded automatically — their weights are not
             redistributed. Export them manually (see <strong>README &rarr; Models</strong>), then
-            re-run the download, or continue and add them before running extract.
+            re-run the download, or continue and add them before detecting faces.
           </p>
-          <p class="muted">First sync works without any models; extraction later requires all five.</p>
+          <p class="muted">
+            First sync works without any models; detecting faces later requires all five.
+          </p>
           <ul>
             <li v-for="key in modelsMissing" :key="key"><code>{{ key }}</code></li>
           </ul>

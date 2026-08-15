@@ -33,7 +33,7 @@ const KINDS: KindDef[] = [
   { k: 'low_confidence', label: 'low_confidence — low-confidence assignments', danger: false },
   { k: 'new_person', label: 'new_person — create new persons', danger: false },
   { k: 'reassign', label: 'reassign — move a face to another person', danger: false },
-  { k: 'merge', label: 'merge — join clusters (irreversible)', danger: true },
+  { k: 'merge', label: 'merge — join two people (irreversible)', danger: true },
   {
     k: 'merge_named',
     label: 'merge_named — join two NAMED people (destroys a label)',

@@ -17,19 +17,21 @@ The pipeline runs in a fixed order, each stage consuming the previous stage's ou
 
 ```
 sync  →  extract  →  cluster  →  report  →  review  →  apply
-(NAS→db) (faces+     (graph +    (static    (approve/  (write
-          embeddings) crossref)  HTML)      reject UI) back to NAS)
+(NAS→db) (detect     (group      (static    (approve/  (write
+          faces)      faces)     HTML)      reject UI) back to NAS)
 └──────── read-only ────────────────────────┘          └─ gated write ─┘
 ```
 
-`recluster` and `eval` are side-loops off `cluster` — they re-run clustering from the cached embeddings with different parameters and never touch the NAS.
+The web GUI calls these stages by what they do — **Detect faces** (`extract`) and **Group faces** (`cluster`) — while the CLI command names stay as above.
+
+`recluster` and `eval` are side-loops off `cluster` — they group the faces again from the cached embeddings with different parameters and never touch the NAS.
 
 1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels become ground truth.
-2. **`extract`** — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into the local database. Interrupt any time; it resumes.
-3. **`cluster`** — builds an exact k-NN similarity graph over all faces, clusters (Chinese Whispers by default), and maps clusters onto Synology persons by majority vote. Produces proposals: *new face assignments*, *wrong-label corrections* (a face Synology tagged as one person that clearly belongs to another), *merge candidates*, and *new people*.
+2. **`extract`** (*Detect faces*) — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into the local database. Interrupt any time; it resumes.
+3. **`cluster`** (*Group faces*) — builds an exact k-NN similarity graph over all faces, groups them (Chinese Whispers by default), and maps each group onto a Synology person by majority vote. Produces proposals: *new face assignments*, *wrong-label corrections* (a face Synology tagged as one person that clearly belongs to another), *merge candidates*, and *new people*.
 4. **`report` / `review`** — a static HTML report and an interactive web UI to approve or reject each proposal. Nothing is written until you approve it.
 5. **`apply`** — pushes approved assignments back via the `add_face` API (works even on photos Synology found no face in). Dry-run by default; merges require a second explicit flag; every write is audit-logged and assignments are individually reversible.
-6. **`recluster` / `eval`** — retune thresholds from the embedding cache (no re-extraction, no NAS traffic) and measure quality by masking known labels and checking recovery.
+6. **`recluster` / `eval`** — retune thresholds from the embedding cache (no re-detection, no NAS traffic) and measure quality by masking known labels and checking recovery.
 
 ### Deduplication
 
@@ -188,7 +190,7 @@ If you start `synopticon web` without a built frontend it exits with instruction
 | `--host TEXT` | `127.0.0.1` | Bind address. Keep it on loopback and put a reverse proxy in front for anything but local access (see [Reverse proxy / TLS](#reverse-proxy--tls)). |
 | `--port INTEGER` | `8686` | Bind port. |
 
-It serves a **Dashboard** (library stats, a sync→extract→cluster→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report, in a switchable **Grid** or **Focus** layout — Focus shows one large card plus a carousel of neighbouring items, with ←/→ to navigate; the choice persists in `localStorage` and as `?view=focus`), **Apply** (dry-run preview then consent-gated writes), **Utilities** (tools that act on the NAS library itself: **QuickMerger** and photo deduplication), **Schedules** (put jobs on a cron timer), **Maintenance** (the destructive local-state housekeeping commands behind typed-phrase confirmations), **Settings** (edit every `config.toml` section, manage API keys, change your password), and **About** (version, pipeline version, environment details ready to paste into a bug report, and links to the GitHub repository). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
+It serves a **Dashboard** (library stats, a sync→detect→group→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report, in a switchable **Grid** or **Focus** layout — Focus shows one large card plus a carousel of neighbouring items, with ←/→ to navigate; the choice persists in `localStorage` and as `?view=focus`), **Apply** (dry-run preview then consent-gated writes), **Utilities** (tools that act on the NAS library itself: **QuickMerger** and photo deduplication), **Schedules** (put jobs on a cron timer), **Maintenance** (the destructive local-state housekeeping commands behind typed-phrase confirmations), **Settings** (edit every `config.toml` section, manage API keys, change your password), and **About** (version, pipeline version, environment details ready to paste into a bug report, and links to the GitHub repository). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
 
 ### First-run setup wizard
 
@@ -281,7 +283,7 @@ All commands are subcommands of `synopticon` (Docker: `docker compose run synopt
 Verify NAS connectivity and credentials (read-only, fast). No options.
 
 #### `hwinfo`
-Print hardware/environment stats relevant to face extraction and clustering — CPU model and core count, RAM, ONNX Runtime version and available execution providers (i.e. whether a GPU is usable), detected NVIDIA GPUs, key library versions, which model weights are present, and disk space. Touches nothing and reaches no network; **include its output when filing a bug report.** No options.
+Print hardware/environment stats relevant to face detection and grouping — CPU model and core count, RAM, ONNX Runtime version and available execution providers (i.e. whether a GPU is usable), detected NVIDIA GPUs, key library versions, which model weights are present, and disk space. Touches nothing and reaches no network; **include its output when filing a bug report.** No options.
 
 #### `models download`
 Download and verify model weights into `storage.models_dir`.
@@ -292,7 +294,7 @@ Download and verify model weights into `storage.models_dir`.
 | `--allow-record-hash` | off | Record the sha256 of not-yet-pinned (locally exported) models. |
 
 #### `benchmark`
-Measure extraction throughput on your hardware without changing anything. Reuses the `extract` pipeline (detect → align → embed) over a sample of photos but writes no faces, embeddings, or crops. Reports photos/sec, faces/sec, ms/photo, and a per-stage breakdown so you can see where time goes. Originals are downloaded and cached exactly as `extract` would. A short warmup pass runs first so one-off ONNX session/thread-pool startup cost doesn't skew the numbers. Pair with `hwinfo` when tuning `[inference]` threads or comparing CPU vs GPU.
+Measure face-detection throughput on your hardware without changing anything. Reuses the `extract` pipeline (detect → align → embed) over a sample of photos but writes no faces, embeddings, or crops. Reports photos/sec, faces/sec, ms/photo, and a per-stage breakdown so you can see where time goes. Originals are downloaded and cached exactly as `extract` would. A short warmup pass runs first so one-off ONNX session/thread-pool startup cost doesn't skew the numbers. Pair with `hwinfo` when tuning `[inference]` threads or comparing CPU vs GPU.
 
 | Option | Default | Description |
 |---|---|---|
@@ -322,8 +324,8 @@ The faces pass is checkpointed per-photo, so it resumes cleanly after an interru
 
 ### Face recognition
 
-#### `extract`
-Detect faces and compute ensemble embeddings (resumable; interrupt any time). Evicts cached originals afterward unless `storage.keep_originals` is set.
+#### `extract` — *Detect faces*
+Scan synced photos, record every face found, and compute ensemble embeddings (resumable; interrupt any time). Evicts cached originals afterward unless `storage.keep_originals` is set.
 
 | Option | Default | Description |
 |---|---|---|
@@ -331,11 +333,11 @@ Detect faces and compute ensemble embeddings (resumable; interrupt any time). Ev
 | `--photo-id INTEGER` | none | Process a single photo id. |
 | `--space TEXT` | all configured | Limit to one space. |
 
-#### `cluster`
-Cluster all embeddings and cross-reference against Synology persons. Writes a new cluster run. No options.
+#### `cluster` — *Group faces*
+Group all detected faces by person and cross-reference them against Synology persons. Writes a new grouping run. No options.
 
-#### `recluster`
-Re-run clustering from the cached embeddings with parameter overrides. Never hits the NAS.
+#### `recluster` — *Re-group faces*
+Group the faces again from the cached embeddings with parameter overrides. Never hits the NAS.
 
 | Option | Default | Description |
 |---|---|---|
@@ -346,7 +348,7 @@ Generate the static HTML review report.
 
 | Option | Default | Description |
 |---|---|---|
-| `--run-id INTEGER` | latest | Cluster run to report on. |
+| `--run-id INTEGER` | latest | Grouping run to report on. |
 
 #### `web`
 Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports` **and** `--host 0.0.0.0` — the default bind is unreachable from outside the container. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
@@ -403,7 +405,7 @@ The one exception is `merge_named` (joining two already-named people): every suc
 | `--report` | off | Print the audit trail afterward. |
 
 #### `eval holdout`
-Mask a fraction of known labels, recluster, and measure recovery.
+Mask a fraction of known labels, group the faces again, and measure recovery.
 
 | Option | Default | Description |
 |---|---|---|
@@ -440,7 +442,7 @@ Requires a prior `sync --hash` pass to populate the hashes. Each attempt (includ
 These commands manage locally-computed state and crop images. **None of them touch the NAS** (except `regen-crops`, which reads originals but never writes).
 
 #### `reset`
-Clear locally-computed data (faces, embeddings, clusters, and the review queue) plus their crop images, so the pipeline can rebuild from scratch. Useful after tweaking detection/clustering settings: the review UI pools items from every run, so stale suggestions would otherwise linger. Synced NAS metadata is kept unless `--all` is given. **Never touches the NAS.**
+Clear locally-computed data (faces, embeddings, face groups, and the review queue) plus their crop images, so the pipeline can rebuild from scratch. Useful after tweaking face detection/grouping settings: the review UI pools items from every run, so stale suggestions would otherwise linger. Synced NAS metadata is kept unless `--all` is given. **Never touches the NAS.**
 
 | Option | Default | Description |
 |---|---|---|
@@ -451,7 +453,7 @@ Clear locally-computed data (faces, embeddings, clusters, and the review queue) 
 Typical use after changing `[detection]` scores: `synopticon reset` then `synopticon extract && synopticon cluster`.
 
 #### `clear-queue`
-Delete only the **pending** review-queue items so the next `cluster` run re-generates them from scratch. Pending rows regenerate cleanly — crossref re-inserts them, picking up any person names synced since the last run (handy when a face was suggested for a person who was still unnamed on the NAS at cluster time). Approved, applied and rejected rows are the ledger crossref uses to avoid re-surfacing work you've already handled, so this command refuses to touch them; use `reset` if you truly want to rebuild everything. **Never touches the NAS.**
+Delete only the **pending** review-queue items so the next `cluster` run re-generates them from scratch. Pending rows regenerate cleanly — crossref re-inserts them, picking up any person names synced since the last run (handy when a face was suggested for a person who was still unnamed on the NAS when the faces were grouped). Approved, applied and rejected rows are the ledger crossref uses to avoid re-surfacing work you've already handled, so this command refuses to touch them; use `reset` if you truly want to rebuild everything. **Never touches the NAS.**
 
 | Option | Default | Description |
 |---|---|---|
@@ -528,11 +530,11 @@ Everything lives in `config.toml` (see `config.example.toml`) and can be overrid
 - `storage.keep_originals` / `storage.originals_cache_gb` — by default originals are evicted after processing under a 50 GB LRU budget; only ~10–30 KB of crops per face are kept. Set `keep_originals = true` (needs roughly your library's size in free disk) to make future detector re-runs NAS-traffic-free.
 - `inference.device` — `auto` (default), `cpu`, or `cuda`; see [GPU acceleration](#gpu-acceleration). `inference.device_id` selects the CUDA GPU on multi-GPU hosts.
 - `inference.job_threads` / `inference.job_nice` — how much of the machine a job launched from the web GUI may take. By default a job gets `nproc - 1` BLAS/OpenMP threads and runs at niceness 10, which keeps the GUI responsive while it works; see [Jobs and the GUI's responsiveness](#jobs-and-the-guis-responsiveness).
-- `[clustering]` / `[crossref]` — the tuning surface; change and re-run `synopticon recluster --set clustering.edge_threshold=0.47` cheaply.
+- `[clustering]` / `[crossref]` — the face-grouping tuning surface; change and re-run `synopticon recluster --set clustering.edge_threshold=0.47` cheaply.
 
 ### GPU acceleration
 
-Extraction (detection + embedding) is the long pass and runs on CPU by default. It will use an NVIDIA GPU via CUDA when two things are true: a CUDA-capable `onnxruntime-gpu` is installed, and `inference.device` is `auto` (the default) or `cuda`. Run `synopticon hwinfo` to see what's detected — it flags the common case of a GPU being present while only the CPU-only `onnxruntime` is installed.
+Face detection (detect + embed) is the long pass and runs on CPU by default. It will use an NVIDIA GPU via CUDA when two things are true: a CUDA-capable `onnxruntime-gpu` is installed, and `inference.device` is `auto` (the default) or `cuda`. Run `synopticon hwinfo` to see what's detected — it flags the common case of a GPU being present while only the CPU-only `onnxruntime` is installed.
 
 **Requirements:** just a reasonably recent NVIDIA driver — no system CUDA toolkit. The `gpu` extra is `onnxruntime-gpu[cuda,cudnn]` (CUDA 12 line), whose `[cuda,cudnn]` part pulls NVIDIA's CUDA + cuDNN runtime libraries straight from PyPI as wheels; Synopticon calls `onnxruntime.preload_dlls()` so ONNX Runtime finds them. For Docker you additionally need the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host to expose the driver to the container.
 
@@ -609,7 +611,7 @@ Every tool that can change your library is opt-in and leaves an audit trail:
 - The face pipeline is **read-only** toward the NAS through `report`/`review`; only `apply`/`apply-all` write.
 - `apply` is **dry-run by default**; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply), `--apply-merges-named` is separately required for `merge_named` (joining two already-named people destroys a human label — the most dangerous write, so it is never covered by `--apply-merges` and `apply-all` gates it behind its own confirmation), and `--apply-reassigns` is required for reassigns (they alter labels a human can already see in Photos — review these per-item rather than bulk-approving).
 - Only reviewer-**approved** queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`, and a reassign is a single `Person.separate` call that can be reversed by moving the face back.
-- A cluster can propose both a merge of persons A/B and reassigns between them; if the merge is applied first the reassigns become no-ops (the pre-write NAS check skips them).
+- A face group can propose both a merge of persons A/B and reassigns between them; if the merge is applied first the reassigns become no-ops (the pre-write NAS check skips them).
 - `dedupe` follows the same model: **dry-run by default**, `--apply` (plus a confirmation prompt) required to delete, a per-id idempotency check before each deletion, and every attempt audit-logged. Duplicate deletion is not reversible from Synopticon — confirm your DSM's recycle-bin behavior first.
 - [Schedules](#schedules) replay a *saved submission*, not a stored command line: every firing goes back through the same allowlist, parameter whitelist and consent validation a human's click does. Nothing gated behind a typed phrase can be scheduled — the server rejects such a schedule when you try to save it, and the scheduler never supplies a phrase when it fires.
 - [QuickMerger](#quickmerger) is the one GUI surface that writes to the NAS outside `apply`. It is interactive by nature (you act on one person at a time), so it confirms once per session rather than per card — but every write needs an explicit consent flag on the API call, a merge re-reads both people from the NAS first and is **refused** if the merged-away side has a name, and every attempt is audit-logged.

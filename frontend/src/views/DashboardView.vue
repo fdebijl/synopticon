@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Dashboard: stat tiles + a sync→extract→cluster→review→apply strip + an audit
+// Dashboard: stat tiles + a sync→detect→group→review→apply strip + an audit
 // tail, all from /api/stats + /api/audit (the old window.SYN_* server embeds are
 // gone — we fetch on mount instead). Stats are pulled on mount and then only
 // while (or just after) a job runs; the "is a job running" signal comes from the
@@ -76,14 +76,14 @@ const tiles = computed<Tile[]>(() => {
   const ex = s.extract || {}
   if (!ex.models_ready) {
     out.push({
-      label: 'Extracted',
+      label: 'Photos scanned',
       value: '—',
-      hint: { text: ' to enable extraction', linkText: 'Download models', to: '/pipeline' },
+      hint: { text: ' to enable face detection', linkText: 'Download models', to: '/pipeline' },
     })
   } else {
     const pct = ex.coverage != null ? Math.round(ex.coverage * 100) + '% covered' : 'no eligible photos'
     out.push({
-      label: 'Extracted',
+      label: 'Photos scanned',
       value: num(ex.processed) + ' / ' + num(ex.eligible),
       sub: pct,
       to: '/pipeline',
@@ -93,13 +93,13 @@ const tiles = computed<Tile[]>(() => {
   const cl = s.cluster
   if (cl) {
     out.push({
-      label: 'Clusters',
+      label: 'Face groups',
       value: num(cl.clusters),
       sub: 'run #' + cl.run_id + ' · ' + ago(cl.created_at),
       to: '/pipeline',
     })
   } else {
-    out.push({ label: 'Clusters', value: '—', sub: 'not clustered yet', to: '/pipeline' })
+    out.push({ label: 'Face groups', value: '—', sub: 'not grouped yet', to: '/pipeline' })
   }
 
   return out
@@ -180,12 +180,12 @@ const stages = computed<Stage[]>(() => {
       state: synced > 0 ? 'done' : 'pending',
       note: synced > 0 ? num(synced) + ' synced' : 'not started',
     },
-    { label: 'Extract', to: '/pipeline', state: exState, note: exNote },
+    { label: 'Detect faces', to: '/pipeline', state: exState, note: exNote },
     {
-      label: 'Cluster',
+      label: 'Group faces',
       to: '/pipeline',
       state: cl ? 'done' : 'pending',
-      note: cl ? num(cl.clusters) + ' clusters' : 'not started',
+      note: cl ? num(cl.clusters) + ' groups' : 'not started',
     },
     { label: 'Review', to: '/review', state: revState, note: revNote },
     { label: 'Apply', to: '/apply', state: apState, note: apNote },
@@ -237,7 +237,7 @@ watch(
       <h2>No data yet</h2>
       <p class="muted">
         Synopticon has not synced anything from your NAS. Run your first sync to pull the photo
-        library, persons and faces, then extract and cluster.
+        library, persons and faces, then detect and group faces.
       </p>
       <div class="cta-row">
         <RouterLink class="btn btn-action" to="/pipeline">Run your first sync</RouterLink>

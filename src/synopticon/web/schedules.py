@@ -109,8 +109,8 @@ SCHEDULABLE: dict[str, ScheduleForm] = {
     ),
     "extract": ScheduleForm(
         "extract",
-        "Extract faces",
-        "Detect, align and embed faces for photos that have not been processed yet.",
+        "Detect faces",
+        "Scan photos that have not been processed yet and record every face found.",
         fields=(
             _SPACE,
             FormField("limit", "Photo limit", "int", help="0 or empty for no limit."),
@@ -118,13 +118,15 @@ SCHEDULABLE: dict[str, ScheduleForm] = {
     ),
     "cluster": ScheduleForm(
         "cluster",
-        "Cluster + crossref",
-        "Rebuild face clusters and generate review-queue items.",
+        "Group faces",
+        "Group detected faces by person, match them against your Synology people and "
+        "generate review-queue items.",
     ),
     "recluster": ScheduleForm(
         "recluster",
-        "Recluster (cached embeddings)",
-        "Re-run clustering offline from cached embeddings, using the saved config.",
+        "Re-group faces (offline)",
+        "Group the faces again from what is already stored, using the saved config. "
+        "Never touches the NAS.",
     ),
     "regen-crops": ScheduleForm(
         "regen-crops",

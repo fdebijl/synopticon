@@ -12,6 +12,7 @@ import ConfirmDialog from './components/ConfirmDialog.vue'
 import { useAuth } from './stores/auth'
 import { useJobs } from './stores/jobs'
 import { useTheme, type ThemeMode } from './composables/useTheme'
+import { jobLabel } from './utils/jobs'
 
 const route = useRoute()
 const { state: auth, logout } = useAuth()
@@ -26,16 +27,17 @@ const avatar = computed(() => (username.value ?? '?').charAt(0).toUpperCase())
 const themeOpen = ref(false)
 const userOpen = ref(false)
 
-// `sync · sync.faces 99%` — the chip is the only progress indication on pages
+// `Sync · sync.faces 99%` — the chip is the only progress indication on pages
 // that do not host a JobPanel, so it carries the phase and percentage the
 // listing already provides rather than a bare "running".
 const jobChipText = computed(() => {
   const j = jobs.running
   if (!j) return ''
-  if (j.state === 'queued') return `${j.name} queued`
+  const label = jobLabel(j.name)
+  if (j.state === 'queued') return `${label} queued`
   const p = j.progress
-  if (!p?.phase) return `${j.name} running`
-  return p.pct === null ? `${j.name} · ${p.phase}` : `${j.name} · ${p.phase} ${p.pct}%`
+  if (!p?.phase) return `${label} running`
+  return p.pct === null ? `${label} · ${p.phase}` : `${label} · ${p.phase} ${p.pct}%`
 })
 
 function toggleTheme(): void {

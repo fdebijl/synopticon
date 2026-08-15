@@ -9,6 +9,7 @@ import { computed, ref, reactive } from 'vue'
 import JobPanel from '../components/JobPanel.vue'
 import { toast } from '../stores/toasts'
 import { useJobs } from '../stores/jobs'
+import { jobLabel } from '../utils/jobs'
 import type { Job } from '../api/types'
 
 const SPACES: [string, string][] = [
@@ -50,9 +51,9 @@ const CARDS: CardDef[] = [
   },
   {
     cmd: 'extract',
-    title: 'Extract',
+    title: 'Detect faces',
     primary: true,
-    desc: 'Detect, align and embed faces for synced photos.',
+    desc: 'Scan synced photos and record every face found in them.',
     disclosure: 'Options',
     fields: [
       { kind: 'space', param: 'space' },
@@ -62,16 +63,16 @@ const CARDS: CardDef[] = [
   },
   {
     cmd: 'cluster',
-    title: 'Cluster',
+    title: 'Group faces',
     primary: true,
-    desc: 'Build the kNN graph, cluster faces and cross-reference labels.',
+    desc: 'Group the detected faces by person and match them against your Synology people.',
     fields: [],
   },
   {
     cmd: 'recluster',
-    title: 'Recluster',
+    title: 'Re-group faces',
     primary: false,
-    desc: 'Re-run clustering offline with parameter overrides.',
+    desc: 'Group the faces again with different settings. Works offline — no NAS access needed.',
     disclosure: 'Overrides',
     fields: [],
     overrides: true,
@@ -100,7 +101,7 @@ const CARDS: CardDef[] = [
     cmd: 'benchmark',
     title: 'Benchmark',
     primary: false,
-    desc: 'Time the detection/embedding pipeline on a sample.',
+    desc: 'Measure how fast face detection runs on a sample of photos.',
     disclosure: 'Options',
     fields: [
       { kind: 'space', param: 'space' },
@@ -343,7 +344,7 @@ function fmtDuration(m: Job): string {
             <td colspan="4" class="muted">No jobs yet.</td>
           </tr>
           <tr v-for="m in history" :key="m.id">
-            <td class="hist-name">{{ m.name }}</td>
+            <td class="hist-name">{{ jobLabel(m.name) }}</td>
             <td><span class="badge" :class="`state-${m.state}`">{{ m.state }}</span></td>
             <td>{{ fmtDuration(m) }}</td>
             <td><RouterLink :to="`/jobs/${m.id}`">view</RouterLink></td>

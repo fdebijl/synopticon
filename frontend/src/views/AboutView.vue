@@ -89,7 +89,7 @@ onMounted(async () => {
         <h2>Synopticon <span class="muted" v-if="version">v{{ version }}</span></h2>
         <p class="muted">
           Supplements Synology Photos' face recognition: syncs a photo library from a NAS, runs an
-          ensemble face pipeline, clusters faces, cross-references them against Synology's own
+          ensemble face pipeline, groups faces by person, cross-references them against Synology's own
           person labels, and writes approved corrections back.
         </p>
         <div class="cta-row">
