@@ -8,7 +8,13 @@ import pytest
 from synopticon.config import load_settings
 from synopticon.db import store
 from synopticon.pipeline.detect.base import Detection
-from synopticon.pipeline.runner import ExtractStats, pipeline_version, run_extract
+from synopticon.pipeline import runner
+from synopticon.pipeline.runner import (
+    ExtractStats,
+    pipeline_version,
+    run_extract,
+    skip_reason,
+)
 
 
 # --- fakes ----------------------------------------------------------------
@@ -214,3 +220,61 @@ def test_bad_photo_is_skipped_with_error(env):
     assert stats.errors == 1
     assert stats.photos_processed == 0
     assert conn.execute("SELECT COUNT(*) FROM faces").fetchone()[0] == 0
+    assert stats.skip_reasons == {"the downloaded original is missing from the cache": 1}
+
+
+def test_skip_is_logged_with_reason_filename_and_link(env, caplog):
+    conn, settings, _ = env
+    settings.nas.url = "https://nas.example:5001"
+    conn.execute("UPDATE photos SET filename = 'IMG_0001.png' WHERE id = 1")
+    conn.commit()
+
+    def bad_fetch(row):
+        raise OSError("image file is truncated (7 bytes not processed)")
+
+    with caplog.at_level("WARNING", logger="synopticon.pipeline.runner"):
+        run_extract(
+            conn, settings, bad_fetch,
+            detector_factory=lambda: FakeDetector(),
+            ensemble_factory=lambda: FakeEnsemble(),
+        )
+
+    line = caplog.messages[0]
+    assert "skipped photo 1 (IMG_0001.png)" in line
+    assert "the image file is truncated or corrupt" in line
+    assert "OSError: image file is truncated" in line
+    assert "https://nas.example:5001/?launchApp=SYNO.Foto.AppInstance" in line
+    assert "timeline/item/1" in line
+    # ...and a run-level summary so the per-photo lines needn't be scrolled back to.
+    assert any("skipped 1 of 1 photo(s)" in m for m in caplog.messages)
+
+
+@pytest.mark.parametrize(
+    "exc, filename, expected",
+    [
+        (FileNotFoundError("x"), "a.jpg", "the downloaded original is missing from the cache"),
+        (MemoryError(), "a.jpg", "the image is too large to decode safely"),
+        (OSError("No space left on device"), "a.jpg", "the disk is full"),
+        (ConnectionError("reset"), "a.jpg", "the NAS was unreachable while downloading the original"),
+        (ValueError("nope"), "a.jpg", "unexpected error"),
+    ],
+)
+def test_skip_reason_classification(exc, filename, expected):
+    assert skip_reason(exc, filename) == expected
+
+
+def test_skip_reason_names_the_synology_error_code():
+    from synopticon.syno.client import SynoApiError
+
+    reason = skip_reason(SynoApiError(105, "SYNO.Foto.Download", "download"), "a.jpg")
+    assert reason == "downloading the original from the NAS failed (Synology error code 105)"
+
+
+def test_skip_reason_points_at_pillow_heif_for_heic(monkeypatch):
+    from PIL import UnidentifiedImageError
+
+    monkeypatch.setattr(runner, "_HEIF_AVAILABLE", False)
+    assert "pillow-heif" in skip_reason(UnidentifiedImageError("nope"), "IMG.HEIC")
+
+    monkeypatch.setattr(runner, "_HEIF_AVAILABLE", True)
+    assert skip_reason(UnidentifiedImageError("nope"), "IMG.HEIC") == "the file is not a decodable image"

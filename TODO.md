@@ -24,8 +24,6 @@
 
 21. Scheduled jobs should have an indicator that they were ran from a schedule, ideally with a link back to the schedule
 
-22. Extract: print reason for skipping a photo
-
 23. Investigate why jobs sometimes exit with code 9 (might be host oom'ing)
 
 24. Guided onboarding: do an initial sync, initial extract and initial clustering

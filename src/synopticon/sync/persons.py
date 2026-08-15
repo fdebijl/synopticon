@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from synopticon import links
 from synopticon.config import Settings, Space
 from synopticon.db import Connection, store
 from synopticon.syno import foto
@@ -18,15 +19,8 @@ SkipCallback = Callable[[int, "int | None", "str | None"], None]
 
 
 def _item_web_url(settings: Settings, space: Space, photo_id: int) -> str | None:
-    """Synology Photos deep link to a single timeline item, or None if no base URL is set.
-
-    Mirrors review.app._item_url — kept local so the sync layer needn't import the
-    FastAPI review module.
-    """
-    base = (settings.nas.web_url or settings.nas.url or "").strip().rstrip("/")
-    if not base:
-        return None
-    return f"{base}/?launchApp=SYNO.Foto.AppInstance#/{space}_space/timeline/item/{photo_id}"
+    """Synology Photos deep link to a single timeline item, or None if no base URL is set."""
+    return links.item_url(links.syno_web_base(settings), space, photo_id)
 
 
 def sync_persons(

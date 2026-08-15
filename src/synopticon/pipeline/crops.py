@@ -75,7 +75,7 @@ def regen_crops(
     import cv2
 
     from . import align
-    from .runner import _crop_paths, load_image_bgr
+    from .runner import _crop_paths, load_image_bgr, skip_reason
 
     crops_dir = settings.storage.crops_dir
     crops_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +106,12 @@ def regen_crops(
         try:
             img_bgr = load_image_bgr(fetch_original(row))
         except Exception as exc:  # noqa: BLE001 - one unavailable original must not abort
-            log.warning("regen: skipping photo %s (space=%s): %s", pid, space, exc)
+            filename = row["filename"] if "filename" in row.keys() else None
+            log.warning(
+                "regen: skipping photo %s (%s, space=%s): %s [%s: %s]",
+                pid, filename or "unknown file", space,
+                skip_reason(exc, filename), type(exc).__name__, exc,
+            )
             failed += 1
             if progress and (i % 25 == 0 or i == total):
                 progress(i, total)

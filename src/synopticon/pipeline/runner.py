@@ -29,6 +29,7 @@ from ..db import Connection, Row
 
 from ..config import Settings
 from ..db import store
+from ..links import item_url, syno_web_base
 from ..progress import get_emitter
 from . import align, restore
 from .detect.base import Detection
@@ -54,9 +55,13 @@ class ExtractStats:
     disagreements: int = 0
     skipped: int = 0
     errors: int = 0
+    skip_reasons: dict[str, int] = field(default_factory=dict)
 
     def _bump(self, detector: str) -> None:
         self.detector_counts[detector] = self.detector_counts.get(detector, 0) + 1
+
+    def _bump_skip(self, reason: str) -> None:
+        self.skip_reasons[reason] = self.skip_reasons.get(reason, 0) + 1
 
 
 class CompositeDetector:
@@ -96,11 +101,13 @@ class CompositeDetector:
 
 
 _HEIF_REGISTERED = False
+_HEIF_AVAILABLE = False
+_HEIF_SUFFIXES = frozenset({".heic", ".heif", ".hif"})
 
 
 def _ensure_heif() -> None:
     """Register pillow-heif's HEIC/HEIF opener with Pillow (once)."""
-    global _HEIF_REGISTERED
+    global _HEIF_REGISTERED, _HEIF_AVAILABLE
     if _HEIF_REGISTERED:
         return
     try:
@@ -110,6 +117,7 @@ def _ensure_heif() -> None:
         return
     register_heif_opener()
     _HEIF_REGISTERED = True
+    _HEIF_AVAILABLE = True
 
 
 def load_image_bgr(path: Path | str) -> np.ndarray:
@@ -149,6 +157,68 @@ def _fetch_work(
         sql += " LIMIT ?"
         params.append(limit)
     return conn.execute(sql, params).fetchall()
+
+
+UNKNOWN_SKIP_REASON = "unexpected error"
+
+
+def skip_reason(exc: BaseException, filename: str | None = None) -> str:
+    """Plain-language cause for a photo the extractor could not process.
+
+    Matched on exception class *name* and module as much as on type: the runner
+    stays free of `syno`/httpx/PIL imports, and a skip line that only echoes
+    ``str(exc)`` tells a user nothing about which of download, decode or write
+    actually failed.
+    """
+    exc_type = type(exc)
+    name = exc_type.__name__
+    module = exc_type.__module__.split(".")[0]
+    text = str(exc).lower()
+    suffix = Path(filename or "").suffix.lower()
+
+    if name in {"SynoApiError", "SynoAuthError"}:
+        code = getattr(exc, "code", None)
+        detail = f" (Synology error code {code})" if code is not None else ""
+        return f"downloading the original from the NAS failed{detail}"
+    if module == "httpx" or isinstance(exc, (ConnectionError, TimeoutError)):
+        return "the NAS was unreachable while downloading the original"
+    if name in {"SynoVersionError", "SynoError"}:
+        return "downloading the original from the NAS failed"
+    if name == "UnidentifiedImageError":
+        if suffix in _HEIF_SUFFIXES and not _HEIF_AVAILABLE:
+            return f"{suffix} files need HEIC support (install the pillow-heif package)"
+        return "the file is not a decodable image"
+    if name in {"DecompressionBombError", "DecompressionBombWarning"} or isinstance(exc, MemoryError):
+        return "the image is too large to decode safely"
+    if module == "cv2":
+        return "OpenCV could not process the image"
+    if name in {"DatabaseError", "IntegrityError", "OperationalError"}:
+        return "a database error stopped the results from being saved"
+    if isinstance(exc, FileNotFoundError):
+        return "the downloaded original is missing from the cache"
+    if isinstance(exc, OSError):
+        if "no space left" in text:
+            return "the disk is full"
+        if "truncated" in text or "broken data stream" in text:
+            return "the image file is truncated or corrupt"
+        return "reading the original failed"
+    return UNKNOWN_SKIP_REASON
+
+
+def _skip_message(
+    conn: Connection, settings: Settings, space: str, row: Row, reason: str, exc: BaseException
+) -> str:
+    """`skipped photo 42 (IMG_0042.HEIC): <reason> [<exc>] -> <deep link>`."""
+    pid = int(row["id"])
+    filename = row["filename"] if "filename" in row.keys() else None
+    label = f"photo {pid}" + (f" ({filename})" if filename else "")
+    try:
+        url = item_url(syno_web_base(settings), space, store.link_photo_id(conn, space, pid))
+    except Exception:  # noqa: BLE001 - a diagnostic must never raise
+        url = None
+    detail = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    link = f" -> {url}" if url else ""
+    return f"skipped {label} (space={space}): {reason} [{detail}]{link}"
 
 
 def _crop_paths(crops_dir: Path, face_id: int) -> tuple[Path, Path]:
@@ -228,10 +298,24 @@ def run_extract(
             conn.rollback()
             stats.skipped += 1
             stats.errors += 1
-            log.warning("Skipping photo %s (space=%s): %s", row["id"], space, exc)
-            emitter.log("warning", f"skipped photo {row['id']} (space={space}): {exc}", phase="extract")
+            filename = row["filename"] if "filename" in row.keys() else None
+            reason = skip_reason(exc, filename)
+            stats._bump_skip(reason)
+            message = _skip_message(conn, settings, space, row, reason, exc)
+            log.warning("%s", message)
+            log.debug("extract: traceback for photo %s", row["id"], exc_info=exc)
+            emitter.log("warning", message, phase="extract")
         emitter.progress("extract", i + 1, len(rows), space=space)
 
+    if stats.skipped:
+        breakdown = ", ".join(
+            f"{count}x {reason}"
+            for reason, count in sorted(stats.skip_reasons.items(), key=lambda kv: -kv[1])
+        )
+        log.warning(
+            "extract: skipped %d of %d photo(s) in space=%s: %s",
+            stats.skipped, len(rows), space, breakdown,
+        )
     emitter.result(ok=True, stats=asdict(stats))
     return stats
 

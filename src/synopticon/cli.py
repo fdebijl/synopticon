@@ -186,10 +186,9 @@ def _human_bytes(n: int | None) -> str:
 
 def _item_web_url(settings: Settings, space: str, photo_id: int) -> str | None:
     """Synology Photos deep link to one timeline item, or None if no base URL set."""
-    base = (settings.nas.web_url or settings.nas.url or "").strip().rstrip("/")
-    if not base:
-        return None
-    return f"{base}/?launchApp=SYNO.Foto.AppInstance#/{space}_space/timeline/item/{photo_id}"
+    from synopticon.links import item_url, syno_web_base
+
+    return item_url(syno_web_base(settings), space, photo_id)
 
 
 @app.command()

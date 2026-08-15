@@ -30,6 +30,7 @@ from ..db import Connection
 
 from ..config import Settings
 from ..db import store
+from ..links import item_url, person_url, syno_web_base  # noqa: F401 - re-exported
 
 # review_queue.kind values (kept as literals to avoid importing the syno layer;
 # mirrors schema.sql and syno/writeback.py).
@@ -95,32 +96,6 @@ def face_crops(conn: Connection, settings: Settings) -> dict[int, str | None]:
         int(r["face_id"]): to_url(r["crop_path"])
         for r in conn.execute("SELECT face_id, crop_path FROM faces")
     }
-
-
-# --------------------------------------------------------------------------- #
-# Synology Photos deep links
-# --------------------------------------------------------------------------- #
-def syno_web_base(settings: Settings) -> str | None:
-    """Base for Synology Photos web-UI deep links, or None if unconfigured."""
-    base = (settings.nas.web_url or settings.nas.url).strip()
-    return base.rstrip("/") or None
-
-
-def person_url(base: str | None, space: str | None, person_id: Any) -> str | None:
-    """Synology Photos link to a person's page."""
-    if not base or not space or person_id is None:
-        return None
-    return f"{base}/?launchApp=SYNO.Foto.AppInstance#/person/{space}_space/{person_id}"
-
-
-def item_url(base: str | None, space: str | None, photo_id: Any) -> str | None:
-    """Synology Photos link to a single photo (timeline item)."""
-    if not base or not space or photo_id is None:
-        return None
-    return (
-        f"{base}/?launchApp=SYNO.Foto.AppInstance"
-        f"#/{space}_space/timeline/item/{photo_id}"
-    )
 
 
 def _link_map(
