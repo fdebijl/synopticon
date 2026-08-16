@@ -29,3 +29,7 @@
 24. Guided onboarding: do an initial sync, initial extract and initial clustering
 
 27. Add object detection
+
+28. For the job history, add 'Started at' and 'Ended at' columns
+
+29. 'About' button is not visible on mobile

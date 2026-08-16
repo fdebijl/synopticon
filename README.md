@@ -1,19 +1,30 @@
 ![Synopticon logo](assets/Synopticon%20Hero.png)
 
-A quality-first **toolkit for Synology Photos**, consisting of a set of standalone, batch-oriented utilities that run alongside your library and take on the jobs DSM currently does poorly or doesn't do at all. They share one local database (SQLite by default, PostgreSQL optional), one hardened Synology API layer, and one safety model: **read-only toward the NAS until you explicitly want to make a change**, every write is logged and (where possible) reversible, and the operations can be ran on any hardware, even very slow machines - batch runs of hours or days are expected and fully resumable. Synopticon runs anywhere Docker or Python runs (a homelab box is ideal; running on the NAS itself is not recommended), runs great on CPU alone but will use an NVIDIA (CUDA) GPU when one is available.
+Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of standalone utilities that run alongside your library and take on the jobs DSM currently does poorly or not at all. The current toolkit includes enhanced face recognition, robust face grouping, automatic face reassignment, duplicate photo deletion and much more.
 
-## What's in the box
+## Features
 
-- **Enhanced face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' (undocumented) Person API — every write gated behind your explicit review.
-- **Deduplication** — finds duplicate photos (byte-identical *or* visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API (dry-run by default).
+**Enhanced face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' Person API. Writebacks only occur after your explicit review.
 
-Both build on the same foundation, so new tools slot in without new plumbing: a resumable NAS sync into a local database, a rate-limited API client that discovers endpoint versions at runtime, and a dry-run-first write path.
+Image placeholder
+
+**Deduplication** — finds duplicate photos (byte-identical, or visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API.
+
+Image placeholder
+
+- **QuickMerger** - Quickly work through unnamed faces in Synology Photos through an ergonomic merge interface, perfect for getting the 
+
+Image placeholder
+
+- **Scheduled Runs** - After the initial setup, schedule synchronization with the NAS, face detection and face grouping without having to touch Synopticon. Just come back every now and then to review the groups.
+
+Image placeholder
 
 ## How it works
 
 ### The face-recognition pipeline
 
-The pipeline runs in a fixed order, each stage consuming the previous stage's output from the local database:
+The pipeline runs in a fixed order, with each stage consuming the previous stage's output:
 
 ```
 sync  →  extract  →  cluster  →  report  →  review  →  apply
@@ -22,198 +33,42 @@ sync  →  extract  →  cluster  →  report  →  review  →  apply
 └──────── read-only ────────────────────────┘          └─ gated write ─┘
 ```
 
-The web GUI calls these stages by what they do — **Detect faces** (`extract`) and **Group faces** (`cluster`) — while the CLI command names stay as above.
+(`recluster` and `eval` are side-loops off `cluster`. They group the faces again from the cached embeddings with different parameters and never touch the NAS - useful for benchmarking and testing the best parameters for your system)
 
-`recluster` and `eval` are side-loops off `cluster` — they group the faces again from the cached embeddings with different parameters and never touch the NAS.
-
-1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels become ground truth.
-2. **`extract`** (*Detect faces*) — downloads originals (streamed; only small face crops are kept, originals evicted under a disk budget), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into the local database. Interrupt any time; it resumes.
-3. **`cluster`** (*Group faces*) — builds an exact k-NN similarity graph over all faces, groups them (Chinese Whispers by default), and maps each group onto a Synology person by majority vote. Produces proposals: *new face assignments*, *wrong-label corrections* (a face Synology tagged as one person that clearly belongs to another), *merge candidates*, and *new people*.
+1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels are the base for Synopticon's face grouping.
+2. **`extract`** (*Detect faces*) — downloads originals (the originals are not kept on disk to save on space, only small face crops are kept), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into the database. Resumable per photo, so you can run it over multiple hours or days to do the initial catchup run.
+3. **`cluster`** (*Group faces*) — builds an exact k-NN similarity graph over all faces, groups them (Chinese Whispers by default), and maps each group onto a Synology person by majority vote. Produces proposals for new face assignments, wrong-label corrections (a face Synology tagged as one person that clearly belongs to another), merge candidates, and new people.
 4. **`report` / `review`** — a static HTML report and an interactive web UI to approve or reject each proposal. Nothing is written until you approve it.
 5. **`apply`** — pushes approved assignments back via the `add_face` API (works even on photos Synology found no face in). Dry-run by default; merges require a second explicit flag; every write is audit-logged and assignments are individually reversible.
 6. **`recluster` / `eval`** — retune thresholds from the embedding cache (no re-detection, no NAS traffic) and measure quality by masking known labels and checking recovery.
 
 ### Deduplication
 
-`dedupe` is independent of the face pipeline. Run `sync --hash` once to store a sha256 and a 64-bit perceptual hash for every original, then `dedupe` groups byte-identical (`--exact`) and/or visually near-identical (`--visual`) photos, keeps the best copy of each group (highest resolution, then largest file), and deletes the rest through Synology's background-task API. Like `apply`, it is **dry-run by default**, prints a Synology Photos deep link for every photo it would touch, and audit-logs every deletion.
+`dedupe` is independent of the face pipeline. Run `sync --hash` at least once to store a sha256 and a 64-bit perceptual hash for every original, then `dedupe` groups byte-identical (`--exact`) and/or visually near-identical (`--visual`) photos. It keeps the best copy of each group (highest resolution, then largest file), and deletes the rest through Synology's background-task API. Like `apply`, it is **dry-run by default**, prints a Synology Photos deep link for every photo it would touch, and audit-logs every deletion.
 
-## Quickstart (Docker)
+## Quickstart - Web GUI
 
-```bash
-git clone https://github.com/fdebijl/synopticon && cd synopticon
-mkdir -p data models
-cp config.example.toml data/config.toml      # edit: set [nas] url
-export SYNOPTICON_NAS__URL=https://your-nas.example.com
-export SYNOPTICON_NAS__ACCOUNT=photos-bot     # a dedicated NAS user is recommended
-export SYNOPTICON_NAS__PASSWORD=...
+Running `synopticon web`, either directly from the repo or inside a Docker container, serves a full browser GUI that handles everything Synopticon can do: first-run setup, editing your config, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections. It's the recommended way to drive Synopticon day to day, but the CLI is always there for scripting and headless runs.
 
-docker compose build                          # or skip: see Docker images below to pull instead
-docker compose run synopticon models download
-docker compose run synopticon sync
-docker compose run synopticon extract          # the long pass; resumable, re-runnable (see GPU acceleration below)
-docker compose run synopticon cluster
-docker compose run synopticon report           # static HTML in ./data/report/<run>/
-docker compose run --service-ports synopticon web --host 0.0.0.0   # GUI at http://127.0.0.1:8686 (review lives at /review)
-docker compose run synopticon apply            # dry-run; add --apply to write
-```
-
-> `web` binds `127.0.0.1` by default, which inside a container means the container's *own* loopback — unreachable from the host however you publish the port. `--host 0.0.0.0` binds all container interfaces; the compose file still only publishes to `127.0.0.1:8686` on the host, so it stays off your network.
-
-Deduplication is a separate, shorter flow off the same `sync`:
+The GUI is a Vue 3 single-page app served by the backend. For hosting the GUI, Docker is the recommended path. The image ships the frontend prebuilt, so you don't need Node or any of the other deps on the host:
 
 ```bash
-docker compose run synopticon sync --hash       # one-time: hash every original (slow, resumable)
-docker compose run synopticon dedupe --exact     # dry-run; add --apply to delete
+docker compose run --service-ports synopticon web --host 0.0.0.0
 ```
 
-**Where state lives:** everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
+Once the container is up, point your browser http://127.0.0.1:8686 and follow the setup guide.
 
-Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12). The browser GUI additionally needs the frontend built once — `cd frontend && npm ci && npm run build` (Node 22+); see [Web GUI](#web-gui). The CLI itself needs no Node.
+Note: `--host 0.0.0.0` is required in a container: the `127.0.0.1` default binds the container's own loopback, which no published port can reach. The host-side binding stays on `127.0.0.1` either way — see [Docker images](#docker-images) for the plain `docker run` form.
 
-**Prefer a GUI?** `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
-
-### Docker images
-
-Prebuilt images are published to Docker Hub at [`fdebijl/synopticon`](https://hub.docker.com/r/fdebijl/synopticon), so you can skip `docker compose build` entirely. **One repository holds both compute variants; the tag picks which** — there is no separate `-gpu` repository.
-
-| Tag | Variant | Moves? | Use it for |
-|---|---|---|---|
-| `latest` | CPU | on each release | Trying it out. `latest` is the CPU build deliberately — it's the variant that runs anywhere. |
-| `cpu` | CPU | on each release | Same image as `latest`, but explicit. Prefer this in a compose file so the variant is legible. |
-| `gpu` | CUDA | on each release | NVIDIA hosts. Needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). |
-| `0.1.0`, `0.1.0-cpu` | CPU | never | Pinning to an exact release. |
-| `0.1.0-gpu` | CUDA | never | Pinning to an exact release. |
-| `0.1`, `0.1-cpu`, `0.1-gpu` | both | tracks patches | Auto-picking up `0.1.x` fixes without jumping a minor. |
-| `sha-<short>-cpu`, `sha-<short>-gpu` | both | never | Reproducing one exact commit; also what unreleased manual builds publish. |
-
-**Which variant?** Take `cpu` unless you have an NVIDIA GPU *and* the Container Toolkit installed. The GPU image is roughly four times larger (~3.5 GB vs ~850 MB) because it carries NVIDIA's CUDA and cuDNN runtime as PyPI wheels, and it buys you nothing without a driver to talk to. Everything except `extract` is unaffected by the choice — see [GPU acceleration](#gpu-acceleration) for what actually speeds up.
-
-**Pinning.** `latest`, `cpu` and `gpu` are moving tags: a `docker pull` can change what you're running. For anything unattended, pin to a full version (`0.1.0-cpu`) or a digest.
-
-Both variants are `linux/amd64` only. The GPU one has no arm64 build because NVIDIA ships no arm64 CUDA wheels.
-
-**Running an image directly.** The entrypoint is `synopticon`, so any [CLI command](#cli-reference) goes straight on the end and the two volumes are the same `/data` and `/models` compose mounts:
+If you'd rather run it locally, you'll have to build the SPA once (with Node 22+), then the same `uv run synopticon web` to serve it up:
 
 ```bash
-docker pull fdebijl/synopticon:cpu
-
-docker run --rm \
-  -v "$PWD/data:/data" -v "$PWD/models:/models" \
-  -e SYNOPTICON_NAS__URL=https://your-nas.example.com \
-  -e SYNOPTICON_NAS__ACCOUNT=photos-bot \
-  -e SYNOPTICON_NAS__PASSWORD=... \
-  fdebijl/synopticon:cpu sync
-```
-
-The GUI additionally needs a published port and `--host 0.0.0.0` (see the note above):
-
-```bash
-docker run --rm -p 127.0.0.1:8686:8686 \
-  -v "$PWD/data:/data" -v "$PWD/models:/models" \
-  fdebijl/synopticon:cpu web --host 0.0.0.0
-```
-
-On a GPU host, swap the tag and add `--gpus all`:
-
-```bash
-docker run --rm --gpus all \
-  -v "$PWD/data:/data" -v "$PWD/models:/models" \
-  fdebijl/synopticon:gpu extract
-```
-
-**Using them with compose.** The bundled `docker-compose.yml` builds from source. To pull instead, drop the `build:` block and name a tag — `docker-compose.override.yml` does this without touching the tracked file:
-
-```yaml
-services:
-  synopticon:
-    image: fdebijl/synopticon:cpu
-    build: !reset null
-  synopticon-gpu:
-    image: fdebijl/synopticon:gpu
-    build: !reset null
-```
-
-**Building them yourself** stays fully supported — the images are just CI output of the same `docker/Dockerfile`, which has one target per variant:
-
-```bash
-docker build -f docker/Dockerfile --target cpu -t synopticon:cpu .
-docker build -f docker/Dockerfile --target gpu --build-arg ORT_EXTRA=gpu -t synopticon:gpu .
-```
-
-### Healthchecks
-
-The image ships no `HEALTHCHECK` of its own — the same entrypoint serves both the long-running `web` mode and one-shot commands like `sync`, and a probe attached to the latter would just report them unhealthy. Add one on the service when you run `web` as a managed service (Swarm, Portainer, `docker compose up`). **Probe `/api/health`**, which answers 200 unauthenticated and is deliberately I/O-free — no database, no filesystem, no NAS:
-
-```yaml
-healthcheck:
-  # The slim image has no curl; use the bundled python.
-  test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8686/api/health', timeout=5).status==200 else 1)"]
-  interval: 30s
-  timeout: 10s
-  retries: 5
-  start_period: 60s
-```
-
-Two things to get right, both of which otherwise bite during a long `extract`:
-
-- **Probe `/api/health`, not `/api/auth/me` or `/api/stats`.** Those two read the database. A running job writes crops and commits per photo to the same volume, so on a slow or network-backed `/data` every DB-touching handler queues on it — a probe pointed at one of them times out while the server is perfectly alive. `/api/health` is answered before any of that machinery and cannot be starved by a job.
-- **Give it slack.** An orchestrator restarts an unhealthy task, and a restart mid-`extract` throws away the current photo's work (the run itself resumes — every phase is resumable by construction — but you lose the container). `retries: 5` at a 30 s interval tolerates a 2½-minute blip; the pipeline's slowest single step is model load at job start, which `start_period` should cover.
-
-Under a CPU quota (`--cpus`, Swarm's `--limit-cpu`), thread pools are sized from the cgroup, not the host's core count, so a 2-core container gets a 2-thread job rather than a 32-thread one. `inference.job_threads` and `inference.job_nice` tune this further — see [Configuration](#configuration).
-
-## Web GUI
-
-`synopticon web` serves a full browser GUI over the whole lifecycle — first-run setup, editing `config.toml`, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections — styled to sit comfortably next to Synology Photos. It's the recommended way to drive Synopticon day to day; the CLI stays fully supported for scripting and headless runs.
-
-The GUI is a Vue 3 single-page app served by the backend. **Docker is the recommended path — the image ships the frontend prebuilt, no Node needed on the host:**
-
-```bash
-docker compose run --service-ports synopticon web --host 0.0.0.0   # http://127.0.0.1:8686
-```
-
-`--host 0.0.0.0` is required in a container: the `127.0.0.1` default binds the container's own loopback, which no published port can reach. The host-side binding stays on `127.0.0.1` either way — see [Docker images](#docker-images) for the plain `docker run` form.
-
-From a source checkout you build the SPA once (Node 22+), then the same `uv run synopticon web` serves it:
-
-```bash
-uv sync --extra cpu --extra review --extra faiss   # backend GUI deps (fastapi, uvicorn, tomlkit)
+uv sync --extra cpu --extra review --extra faiss   # backend GUI deps (fastapi, uvicorn, tomlkit) - use --extra gpu instead if you have a supported GPU
 cd frontend && npm ci && npm run build             # builds the SPA into src/synopticon/web/dist (Node 22+)
 cd .. && uv run synopticon web                     # http://127.0.0.1:8686
 ```
 
-If you start `synopticon web` without a built frontend it exits with instructions rather than serving a blank page — run the `npm run build` step above (or use Docker).
-
-**Contributing to the GUI?** Run the two dev servers side by side: `uv run synopticon web` (backend on :8686) and, in another terminal, `cd frontend && npm run dev` (Vite on :5173, hot-reload). Vite proxies `/api` and `/crops` to the backend, so open the app at `http://127.0.0.1:5173` and the session cookie works same-origin. The built assets are gitignored — never commit `src/synopticon/web/dist`.
-
-| Option | Default | Description |
-|---|---|---|
-| `--host TEXT` | `127.0.0.1` | Bind address. Keep it on loopback and put a reverse proxy in front for anything but local access (see [Reverse proxy / TLS](#reverse-proxy--tls)). |
-| `--port INTEGER` | `8686` | Bind port. |
-
-It serves a **Dashboard** (library stats, a sync→detect→group→review→apply status strip, recent write activity), **Pipeline** (run any command with a live job panel + history), **Review** (the approve/reject queue with the same keyboard flow as the static report, in a switchable **Grid** or **Focus** layout — Focus shows one large card plus a carousel of neighbouring items, with ←/→ to navigate; the choice persists in `localStorage` and as `?view=focus`), **Apply** (dry-run preview then consent-gated writes), **Utilities** (tools that act on the NAS library itself: **QuickMerger** and photo deduplication), **Schedules** (put jobs on a cron timer), **Maintenance** (the destructive local-state housekeeping commands behind typed-phrase confirmations), **Settings** (edit every `config.toml` section, manage API keys, change your password), and **About** (version, pipeline version, environment details ready to paste into a bug report, and links to the GitHub repository). All the safety gates from the CLI are preserved: the GUI never bulk-applies named↔named merges without a typed phrase and never runs `apply-all`.
-
-### First-run setup wizard
-
-On a fresh install the GUI redirects to a setup wizard, resumable at each step:
-
-1. **Account** — create the single admin username/password (first boot only; there is no default login).
-2. **NAS** — enter your Synology URL, account, password, and optional OTP; a live *Test connection* runs the same read-only probe as `synopticon check` and stores the 2FA device token so later logins skip the OTP. Saving writes the credentials into `config.toml`.
-3. **Storage** — confirm the data/model directories are writable and check free disk.
-4. **Models** — download and verify the model weights (a job with live progress). Two embedders, **AdaFace** and **MagFace**, can't be downloaded automatically (their weights aren't redistributed) — export them manually first (see [Models](#models)). If they're missing, the step surfaces which models still need exporting and offers **Continue anyway**: the first sync works without any models, but running `extract` later requires all five.
-5. **First sync** — kick off an initial `sync` (skippable), then hand off to the dashboard.
-
-### QuickMerger
-
-**Utilities → QuickMerger** works through the backlog of people Synology detected but never got a name — the tedious part of curating a Photos library, keyboard-first and one card at a time. Load the list (it walks the whole People list on the NAS, including the long tail the default view hides), then for each person:
-
-- **type a name + Enter** — names that person (`Browse.Person.set`);
-- **type a few letters, ↑/↓ to pick a suggestion, Enter** — merges this person into the one you picked, keeping their name (`Browse.Person.merge`). The preview pane shows both faces before you commit;
-- **type `11`** (or click **Hide**) — hides the person, for the false positives Synology finds in wallpaper and photo frames;
-- **empty Enter / Skip / Skip 10 / Skip 100 / Previous** — move on without writing anything.
-
-These are direct NAS writes, not review-queue items, so the page asks for one confirmation before its first write of a session and then stays out of the way. Naming and hiding are reversible; a merge is not. The server refuses to merge a person that has a name on the NAS (re-checked immediately before the write), so a named↔named merge — the one write that destroys a human label — is unreachable from here; that path stays in the review queue behind its typed phrase. Every write lands in the audit log as `quickmerger.*`.
-
-QuickMerger is a port of the `har/quickmerger.js` userscript, which remains usable standalone against Synology Photos itself.
+For working on the UI, run the two dev servers side by side: `uv run synopticon web` (backend on :8686) and, in another terminal, `cd frontend && npm run dev` (Vite on :5173, hot-reload). Vite proxies `/api` and `/crops` to the backend, so open the app at `http://127.0.0.1:5173` and the session cookie works same-origin.
 
 ### Schedules
 
@@ -254,28 +109,115 @@ photos.example.com {
 }
 ```
 
-### Structured progress events
+## Quickstart - Docker
 
-Every command can emit machine-readable progress. Set `SYNOPTICON_PROGRESS_FILE=<path>` and each run appends newline-delimited JSON events to that file (unset → no-op; terminal output is byte-identical either way). This is how the GUI's job runner tracks live progress, and it's equally usable from your own tooling. The v1 schema is one JSON object per line, consumers ignoring unknown fields:
+Running docker locally is perfect if you don't have a separate Docker box to run the container on, or only wish to use the tools in Synopticon intermittently.
 
-```jsonl
-{"v":1,"ts":1699999999.1,"event":"phase","phase":"extract"}
-{"v":1,"ts":1699999999.2,"event":"progress","phase":"extract","done":842,"total":12290}
-{"v":1,"ts":1699999999.3,"event":"log","level":"warning","message":"skipped photo 123"}
-{"v":1,"ts":1699999999.4,"event":"result","ok":true,"stats":{"photos_processed":412}}
+```bash
+git clone https://github.com/fdebijl/synopticon && cd synopticon
+mkdir -p data models
+cp config.example.toml data/config.toml      # edit: set [nas] url
+export SYNOPTICON_NAS__URL=https://your-nas.example.com
+export SYNOPTICON_NAS__ACCOUNT=photos-bot     # a dedicated NAS user is recommended
+export SYNOPTICON_NAS__PASSWORD=...
+
+docker compose build                          # or skip: see Docker images below to pull instead
+docker compose run synopticon models download
+docker compose run synopticon sync
+docker compose run synopticon extract          # the long pass; resumable, re-runnable (see GPU acceleration below)
+docker compose run synopticon cluster
+docker compose run synopticon report           # static HTML in ./data/report/<run>/
+docker compose run --service-ports synopticon web --host 0.0.0.0   # GUI at http://127.0.0.1:8686 (review lives at /review)
+docker compose run synopticon apply            # dry-run; add --apply to write
 ```
 
-The process **exit code is authoritative** for success/failure; the `result`/`error` events are advisory niceties.
+> `web` binds `127.0.0.1` by default, which inside a container means the container's *own* loopback — unreachable from the host however you publish the port. `--host 0.0.0.0` binds all container interfaces; the compose file still only publishes to `127.0.0.1:8686` on the host, so it stays off your network.
 
-### Jobs and the GUI's responsiveness
+Deduplication is a separate, shorter flow off the same `sync`:
 
-A job launched from the GUI is a subprocess sharing the machine with the single-process web server, so it is deliberately constrained: it gets `nproc - 1` BLAS/OpenMP threads (`OMP_NUM_THREADS` and friends) and runs at niceness 10. Both are configurable via `inference.job_threads` and `inference.job_nice`; a thread variable you export yourself always wins, and `job_threads = 0` leaves the environment untouched.
+```bash
+docker compose run synopticon sync --hash       # one-time: hash every original (slow, resumable)
+docker compose run synopticon dedupe --exact     # dry-run; add --apply to delete
+```
 
-Without this, the numeric stacks size their pools to the whole machine and busy-spin between calls — a clustering run puts a hot thread on every core, and the web server then needs tens of seconds of wall-clock to do a millisecond of work. The symptom is distinctive and worth recognising: **unrelated requests all taking 30–90 s and completing at the same instant**, while the server itself looks healthy. If you see that, check the `slow request:` / `event loop stalled` lines in the server log — each carries a CPU/IO pressure snapshot (`cpu stall 84%, io stall 3%, load 15.9/16`) that distinguishes "this box is oversubscribed" from a problem inside the app.
+**Where state lives:** everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
+
+Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12). The browser GUI additionally needs the frontend built once — `cd frontend && npm ci && npm run build` (Node 22+); see [Web GUI](#web-gui). The CLI itself needs no Node.
+
+**Prefer a GUI?** `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
+
+### Docker images
+
+Prebuilt images are published to Docker Hub at [`fdebijl/synopticon`](https://hub.docker.com/r/fdebijl/synopticon), so you can skip `docker compose build` entirely. You can pick from two tags: `cpu` and `gpu`. If you have an NVIDIA GPU, it's highly recommend to use the `gpu` image to drastically speed up extraction. See [GPU acceleration](#gpu-acceleration) for further details.
+
+| Tag | Variant | Moves? | Use it for |
+|---|---|---|---|
+| `latest` | CPU | on each release | Trying it out. `latest` is the CPU build deliberately — it's the variant that runs anywhere. |
+| `cpu` | CPU | on each release | Same image as `latest`, but explicit. Prefer this in a compose file so the variant is legible. |
+| `gpu` | CUDA | on each release | NVIDIA hosts. Needs the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). |
+| `0.1.0`, `0.1.0-cpu` | CPU | never | Pinning to an exact release. |
+| `0.1.0-gpu` | CUDA | never | Pinning to an exact release. |
+| `0.1`, `0.1-cpu`, `0.1-gpu` | both | tracks patches | Auto-picking up `0.1.x` fixes without jumping a minor. |
+| `sha-<short>-cpu`, `sha-<short>-gpu` | both | never | Reproducing one exact commit; also what unreleased manual builds publish. |
+
+```bash
+docker pull fdebijl/synopticon:cpu
+
+docker run --rm \
+  -v "$PWD/data:/data" -v "$PWD/models:/models" \
+  -e SYNOPTICON_NAS__URL=https://your-nas.example.com \
+  -e SYNOPTICON_NAS__ACCOUNT=photos-bot \
+  -e SYNOPTICON_NAS__PASSWORD=... \
+  fdebijl/synopticon:cpu sync
+```
+
+The GUI additionally needs a published port and `--host 0.0.0.0`:
+
+```bash
+docker run --rm -p 127.0.0.1:8686:8686 \
+  -v "$PWD/data:/data" -v "$PWD/models:/models" \
+  fdebijl/synopticon:cpu web --host 0.0.0.0
+```
+
+On a GPU host, swap the tag and add `--gpus all`:
+
+```bash
+docker run --rm --gpus all \
+  -v "$PWD/data:/data" -v "$PWD/models:/models" \
+  fdebijl/synopticon:gpu extract
+```
+
+**Using official images with compose.** The bundled `docker-compose.yml` builds from source. To pull instead, drop the `build:` block and name a tag. You can optionally add a `docker-compose.override.yml` to do this without touching docker-compose.yml:
+
+```yaml
+services:
+  synopticon:
+    image: fdebijl/synopticon:cpu
+    build: !reset null
+  synopticon-gpu:
+    image: fdebijl/synopticon:gpu
+    build: !reset null
+```
+
+### Healthchecks
+
+The image ships without a built-in `HEALTHCHECK`. Add one on the service when you run `web` as a managed service (Swarm, Portainer, `docker compose up`):
+
+```yaml
+healthcheck:
+  # The slim image has no curl; use the bundled python.
+  test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8686/api/health', timeout=5).status==200 else 1)"]
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+```
 
 ## CLI reference
 
-All commands are subcommands of `synopticon` (Docker: `docker compose run synopticon <command>`). Every command reads `config.toml`; `--space` defaults to all spaces listed in `nas.spaces`. Everything is read-only toward the NAS except `apply`, `apply-all`, and `dedupe --apply`, which are each gated behind an explicit flag.
+All commands are subcommands of `synopticon`: 
+- Docker: `docker compose run synopticon <command>`
+- Local: `uv run synopticon <command>`
 
 ### Setup & diagnostics
 
@@ -283,7 +225,7 @@ All commands are subcommands of `synopticon` (Docker: `docker compose run synopt
 Verify NAS connectivity and credentials (read-only, fast). No options.
 
 #### `hwinfo`
-Print hardware/environment stats relevant to face detection and grouping — CPU model and core count, RAM, ONNX Runtime version and available execution providers (i.e. whether a GPU is usable), detected NVIDIA GPUs, key library versions, which model weights are present, and disk space. Touches nothing and reaches no network; **include its output when filing a bug report.** No options.
+Print hardware/environment stats relevant to face detection and grouping — CPU model and core count, RAM, ONNX Runtime version and available execution providers (i.e. whether a GPU is usable), detected NVIDIA GPUs, key library versions, which model weights are present, and disk space. Touches nothing and reaches no network; include its output when filing a bug report. No options.
 
 #### `models download`
 Download and verify model weights into `storage.models_dir`.
@@ -620,24 +562,6 @@ Every tool that can change your library is opt-in and leaves an audit trail:
 ## Compatibility
 
 Works against any NAS running Synology Photos (DSM 7.x). API versions are discovered at runtime (`SYNO.API.Info`), not hardcoded — the Person/Item endpoints vary across DSM releases. The write-back chain (`Person.add_face` v3 + `Upload.Face`) and the deletion chain (`BackgroundTask.File.delete`) were captured against a current DSM; if your DSM predates them, everything read-only still works and the write commands will fail loudly rather than corrupt anything.
-
-## Development
-
-```bash
-uv sync --extra cpu --extra review --extra faiss   # or --extra gpu instead of cpu
-uv run pytest            # unit tests; fully mocked, never touch a NAS
-cd frontend && npm ci && npm run build   # GUI only: build the Vue SPA (Node 22+); npm run dev for hot-reload
-
-# PostgreSQL backend tests; skipped unless a throwaway server is pointed at
-SYNOPTICON_TEST_POSTGRES_DSN=postgresql://user@127.0.0.1:5432/synopticon_test \
-    uv run pytest tests/unit/test_postgres_backend.py -q
-```
-
-(`--all-extras` no longer works: the `cpu`/`gpu` extras are mutually exclusive, so pick one explicitly.) The Python test suite needs no Node — the frontend build (typechecked by `vue-tsc`) runs as its own CI job. See [Web GUI](#web-gui) for the two-server dev loop.
-
-Layout: `syno/` (API client + write-back) · `sync/` (extraction/caching + content hashing) · `pipeline/` (detect/align/embed) · `cluster/` (graph, Chinese Whispers, cross-reference) · `dedupe.py` (hash-based duplicate detection) · `eval/` (hold-out tuning) · `review/` (report + UI). The `cluster/` and `dedupe` layers deliberately import nothing from `syno/`/`pipeline/` — clustering and duplicate *detection* can never touch the network; only the write-back halves do.
-
-Licensed AGPL-3.0-or-later (the optional YOLOv8-face detector is AGPL; model weights have their own licenses and are never redistributed here).
 
 ## LLM Disclaimer
 Parts of this codebase were created by a large language model, in particular models provided by Anthropic.
