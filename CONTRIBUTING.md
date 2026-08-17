@@ -2,7 +2,7 @@
 This guide lays out how to contribute to Synopticon. Contributions made using LLM's are welcome, as are fully human-coded contributions. Features maybe merged at the discretion of the maintainers.
 
 ## Requirements
-- Python v3.11 <> v3.13
+- Python v3.11-3.12
 - Node v22+
 
 ## Development

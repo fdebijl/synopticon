@@ -3,7 +3,7 @@
 Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of standalone utilities that run over your library and take on the jobs DSM currently does poorly or not at all. The current toolkit includes enhanced face recognition, robust face grouping, automatic face reassignment, duplicate photo deletion and much more.
 
 **Enhanced face recognition**  
- Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' Person API. Writebacks only occur after your explicit review.
+ Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a cutting-edge face detection pipeline over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' Person API. Writebacks only occur after your explicit review.
 
 ![](./assets/pretty_screenshots/review.png)
 
@@ -23,7 +23,7 @@ After the initial setup, schedule synchronization with the NAS, face detection a
 ## Quickstart
 
 Install the requirements:
-- Python v3.11-3.13
+- Python v3.11-3.12
 - Node v22+
 
 1. Clone the repo and setup directory structure
@@ -31,22 +31,17 @@ Install the requirements:
 git clone https://github.com/fdebijl/synopticon && cd synopticon && mkdir -p data models && cp config.example.toml data/config.toml
 ```
 
-2. Install dependencies
+2. Install dependencies and build the web GUI
 ```bash
-uv run sync --extra cpu --extra review --extra faiss && cd frontend && npm install
+uv sync --extra cpu --extra review --extra faiss && cd frontend && npm ci && npm run build && cd ..
 ```
 
-3. Build the web GUI
-```bash
-npm run build && cd ..
-```
-
-4. Run the web GUI
+3. Run the web GUI
 ```bash
 uv run synopticon web
 ```
 
-5. Point your browser to http://localhost:8686
+4. Point your browser to http://localhost:8686
 
 This spins up the web GUI, which will walk you through the initial setup for Synopticon. This is a great way to play around with all the features of Synopticon, but for long-term deployments you probably want to run it locally using the CLI, or spin up a persistent Docker container. See the chapters below for an outline of how to do just that.
 
