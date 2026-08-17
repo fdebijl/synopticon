@@ -4,47 +4,24 @@ Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of
 
 ## Features
 
-**Enhanced face recognition** — Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' Person API. Writebacks only occur after your explicit review.
+**Enhanced face recognition**  
+ Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' Person API. Writebacks only occur after your explicit review.
 
-Image placeholder
+![](./assets/pretty_screenshots/review.png)
 
-**Deduplication** — finds duplicate photos (byte-identical, or visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API.
 
-Image placeholder
+**QuickMerger**  
+Quickly work through unnamed faces in Synology Photos through an ergonomic merge interface, perfect for giving the initial set of faces a name to start working with inside Synopticon.
 
-- **QuickMerger** - Quickly work through unnamed faces in Synology Photos through an ergonomic merge interface, perfect for getting the 
+**Deduplication**  
+finds duplicate photos (byte-identical, or visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API.
 
-Image placeholder
+![](./assets/pretty_screenshots/quickmerge_dedupe.png)
 
-- **Scheduled Runs** - After the initial setup, schedule synchronization with the NAS, face detection and face grouping without having to touch Synopticon. Just come back every now and then to review the groups.
+**Scheduled Runs**  
+After the initial setup, schedule synchronization with the NAS, face detection and face grouping without having to touch Synopticon. Just come back every now and then to review the groups.
 
-Image placeholder
-
-## How it works
-
-### The face-recognition pipeline
-
-The pipeline runs in a fixed order, with each stage consuming the previous stage's output:
-
-```
-sync  →  extract  →  cluster  →  report  →  review  →  apply
-(NAS→db) (detect     (group      (static    (approve/  (write
-          faces)      faces)     HTML)      reject UI) back to NAS)
-└──────── read-only ────────────────────────┘          └─ gated write ─┘
-```
-
-(`recluster` and `eval` are side-loops off `cluster`. They group the faces again from the cached embeddings with different parameters and never touch the NAS - useful for benchmarking and testing the best parameters for your system)
-
-1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels are the base for Synopticon's face grouping.
-2. **`extract`** (*Detect faces*) — downloads originals (the originals are not kept on disk to save on space, only small face crops are kept), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into the database. Resumable per photo, so you can run it over multiple hours or days to do the initial catchup run.
-3. **`cluster`** (*Group faces*) — builds an exact k-NN similarity graph over all faces, groups them (Chinese Whispers by default), and maps each group onto a Synology person by majority vote. Produces proposals for new face assignments, wrong-label corrections (a face Synology tagged as one person that clearly belongs to another), merge candidates, and new people.
-4. **`report` / `review`** — a static HTML report and an interactive web UI to approve or reject each proposal. Nothing is written until you approve it.
-5. **`apply`** — pushes approved assignments back via the `add_face` API (works even on photos Synology found no face in). Dry-run by default; merges require a second explicit flag; every write is audit-logged and assignments are individually reversible.
-6. **`recluster` / `eval`** — retune thresholds from the embedding cache (no re-detection, no NAS traffic) and measure quality by masking known labels and checking recovery.
-
-### Deduplication
-
-`dedupe` is independent of the face pipeline. Run `sync --hash` at least once to store a sha256 and a 64-bit perceptual hash for every original, then `dedupe` groups byte-identical (`--exact`) and/or visually near-identical (`--visual`) photos. It keeps the best copy of each group (highest resolution, then largest file), and deletes the rest through Synology's background-task API. Like `apply`, it is **dry-run by default**, prints a Synology Photos deep link for every photo it would touch, and audit-logs every deletion.
+![](./assets/pretty_screenshots/scheduler.png)
 
 ## Quickstart - Web GUI
 
@@ -84,16 +61,16 @@ minute  hour  day-of-month  month  day-of-week
 Ranges, lists, steps (`*/15`, `1-5`, `0,30`), month/day names, and the `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` macros all work. Times are the server's local zone (set `TZ` in the container) unless you name one per schedule.
 
 - Schedulable: `sync`, `extract`, `cluster`, `recluster`, `regen-crops`, `report`, `apply`, `dedupe` (dry run), `clear-queue`, `delete-crops`.
-- **Not schedulable: anything behind a typed phrase.** Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely.
-- A firing is **skipped** when the same command is still in flight (a long `extract` never stacks) and **missed** — recorded, not backfilled — for occurrences that fell while the server was down.
-- Each schedule keeps a short history of its firings, linking to the job log of each run. **Run now** fires one immediately without disturbing the next scheduled time.
+- Not schedulable: anything behind a typed phrase. Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely.
+- A firing is skipped when the same command is still in flight (a long `extract` never stacks) and missed — recorded, not backfilled — for occurrences that fell while the server was down.
+- Each schedule keeps a short history of its firings, linking to the job log of each run. Run now fires one immediately without disturbing the next scheduled time.
 
 Running the GUI bare-metal rather than in a container? Plain `cron` calling the CLI works just as well and survives the server being stopped.
 
 ### Authentication
 
-- **Admin account** — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from **Settings → Access**, or — if you've locked yourself out — from the shell with [`synopticon reset-password`](#reset-password).
-- **API keys** — create named, revocable keys under **Settings → Access** (shown once, then stored hashed). Send them as `Authorization: Bearer syn_...` on `/api/*` requests — the intended path for automation and planned sidecars (e.g. a browser extension). Cookie endpoints are CSRF-hardened (JSON-only + SameSite); the bearer path is immune by construction.
+- Admin account — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from Settings → Access, or — if you've locked yourself out — from the shell with [`synopticon reset-password`](#reset-password).
+- API keys — create named, revocable keys under Settings → Access (shown once, then stored hashed). Send them as `Authorization: Bearer syn_...` on `/api/*` requests — the intended path for automation and planned sidecars (e.g. a browser extension). Cookie endpoints are CSRF-hardened (JSON-only + SameSite); the bearer path is immune by construction.
 
 ```bash
 curl -H "Authorization: Bearer syn_xxxxxxxxxxxxxxxx" http://127.0.0.1:8686/api/stats
@@ -101,7 +78,7 @@ curl -H "Authorization: Bearer syn_xxxxxxxxxxxxxxxx" http://127.0.0.1:8686/api/s
 
 ### Reverse proxy / TLS
 
-Synopticon does **not** terminate TLS itself. Bind it to loopback (the default `127.0.0.1`) and put nginx, Caddy, or Traefik in front for HTTPS. uvicorn runs with proxy headers enabled, so it honours `X-Forwarded-Proto` from the proxy — the session cookie's `Secure` flag then follows the effective scheme automatically. A minimal Caddy example:
+Synopticon does not terminate TLS itself. Bind it to loopback (the default `127.0.0.1`) and put nginx, Caddy, or Traefik in front for HTTPS. uvicorn runs with proxy headers enabled, so it honours `X-Forwarded-Proto` from the proxy — the session cookie's `Secure` flag then follows the effective scheme automatically. A minimal Caddy example:
 
 ```
 photos.example.com {
@@ -140,11 +117,11 @@ docker compose run synopticon sync --hash       # one-time: hash every original 
 docker compose run synopticon dedupe --exact     # dry-run; add --apply to delete
 ```
 
-**Where state lives:** everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
+Where state lives: everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
 
 Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12). The browser GUI additionally needs the frontend built once — `cd frontend && npm ci && npm run build` (Node 22+); see [Web GUI](#web-gui). The CLI itself needs no Node.
 
-**Prefer a GUI?** `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
+Prefer a GUI? `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
 
 ### Docker images
 
@@ -187,7 +164,7 @@ docker run --rm --gpus all \
   fdebijl/synopticon:gpu extract
 ```
 
-**Using official images with compose.** The bundled `docker-compose.yml` builds from source. To pull instead, drop the `build:` block and name a tag. You can optionally add a `docker-compose.override.yml` to do this without touching docker-compose.yml:
+Using official images with compose. The bundled `docker-compose.yml` builds from source. To pull instead, drop the `build:` block and name a tag. You can optionally add a `docker-compose.override.yml` to do this without touching docker-compose.yml:
 
 ```yaml
 services:
@@ -293,7 +270,7 @@ Generate the static HTML review report.
 | `--run-id INTEGER` | latest | Grouping run to report on. |
 
 #### `web`
-Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports` **and** `--host 0.0.0.0` — the default bind is unreachable from outside the container. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
+Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports` and `--host 0.0.0.0` — the default bind is unreachable from outside the container. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
 
 | Option | Default | Description |
 |---|---|---|
@@ -318,11 +295,11 @@ docker compose run --rm synopticon reset-password admin
 | `--keep-sessions` | off | Leave that account's existing logins valid. |
 
 #### `apply`
-Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
+Apply approved review items to the NAS. Dry-run unless `--apply` is given.
 
 | Option | Default | Description |
 |---|---|---|
-| `--kinds TEXT` | `assign,low_confidence` | Comma-separated kinds to apply. `assign` and `low_confidence` are the same reviewer-approved face assignment (they differ only in the pipeline's original confidence), so both apply by default; `merge` (an unnamed side is involved) is gated by `--apply-merges`; `merge_named` (joins two **already-named** people) is gated by the stricter `--apply-merges-named`; `reassign` (opt-in via `--kinds reassign`) is gated by `--apply-reassigns`. |
+| `--kinds TEXT` | `assign,low_confidence` | Comma-separated kinds to apply. `assign` and `low_confidence` are the same reviewer-approved face assignment (they differ only in the pipeline's original confidence), so both apply by default; `merge` (an unnamed side is involved) is gated by `--apply-merges`; `merge_named` (joins two already-named people) is gated by the stricter `--apply-merges-named`; `reassign` (opt-in via `--kinds reassign`) is gated by `--apply-reassigns`. |
 | `--person-id INTEGER` | none | Scope to a single person id (matches either side of a merge or reassign). |
 | `--apply` | off (dry-run) | Actually write to the NAS. |
 | `--apply-merges` | off | Extra gate required before an ordinary `merge` (at least one unnamed side) is written. |
@@ -334,9 +311,9 @@ Apply approved review items to the NAS. **Dry-run unless `--apply` is given.**
 Every run (including dry-runs) appends a per-operation trace to `apply.log` in the project root, one line per writer call — useful for confirming what actually reached the NAS.
 
 #### `apply-all`
-Apply **all** approved review items — assigns, low-confidence assigns, reassigns, *and* merges — in one go. Prints a per-kind count of what is about to be written and asks for confirmation; unlike `apply` there is no dry-run stage and the `--apply-merges`/`--apply-reassigns` gates are implicitly lifted. Merges are still irreversible — take a NAS snapshot before a large run.
+Apply all approved review items — assigns, low-confidence assigns, reassigns, *and* merges — in one go. Prints a per-kind count of what is about to be written and asks for confirmation; unlike `apply` there is no dry-run stage and the `--apply-merges`/`--apply-reassigns` gates are implicitly lifted. Merges are still irreversible — take a NAS snapshot before a large run.
 
-The one exception is `merge_named` (joining two already-named people): every such pair is listed with a loud warning and gated behind a **separate** confirmation, so approving the bulk write never silently applies them. When running non-interactively (`-Y`), named→named merges are skipped unless you also pass `--apply-merges-named`.
+The one exception is `merge_named` (joining two already-named people): every such pair is listed with a loud warning and gated behind a separate confirmation, so approving the bulk write never silently applies them. When running non-interactively (`-Y`), named→named merges are skipped unless you also pass `--apply-merges-named`.
 
 | Option | Default | Description |
 |---|---|---|
@@ -366,7 +343,7 @@ Grid-search tunables; writes `eval_grid.csv` under `storage.data_dir`.
 ### Deduplication
 
 #### `dedupe`
-Delete duplicate photos from the NAS using the content hashes `sync --hash` stores. Two independent levels (pass either or both); within each duplicate group the **highest-resolution** photo is kept (tie-break: largest file, then lowest id) and the rest are deleted. Hashes are trusted, so there is no review step — but it is **dry-run by default** and prints a Synology Photos deep link for every photo first, and `--apply` asks for confirmation before writing.
+Delete duplicate photos from the NAS using the content hashes `sync --hash` stores. Two independent levels (pass either or both); within each duplicate group the highest-resolution photo is kept (tie-break: largest file, then lowest id) and the rest are deleted. Hashes are trusted, so there is no review step — but it is dry-run by default and prints a Synology Photos deep link for every photo first, and `--apply` asks for confirmation before writing.
 
 | Option | Default | Description |
 |---|---|---|
@@ -377,14 +354,14 @@ Delete duplicate photos from the NAS using the content hashes `sync --hash` stor
 | `--space TEXT` | all configured | Deduplicate within one space (groups never span personal/shared). |
 | `--yes`, `-y` | off | Skip the confirmation prompt when deleting. |
 
-Requires a prior `sync --hash` pass to populate the hashes. Each attempt (including dry-runs) is recorded in `audit_log` and `apply.log`. Deletion goes through Synology's `BackgroundTask.File.delete` API as a batched background task; **verify on your DSM whether that moves photos to the recycle bin or hard-deletes them before trusting `--apply` on a large run** — start with one known duplicate and check.
+Requires a prior `sync --hash` pass to populate the hashes. Each attempt (including dry-runs) is recorded in `audit_log` and `apply.log`. Deletion goes through Synology's `BackgroundTask.File.delete` API as a batched background task; verify on your DSM whether that moves photos to the recycle bin or hard-deletes them before trusting `--apply` on a large run — start with one known duplicate and check.
 
 ### Housekeeping
 
-These commands manage locally-computed state and crop images. **None of them touch the NAS** (except `regen-crops`, which reads originals but never writes).
+These commands manage locally-computed state and crop images. None of them touch the NAS (except `regen-crops`, which reads originals but never writes).
 
 #### `reset`
-Clear locally-computed data (faces, embeddings, face groups, and the review queue) plus their crop images, so the pipeline can rebuild from scratch. Useful after tweaking face detection/grouping settings: the review UI pools items from every run, so stale suggestions would otherwise linger. Synced NAS metadata is kept unless `--all` is given. **Never touches the NAS.**
+Clear locally-computed data (faces, embeddings, face groups, and the review queue) plus their crop images, so the pipeline can rebuild from scratch. Useful after tweaking face detection/grouping settings: the review UI pools items from every run, so stale suggestions would otherwise linger. Synced NAS metadata is kept unless `--all` is given. Never touches the NAS.
 
 | Option | Default | Description |
 |---|---|---|
@@ -395,7 +372,7 @@ Clear locally-computed data (faces, embeddings, face groups, and the review queu
 Typical use after changing `[detection]` scores: `synopticon reset` then `synopticon extract && synopticon cluster`.
 
 #### `clear-queue`
-Delete only the **pending** review-queue items so the next `cluster` run re-generates them from scratch. Pending rows regenerate cleanly — crossref re-inserts them, picking up any person names synced since the last run (handy when a face was suggested for a person who was still unnamed on the NAS when the faces were grouped). Approved, applied and rejected rows are the ledger crossref uses to avoid re-surfacing work you've already handled, so this command refuses to touch them; use `reset` if you truly want to rebuild everything. **Never touches the NAS.**
+Delete only the pending review-queue items so the next `cluster` run re-generates them from scratch. Pending rows regenerate cleanly — crossref re-inserts them, picking up any person names synced since the last run (handy when a face was suggested for a person who was still unnamed on the NAS when the faces were grouped). Approved, applied and rejected rows are the ledger crossref uses to avoid re-surfacing work you've already handled, so this command refuses to touch them; use `reset` if you truly want to rebuild everything. Never touches the NAS.
 
 | Option | Default | Description |
 |---|---|---|
@@ -404,7 +381,7 @@ Delete only the **pending** review-queue items so the next `cluster` run re-gene
 Typical use after a `sync` fills in previously-missing person names: `synopticon clear-queue` then `synopticon cluster`.
 
 #### `delete-crops`
-Delete every face crop image from disk to reclaim space, leaving the `faces` table (bboxes, landmarks, embeddings) untouched. Crops are a pure derived artifact, so this is safe and reversible — rebuild them on demand with `regen-crops`. **Never touches the NAS.**
+Delete every face crop image from disk to reclaim space, leaving the `faces` table (bboxes, landmarks, embeddings) untouched. Crops are a pure derived artifact, so this is safe and reversible — rebuild them on demand with `regen-crops`. Never touches the NAS.
 
 Crop images can accumulate to many gigabytes over a large library. If you run the pipeline intermittently and don't need the review report/UI between passes, wiping crops after each pass keeps disk usage down — the crops cost nothing to recreate from the cached `faces` rows (plus the originals, re-fetched from the NAS) when you next want to review.
 
@@ -413,7 +390,7 @@ Crop images can accumulate to many gigabytes over a large library. If you run th
 | `--yes` / `-y` | off | Skip the confirmation prompt. |
 
 #### `regen-crops`
-Rebuild face crop images from the stored bboxes/landmarks and the originals (re-fetched from the NAS), without re-running detection or embedding. Use it to recover from a `delete-crops` (or an accidental wipe), or to repair a partial one. Resumable — it commits per photo. Originals are evicted afterward unless `storage.keep_originals` is set. **Reads the NAS but never writes to it.**
+Rebuild face crop images from the stored bboxes/landmarks and the originals (re-fetched from the NAS), without re-running detection or embedding. Use it to recover from a `delete-crops` (or an accidental wipe), or to repair a partial one. Resumable — it commits per photo. Originals are evicted afterward unless `storage.keep_originals` is set. Reads the NAS but never writes to it.
 
 | Option | Default | Description |
 |---|---|---|
@@ -422,7 +399,7 @@ Rebuild face crop images from the stored bboxes/landmarks and the originals (re-
 | `--limit INTEGER` | none | Process at most N photos. |
 
 #### `db-migrate`
-Copy an existing library into the configured database backend — the one-time move you need after switching `[database] backend` to `postgres`, so the switch doesn't cost a fresh `sync` and a multi-hour re-`extract`. See [Database backend](#database-backend). **Never touches the NAS.**
+Copy an existing library into the configured database backend — the one-time move you need after switching `[database] backend` to `postgres`, so the switch doesn't cost a fresh `sync` and a multi-hour re-`extract`. See [Database backend](#database-backend). Never touches the NAS.
 
 The destination is whatever `[database]` currently selects; the source defaults to the SQLite file that backend replaced. It refuses to run if the destination already holds data, and it copies primary keys verbatim, so deep links, review decisions and the audit trail all survive.
 
@@ -460,8 +437,6 @@ The password is best passed env-only: `SYNOPTICON_DATABASE__PASSWORD=...`. Manag
 
 The schema, every migration and all the queries are shared between backends and authored once; only column types and placeholder syntax are translated. PostgreSQL 13 or newer.
 
-**MySQL/MariaDB are not supported.** Their upsert syntax differs from the `ON CONFLICT` form every sync path uses, and `TEXT` columns cannot be primary keys there — both would mean a second copy of the schema and of several queries, which is exactly what the translation layer exists to avoid.
-
 ### Configuration
 
 Everything lives in `config.toml` (see `config.example.toml`) and can be overridden per-key with environment variables: `SYNOPTICON_<SECTION>__<KEY>`, e.g. `SYNOPTICON_NAS__URL`. Credentials are best passed env-only. Notable settings:
@@ -478,11 +453,11 @@ Everything lives in `config.toml` (see `config.example.toml`) and can be overrid
 
 Face detection (detect + embed) is the long pass and runs on CPU by default. It will use an NVIDIA GPU via CUDA when two things are true: a CUDA-capable `onnxruntime-gpu` is installed, and `inference.device` is `auto` (the default) or `cuda`. Run `synopticon hwinfo` to see what's detected — it flags the common case of a GPU being present while only the CPU-only `onnxruntime` is installed.
 
-**Requirements:** just a reasonably recent NVIDIA driver — no system CUDA toolkit. The `gpu` extra is `onnxruntime-gpu[cuda,cudnn]` (CUDA 12 line), whose `[cuda,cudnn]` part pulls NVIDIA's CUDA + cuDNN runtime libraries straight from PyPI as wheels; Synopticon calls `onnxruntime.preload_dlls()` so ONNX Runtime finds them. For Docker you additionally need the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host to expose the driver to the container.
+Requirements: just a reasonably recent NVIDIA driver — no system CUDA toolkit. The `gpu` extra is `onnxruntime-gpu[cuda,cudnn]` (CUDA 12 line), whose `[cuda,cudnn]` part pulls NVIDIA's CUDA + cuDNN runtime libraries straight from PyPI as wheels; Synopticon calls `onnxruntime.preload_dlls()` so ONNX Runtime finds them. For Docker you additionally need the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) on the host to expose the driver to the container.
 
-**Bare-metal:** `uv sync --extra gpu` instead of `--extra cpu`. The two extras are mutually exclusive (`onnxruntime` and `onnxruntime-gpu` share one import namespace), so uv installs exactly one. The `gpu` extra is also incompatible with `restore`/`export` — those pin `torch==2.1.2`, which requires an older cuDNN than the GPU runtime does.
+Bare-metal: `uv sync --extra gpu` instead of `--extra cpu`. The two extras are mutually exclusive (`onnxruntime` and `onnxruntime-gpu` share one import namespace), so uv installs exactly one. The `gpu` extra is also incompatible with `restore`/`export` — those pin `torch==2.1.2`, which requires an older cuDNN than the GPU runtime does.
 
-**Docker:** use the `gpu`-tagged image (or the `gpu` compose profile, which builds the equivalent from source). See [Docker images](#docker-images) for the full tag list.
+Docker: use the `gpu`-tagged image (or the `gpu` compose profile, which builds the equivalent from source). See [Docker images](#docker-images) for the full tag list.
 
 ```bash
 docker run --rm --gpus all \
@@ -496,7 +471,7 @@ docker compose --profile gpu run synopticon-gpu extract
 
 `device = "auto"` is safe everywhere: if no usable CUDA provider is found — or a CUDA session fails to initialize (missing libraries, GPU out of memory) — Synopticon logs a warning and falls back to CPU rather than aborting the run. Setting `device = "cuda"` does not change this fallback; it only makes the "no GPU" case log a warning.
 
-> **Throughput note:** this release makes the GPU *usable and robust*, not maximally fast. Detection isn't batched and embedding batches only within a single photo, so GPU utilization is modest; cross-photo batching and CPU/GPU overlap are a planned follow-up.
+> Throughput note: this release makes the GPU *usable and robust*, not maximally fast. Detection isn't batched and embedding batches only within a single photo, so GPU utilization is modest; cross-photo batching and CPU/GPU overlap are a planned follow-up.
 
 ### Two-factor authentication
 
@@ -504,13 +479,13 @@ If the account has 2FA, set `nas.otp_code` (or `SYNOPTICON_NAS__OTP_CODE`) for t
 
 ## Models
 
-The face-recognition pipeline needs model weights; deduplication and the housekeeping commands do not. Weights are **not** bundled (mixed licenses; some upstream terms are research-only — verify they fit your use). `synopticon models download` fetches what it can and prints instructions for the rest:
+The face-recognition pipeline needs model weights; deduplication and the housekeeping commands do not. Weights are not bundled (mixed licenses; some upstream terms are research-only — verify they fit your use). `synopticon models download` fetches what it can and prints instructions for the rest:
 
 | Model | Role | Source | Availability |
 |---|---|---|---|
 | SCRFD-10G-KPS | primary detector | insightface `antelopev2` | auto-download |
 | ArcFace R100 (Glint360K) | embedder | insightface `antelopev2` | auto-download |
-| YOLOv8-l-face | secondary detector | lindevs/yolov8-face (**AGPL-3.0**) | auto-download |
+| YOLOv8-l-face | secondary detector | lindevs/yolov8-face | auto-download |
 | AdaFace IR-101 (WebFace12M) | embedder | official checkpoint → `scripts/export_adaface_onnx.py` | optional, manual export |
 | MagFace iResNet100 | embedder + quality signal | official checkpoint → `scripts/export_magface_onnx.py` | optional, manual export |
 
@@ -544,19 +519,45 @@ uv run --no-project --python 3.11 \
 
 A successful run prints `torch-vs-ort cosine: 1.000000` and `OK`. The AdaFace export additionally warns about a few unexpected `head.*` keys — that's the training-time margin head, correctly ignored; only the backbone embedding is exported. Once the `.onnx` files exist in `models/`, re-run `synopticon models download --allow-record-hash` to verify and register them in the manifest.
 
-In the web GUI, the same step is the **Download models** card on the Pipeline page — tick **record hash** to register manually-copied `.onnx` files — and **Settings → Models** shows which weights are present and registered.
+In the web GUI, the same step is the Download models card on the Pipeline page — tick 'record hash' to register manually-copied `.onnx` files — and Settings → Models shows which weights are present and registered.
+
+## How it works
+
+### The face-recognition pipeline
+
+The pipeline runs in a fixed order, with each stage consuming the previous stage's output:
+
+```
+sync  →  extract  →  cluster  →  report  →  review  →  apply
+(NAS→db) (detect     (group      (static    (approve/  (write
+          faces)      faces)     HTML)      reject UI) back to NAS)
+└──────── read-only ────────────────────────┘          └─ gated write ─┘
+```
+
+(`recluster` and `eval` are side-loops off `cluster`. They group the faces again from the cached embeddings with different parameters and never touch the NAS - useful for benchmarking and testing the best parameters for your system)
+
+1. **`sync`** — pulls your photo list, people, and existing face labels from the NAS (read-only). Existing Synology labels are the base for Synopticon's face grouping.
+2. **`extract`** (*Detect faces*) — downloads originals (the originals are not kept on disk to save on space, only small face crops are kept), detects faces with two detectors at multiple scales, and computes up to three embeddings per face into the database. Resumable per photo, so you can run it over multiple hours or days to do the initial catchup run.
+3. **`cluster`** (*Group faces*) — builds an exact k-NN similarity graph over all faces, groups them (Chinese Whispers by default), and maps each group onto a Synology person by majority vote. Produces proposals for new face assignments, wrong-label corrections (a face Synology tagged as one person that clearly belongs to another), merge candidates, and new people.
+4. **`report` / `review`** — a static HTML report and an interactive web UI to approve or reject each proposal. Nothing is written until you approve it.
+5. **`apply`** — pushes approved assignments back via the `add_face` API (works even on photos Synology found no face in). Dry-run by default; merges require a second explicit flag; every write is audit-logged and assignments are individually reversible.
+6. **`recluster` / `eval`** — retune thresholds from the embedding cache (no re-detection, no NAS traffic) and measure quality by masking known labels and checking recovery.
+
+### Deduplication
+
+`dedupe` is independent of the face pipeline. Run `sync --hash` at least once to store a sha256 and a 64-bit perceptual hash for every original, then `dedupe` groups byte-identical (`--exact`) and/or visually near-identical (`--visual`) photos. It keeps the best copy of each group (highest resolution, then largest file), and deletes the rest through Synology's background-task API. Like `apply`, it is **dry-run by default**, prints a Synology Photos deep link for every photo it would touch, and audit-logs every deletion.
 
 ## Safety model
 
-Every tool that can change your library is opt-in and leaves an audit trail:
+Synopticon should help you clean up your library, not leave it in a worse than how it found. To that end, every tool that can change your library is opt-in and leaves an audit trail:
 
-- The face pipeline is **read-only** toward the NAS through `report`/`review`; only `apply`/`apply-all` write.
-- `apply` is **dry-run by default**; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply), `--apply-merges-named` is separately required for `merge_named` (joining two already-named people destroys a human label — the most dangerous write, so it is never covered by `--apply-merges` and `apply-all` gates it behind its own confirmation), and `--apply-reassigns` is required for reassigns (they alter labels a human can already see in Photos — review these per-item rather than bulk-approving).
-- Only reviewer-**approved** queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`, and a reassign is a single `Person.separate` call that can be reversed by moving the face back.
+- The face pipeline is read-only toward the NAS through `report`/`review`; only `apply`/`apply-all` write.
+- `apply` is dry-run by default; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply), `--apply-merges-named` is separately required for `merge_named` (joining two already-named people destroys a human label — the most dangerous write, so it is never covered by `--apply-merges` and `apply-all` gates it behind its own confirmation), and `--apply-reassigns` is required for reassigns (they alter labels a human can already see in Photos — review these per-item rather than bulk-approving).
+- Only reviewer-approved queue items are ever applied; every attempt is recorded in an audit log; assignments are reversible via Synology's `delete_face`, and a reassign is a single `Person.separate` call that can be reversed by moving the face back.
 - A face group can propose both a merge of persons A/B and reassigns between them; if the merge is applied first the reassigns become no-ops (the pre-write NAS check skips them).
-- `dedupe` follows the same model: **dry-run by default**, `--apply` (plus a confirmation prompt) required to delete, a per-id idempotency check before each deletion, and every attempt audit-logged. Duplicate deletion is not reversible from Synopticon — confirm your DSM's recycle-bin behavior first.
+- `dedupe` follows the same model: dry-run by default, `--apply` (plus a confirmation prompt) required to delete, a per-id idempotency check before each deletion, and every attempt audit-logged. Duplicate deletion is not reversible from Synopticon — confirm your DSM's recycle-bin behavior first.
 - [Schedules](#schedules) replay a *saved submission*, not a stored command line: every firing goes back through the same allowlist, parameter whitelist and consent validation a human's click does. Nothing gated behind a typed phrase can be scheduled — the server rejects such a schedule when you try to save it, and the scheduler never supplies a phrase when it fires.
-- [QuickMerger](#quickmerger) is the one GUI surface that writes to the NAS outside `apply`. It is interactive by nature (you act on one person at a time), so it confirms once per session rather than per card — but every write needs an explicit consent flag on the API call, a merge re-reads both people from the NAS first and is **refused** if the merged-away side has a name, and every attempt is audit-logged.
+- [QuickMerger](#quickmerger) is the one GUI surface that writes to the NAS outside `apply`. It is interactive by nature (you act on one person at a time), so it confirms once per session rather than per card — but every write needs an explicit consent flag on the API call, a merge re-reads both people from the NAS first and is refused if the merged-away side has a name, and every attempt is audit-logged.
 - Recommended first write of any kind: scope narrowly (`--person-id <id>` for a test person, a single known duplicate for `dedupe`) and verify in the Photos UI.
 
 ## Compatibility
