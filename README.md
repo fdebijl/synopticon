@@ -1,14 +1,11 @@
 ![Synopticon logo](assets/Synopticon%20Hero.png)
 
-Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of standalone utilities that run alongside your library and take on the jobs DSM currently does poorly or not at all. The current toolkit includes enhanced face recognition, robust face grouping, automatic face reassignment, duplicate photo deletion and much more.
-
-## Features
+Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of standalone utilities that run over your library and take on the jobs DSM currently does poorly or not at all. The current toolkit includes enhanced face recognition, robust face grouping, automatic face reassignment, duplicate photo deletion and much more.
 
 **Enhanced face recognition**  
  Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a frontier ensemble pipeline (multi-scale SCRFD + YOLO-face detection, ArcFace + AdaFace + MagFace embeddings, graph clustering) over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' Person API. Writebacks only occur after your explicit review.
 
 ![](./assets/pretty_screenshots/review.png)
-
 
 **QuickMerger**  
 Quickly work through unnamed faces in Synology Photos through an ergonomic merge interface, perfect for giving the initial set of faces a name to start working with inside Synopticon.
@@ -23,82 +20,55 @@ After the initial setup, schedule synchronization with the NAS, face detection a
 
 ![](./assets/pretty_screenshots/scheduler.png)
 
-## Quickstart - Web GUI
+## Quickstart
 
-Running `synopticon web`, either directly from the repo or inside a Docker container, serves a full browser GUI that handles everything Synopticon can do: first-run setup, editing your config, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections. It's the recommended way to drive Synopticon day to day, but the CLI is always there for scripting and headless runs.
+Install the requirements:
+- Python v3.11-3.13
+- Node v22+
 
-The GUI is a Vue 3 single-page app served by the backend. For hosting the GUI, Docker is the recommended path. The image ships the frontend prebuilt, so you don't need Node or any of the other deps on the host:
-
+1. Clone the repo and setup directory structure
 ```bash
-docker compose run --service-ports synopticon web --host 0.0.0.0
+git clone https://github.com/fdebijl/synopticon && cd synopticon && mkdir -p data models && cp config.example.toml data/config.toml
 ```
 
-Once the container is up, point your browser http://127.0.0.1:8686 and follow the setup guide.
-
-Note: `--host 0.0.0.0` is required in a container: the `127.0.0.1` default binds the container's own loopback, which no published port can reach. The host-side binding stays on `127.0.0.1` either way — see [Docker images](#docker-images) for the plain `docker run` form.
-
-If you'd rather run it locally, you'll have to build the SPA once (with Node 22+), then the same `uv run synopticon web` to serve it up:
-
+2. Install dependencies
 ```bash
-uv sync --extra cpu --extra review --extra faiss   # backend GUI deps (fastapi, uvicorn, tomlkit) - use --extra gpu instead if you have a supported GPU
-cd frontend && npm ci && npm run build             # builds the SPA into src/synopticon/web/dist (Node 22+)
-cd .. && uv run synopticon web                     # http://127.0.0.1:8686
+uv run sync --extra cpu --extra review --extra faiss && cd frontend && npm install
 ```
 
-For working on the UI, run the two dev servers side by side: `uv run synopticon web` (backend on :8686) and, in another terminal, `cd frontend && npm run dev` (Vite on :5173, hot-reload). Vite proxies `/api` and `/crops` to the backend, so open the app at `http://127.0.0.1:5173` and the session cookie works same-origin.
-
-### Schedules
-
-**Schedules** puts recurring work on a cron timer without a cron daemon in the image — the intended setup for a container, where `synopticon web` is the only long-running process. Pick a job, fill in the same parameters the Pipeline/Utilities/Apply pages expose, give it a 5-field cron expression (or one of the presets), and optionally a timezone; the form previews the next five firings as you type.
-
-```
-minute  hour  day-of-month  month  day-of-week
-0       3     *             *      *            # nightly at 03:00
-0       */6   *             *      *            # every six hours
-0       4     *             *      SUN          # Sunday mornings
-```
-
-Ranges, lists, steps (`*/15`, `1-5`, `0,30`), month/day names, and the `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly` macros all work. Times are the server's local zone (set `TZ` in the container) unless you name one per schedule.
-
-- Schedulable: `sync`, `extract`, `cluster`, `recluster`, `regen-crops`, `report`, `apply`, `dedupe` (dry run), `clear-queue`, `delete-crops`.
-- Not schedulable: anything behind a typed phrase. Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely.
-- A firing is skipped when the same command is still in flight (a long `extract` never stacks) and missed — recorded, not backfilled — for occurrences that fell while the server was down.
-- Each schedule keeps a short history of its firings, linking to the job log of each run. Run now fires one immediately without disturbing the next scheduled time.
-
-Running the GUI bare-metal rather than in a container? Plain `cron` calling the CLI works just as well and survives the server being stopped.
-
-### Authentication
-
-- Admin account — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from Settings → Access, or — if you've locked yourself out — from the shell with [`synopticon reset-password`](#reset-password).
-- API keys — create named, revocable keys under Settings → Access (shown once, then stored hashed). Send them as `Authorization: Bearer syn_...` on `/api/*` requests — the intended path for automation and planned sidecars (e.g. a browser extension). Cookie endpoints are CSRF-hardened (JSON-only + SameSite); the bearer path is immune by construction.
-
+3. Build the web GUI
 ```bash
-curl -H "Authorization: Bearer syn_xxxxxxxxxxxxxxxx" http://127.0.0.1:8686/api/stats
+npm run build && cd ..
 ```
 
-### Reverse proxy / TLS
-
-Synopticon does not terminate TLS itself. Bind it to loopback (the default `127.0.0.1`) and put nginx, Caddy, or Traefik in front for HTTPS. uvicorn runs with proxy headers enabled, so it honours `X-Forwarded-Proto` from the proxy — the session cookie's `Secure` flag then follows the effective scheme automatically. A minimal Caddy example:
-
-```
-photos.example.com {
-    reverse_proxy 127.0.0.1:8686
-}
-```
-
-## Quickstart - Docker
-
-Running docker locally is perfect if you don't have a separate Docker box to run the container on, or only wish to use the tools in Synopticon intermittently.
-
+4. Run the web GUI
 ```bash
-git clone https://github.com/fdebijl/synopticon && cd synopticon
-mkdir -p data models
-cp config.example.toml data/config.toml      # edit: set [nas] url
+uv run synopticon web
+```
+
+5. Point your browser to http://localhost:8686
+
+This spins up the web GUI, which will walk you through the initial setup for Synopticon. This is a great way to play around with all the features of Synopticon, but for long-term deployments you probably want to run it locally using the CLI, or spin up a persistent Docker container. See the chapters below for an outline of how to do just that.
+
+## Running Synopticon - Locally
+
+If you're not looking for a long-running commitment with Docker, want to schedule your own runs with cron, or just want to play around with Synopticon, just running the repo locally is your best bet. Just follow the quickstart above to get started.
+
+Running `uv run synopticon web` serves a full browser GUI that handles everything Synopticon can do: first-run setup, editing your config, running every pipeline/maintenance command with live progress, working the review queue, and applying corrections. It's the recommended way to drive Synopticon day to day, if you're not doing Docker, but the CLI is always there for scripting and headless runs - see the [CLI reference](#cli-reference) for what's available.
+
+Running locally also makes GPU acceleration much easier. If you have a large library, a GPU accelerated initial run is perfect to quickly catch Synopticon up to the NAS. The data folder is portable, so you can copy over the results generated by the GPU run onto a longer-lived setup. See [GPU acceleration](#gpu-acceleration) for the details.
+
+## Running Synopticon - Docker
+
+You can run Synopticon under Docker either locally, or on a separate box that hosts Synopticon as a long-lived process. The former is perfect for intermittent use, but if you want to keep grooming the faces in Synopticon on a regular basis, the latter is a better fit.
+
+**Local workflow**
+```bash
 export SYNOPTICON_NAS__URL=https://your-nas.example.com
-export SYNOPTICON_NAS__ACCOUNT=photos-bot     # a dedicated NAS user is recommended
+export SYNOPTICON_NAS__ACCOUNT=photos-bot
 export SYNOPTICON_NAS__PASSWORD=...
 
-docker compose build                          # or skip: see Docker images below to pull instead
+docker compose build                           # or skip: see Docker images below to pull instead
 docker compose run synopticon models download
 docker compose run synopticon sync
 docker compose run synopticon extract          # the long pass; resumable, re-runnable (see GPU acceleration below)
@@ -108,20 +78,62 @@ docker compose run --service-ports synopticon web --host 0.0.0.0   # GUI at http
 docker compose run synopticon apply            # dry-run; add --apply to write
 ```
 
-> `web` binds `127.0.0.1` by default, which inside a container means the container's *own* loopback — unreachable from the host however you publish the port. `--host 0.0.0.0` binds all container interfaces; the compose file still only publishes to `127.0.0.1:8686` on the host, so it stays off your network.
-
 Deduplication is a separate, shorter flow off the same `sync`:
 
 ```bash
-docker compose run synopticon sync --hash       # one-time: hash every original (slow, resumable)
+docker compose run synopticon sync --hash        # one-time: hash every original (slow, resumable)
 docker compose run synopticon dedupe --exact     # dry-run; add --apply to delete
 ```
 
-Where state lives: everything is under the repo root in both flows — `data/` (SQLite db, face crops, reports, originals cache) and `models/` (ONNX weights). Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state.
+All data lives under the repo root, whether you're running locally or with Docker: `data/` has the SQLite db, face crops, reports, originals cache and `models/` hosts the ONNX weights. Inside the container those directories appear as `/data` and `/models` (the compose file mounts them), but on disk it's the same `./data` and `./models` either way, so you can freely mix Docker and bare-metal runs against the same state if you so desire.
 
-Without Docker: `uv sync --extra cpu` (or `--extra gpu` for CUDA — see [GPU acceleration](#gpu-acceleration)), then `cp config.example.toml config.toml` (edit `[nas]`; the storage defaults already point at `./data` and `./models`) and `uv run synopticon <command>` (Python 3.11/3.12). The browser GUI additionally needs the frontend built once — `cd frontend && npm ci && npm run build` (Node 22+); see [Web GUI](#web-gui). The CLI itself needs no Node.
+**Remote workflow**
+Running the Docker image persistently has a few gotcha's. See the sample Portainer stack below for what to consider when rolling out Synopticon on a Docker Swarm or Kubernetes cluster.
 
-Prefer a GUI? `synopticon web` drives everything below from the browser — including a guided first-run wizard, so you can skip the manual config edit and CLI dance. See [Web GUI](#web-gui).
+```yml
+services:
+  synopticon:
+    image: fdebijl/synopticon:cpu          # swap to :gpu for CUDA, see the note below
+    command: ["web", "--host", "0.0.0.0"]  # entrypoint is `synopticon`; this is the long-running GUI
+    volumes:
+      - /home/willem/synopticon/data:/data
+      - /home/willem/synopticon/models:/models
+    networks:
+      - traefik-public-v2
+    environment:
+      # Persist the wizard-written config onto the /data volume:
+      - SYNOPTICON_CONFIG=/data/config.toml
+      # NAS creds are OPTIONAL here — the first-run web wizard can enter + store
+      # them into /data/config.toml instead. Uncomment to inject here instead:
+      # - SYNOPTICON_NAS__URL=https://your-nas.example.com
+      # - SYNOPTICON_NAS__ACCOUNT=photos-bot
+      # - SYNOPTICON_NAS__PASSWORD=...
+      # - SYNOPTICON_NAS__OTP_CODE=...
+    # Healthchecks for Synopticon can be tricky - disable it or increase the leniency if your jobs get killed constantly
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8686/api/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    deploy:
+      mode: replicated
+      replicas: 1                          # MUST stay 1 when using SQLite
+      placement:
+        constraints:
+          - node.role != manager
+          - node.hostname == foobar        # pin to one node so the data and model dirs stay consistent
+      labels:
+        - "deploy.labels=here"
+
+# Change the image to fdebijl/synopticon:gpu on a node with an NVIDIA GPU + the
+# NVIDIA Container Toolkit. Swarm GPU scheduling is fiddly — the compose-v3
+# `deploy.resources.reservations.devices` NVIDIA syntax used in the repo's
+# docker-compose.yml is a non-Swarm feature and Swarm ignores it. For a
+# single-GPU homelab it's usually simplest to run this one service outside Swarm
+# (plain `docker compose` / `docker run --gpus all`) and keep the rest in
+# Portainer. Only `extract` benefits from the GPU; everything else is unaffected.
+```
 
 ### Docker images
 
@@ -164,30 +176,34 @@ docker run --rm --gpus all \
   fdebijl/synopticon:gpu extract
 ```
 
-Using official images with compose. The bundled `docker-compose.yml` builds from source. To pull instead, drop the `build:` block and name a tag. You can optionally add a `docker-compose.override.yml` to do this without touching docker-compose.yml:
+### Schedules
 
-```yaml
-services:
-  synopticon:
-    image: fdebijl/synopticon:cpu
-    build: !reset null
-  synopticon-gpu:
-    image: fdebijl/synopticon:gpu
-    build: !reset null
+Schedules puts recurring work on a cron timer without a cron daemon in the image. This is the intended setup for a container where `synopticon web` is the only long-running process. Pick a job, fill in the same parameters the Pipeline/Utilities/Apply pages expose, give it a 5-field cron expression (or one of the presets), and optionally a timezone.
+
+- Schedulable: `sync`, `extract`, `cluster`, `recluster`, `regen-crops`, `report`, `apply`, `dedupe` (dry run), `clear-queue`, `delete-crops`.
+- Not schedulable: anything behind a typed phrase. Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely.
+- A firing is skipped when the same command is still in flight (a long `extract` never stacks) and missed — recorded, not backfilled — for occurrences that fell while the server was down.
+- Each schedule keeps a short history of its firings, linking to the job log of each run. Run now fires one immediately without disturbing the next scheduled time.
+
+Running the GUI bare-metal rather than in a container? Plain `cron` calling the CLI works just as well and survives the server being stopped.
+
+### Authentication
+
+- Admin account — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from Settings → Access, or — if you've locked yourself out — from the shell with [`synopticon reset-password`](#reset-password).
+- API keys — create named, revocable keys under Settings → Access (shown once, then stored hashed). Send them as `Authorization: Bearer syn_...` on `/api/*` requests — the intended path for automation and planned sidecars (e.g. a browser extension). Cookie endpoints are CSRF-hardened (JSON-only + SameSite); the bearer path is immune by construction.
+
+```bash
+curl -H "Authorization: Bearer syn_xxxxxxxxxxxxxxxx" http://127.0.0.1:8686/api/stats
 ```
 
-### Healthchecks
+### Reverse proxy / TLS
 
-The image ships without a built-in `HEALTHCHECK`. Add one on the service when you run `web` as a managed service (Swarm, Portainer, `docker compose up`):
+Synopticon does not terminate TLS itself. Bind it to loopback (the default `127.0.0.1`) and put nginx, Caddy, or Traefik in front for HTTPS. uvicorn runs with proxy headers enabled, so it honours `X-Forwarded-Proto` from the proxy — the session cookie's `Secure` flag then follows the effective scheme automatically. A minimal Caddy example:
 
-```yaml
-healthcheck:
-  # The slim image has no curl; use the bundled python.
-  test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8686/api/health', timeout=5).status==200 else 1)"]
-  interval: 30s
-  timeout: 10s
-  retries: 5
-  start_period: 60s
+```
+photos.example.com {
+    reverse_proxy 127.0.0.1:8686
+}
 ```
 
 ## CLI reference
@@ -549,7 +565,7 @@ sync  →  extract  →  cluster  →  report  →  review  →  apply
 
 ## Safety model
 
-Synopticon should help you clean up your library, not leave it in a worse than how it found. To that end, every tool that can change your library is opt-in and leaves an audit trail:
+Synopticon should help you clean up your library, not leave it in a worse state than how it found it. To that end, every tool that can change your library is opt-in and leaves an audit trail:
 
 - The face pipeline is read-only toward the NAS through `report`/`review`; only `apply`/`apply-all` write.
 - `apply` is dry-run by default; `--apply` is required to write, `--apply-merges` is additionally required for merges (a wrong merge is the one hard-to-undo operation — take a NAS snapshot of the Photos database before your first bulk apply), `--apply-merges-named` is separately required for `merge_named` (joining two already-named people destroys a human label — the most dangerous write, so it is never covered by `--apply-merges` and `apply-all` gates it behind its own confirmation), and `--apply-reassigns` is required for reassigns (they alter labels a human can already see in Photos — review these per-item rather than bulk-approving).
@@ -566,3 +582,7 @@ Works against any NAS running Synology Photos (DSM 7.x). API versions are discov
 
 ## LLM Disclaimer
 Parts of this codebase were created by a large language model, in particular models provided by Anthropic.
+
+## Acknowledgments
+- [ScreenPastel](https://screenpastel.vercel.app/) is an amazing tool for prettifying screenshots that I used for the screenshots at the top
+- [FeedbackFruits](https://feedbackfruits.com/) for generously donating many megatokens to this project.

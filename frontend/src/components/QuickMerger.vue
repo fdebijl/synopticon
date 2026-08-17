@@ -110,7 +110,7 @@ async function arm(): Promise<boolean> {
     title: 'QuickMerger writes to the NAS',
     message:
       'Naming and hiding are reversible. Merging an unnamed person into an ' +
-      'existing one is not — the merged person is gone from Synology Photos. ' +
+      'existing one is not: the merged person is gone from Synology Photos. ' +
       'You will not be asked again this session.',
     okLabel: 'I understand',
   })
@@ -253,8 +253,7 @@ void loadStatus()
       <div>
         <h3>QuickMerger</h3>
         <p class="muted">
-          Quickly work through people Synology has not named yet: type a name to set it, pick a suggestion
-          to merge into that person, or hide the ones that are not people at all.
+          Quickly work through people Synology has not named yet: type a name to set it, pick a suggestion to merge into that person, or hide the ones that are not people at all.
         </p>
       </div>
       <div class="qm-head-actions">
@@ -372,7 +371,7 @@ void loadStatus()
 }
 .qm-head p {
   margin: var(--sp-1) 0 0;
-  max-width: 60ch;
+  max-width: 100ch;
 }
 .qm-head-actions {
   display: flex;

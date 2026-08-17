@@ -2,7 +2,8 @@
 This guide lays out how to contribute to Synopticon. Contributions made using LLM's are welcome, as are fully human-coded contributions. Features maybe merged at the discretion of the maintainers.
 
 ## Requirements
-- Python I guess
+- Python v3.11 <> v3.13
+- Node v22+
 
 ## Development
 
@@ -19,6 +20,8 @@ SYNOPTICON_TEST_POSTGRES_DSN=postgresql://user@127.0.0.1:5432/synopticon_test \
 (`--all-extras` no longer works: the `cpu`/`gpu` extras are mutually exclusive, so pick one explicitly.) The Python test suite needs no Node — the frontend build (typechecked by `vue-tsc`) runs as its own CI job. See [Web GUI](#web-gui) for the two-server dev loop.
 
 Layout: `syno/` (API client + write-back) · `sync/` (extraction/caching + content hashing) · `pipeline/` (detect/align/embed) · `cluster/` (graph, Chinese Whispers, cross-reference) · `dedupe.py` (hash-based duplicate detection) · `eval/` (hold-out tuning) · `review/` (report + UI). The `cluster/` and `dedupe` layers deliberately import nothing from `syno/`/`pipeline/` — clustering and duplicate *detection* can never touch the network; only the write-back halves do.
+
+For working on the UI, run the two dev servers side by side: `uv run synopticon web` (backend on :8686) and, in another terminal, `cd frontend && npm run dev` (Vite on :5173, hot-reload). Vite proxies `/api` and `/crops` to the backend, so open the app at `http://127.0.0.1:5173` and the session cookie works same-origin.
 
 ## Patterns
 
