@@ -210,6 +210,10 @@ function run(card: CardDef): void {
     .catch((err: Error) => toast(err.message || 'Failed to start job', 'error'))
 }
 
+function fmtTime(t: number | null | undefined): string {
+  return t ? new Date(t * 1000).toLocaleString() : '—'
+}
+
 function fmtDuration(m: Job): string {
   if (!m.started_at) return '—'
   const end = m.ended_at || Date.now() / 1000
@@ -335,17 +339,21 @@ function fmtDuration(m: Job): string {
           <tr>
             <th>Job</th>
             <th>State</th>
+            <th>Started at</th>
+            <th>Ended at</th>
             <th>Duration</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!history.length">
-            <td colspan="4" class="muted">No jobs yet.</td>
+            <td colspan="6" class="muted">No jobs yet.</td>
           </tr>
           <tr v-for="m in history" :key="m.id">
             <td class="hist-name">{{ jobLabel(m.name) }}</td>
             <td><span class="badge" :class="`state-${m.state}`">{{ m.state }}</span></td>
+            <td class="hist-time">{{ fmtTime(m.started_at) }}</td>
+            <td class="hist-time">{{ fmtTime(m.ended_at) }}</td>
             <td>{{ fmtDuration(m) }}</td>
             <td><RouterLink :to="`/jobs/${m.id}`">view</RouterLink></td>
           </tr>
@@ -489,6 +497,11 @@ function fmtDuration(m: Job): string {
 }
 .history-table td.hist-name {
   font-weight: 600;
+}
+.history-table td.hist-time {
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
 }
 .run-note {
   font-size: var(--fs-sm);

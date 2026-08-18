@@ -700,7 +700,7 @@ def db_migrate(
     defaults to the SQLite file that backend replaced. Refuses to run if the
     destination already holds data.
     """
-    from .db import copy as db_copy
+    from synopticon.db import copy as db_copy
 
     settings = _settings()
     target_desc = store.describe(settings)

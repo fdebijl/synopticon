@@ -26,10 +26,8 @@
 
 23. Investigate why jobs sometimes exit with code 9 (might be host oom'ing)
 
-24. Guided onboarding: do an initial sync, initial extract and initial clustering
+24. Guided onboarding: add initial extract and initial clustering (limited to 50 photos or so?)
 
 27. Add object detection
-
-28. For the job history, add 'Started at' and 'Ended at' columns
 
 29. 'About' button is not visible on mobile

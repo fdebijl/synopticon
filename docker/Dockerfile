@@ -12,9 +12,9 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_COMPILE_BYTECODE=1
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev --extra "${ORT_EXTRA}" --extra review --extra faiss
+RUN uv sync --frozen --no-install-project --no-dev --extra "${ORT_EXTRA}" --extra review --extra faiss --extra postgres
 COPY . .
-RUN uv sync --frozen --no-dev --extra "${ORT_EXTRA}" --extra review --extra faiss
+RUN uv sync --frozen --no-dev --extra "${ORT_EXTRA}" --extra review --extra faiss --extra postgres
 
 # Frontend build stage: compiles the Vue 3 SPA. `npm run build` runs
 # `vue-tsc -b && vite build`; Vite's outDir is `../src/synopticon/web/dist`
