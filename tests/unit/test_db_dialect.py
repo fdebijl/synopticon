@@ -52,6 +52,45 @@ class TestPlaceholders:
         assert Dialect().translate_ddl(sql) == sql
 
 
+class TestNullSafeComparison:
+    def test_is_not_becomes_is_distinct_from(self):
+        # PostgreSQL has no `a IS NOT b`; without this it is a bare syntax error.
+        sql = "SELECT 1 FROM t WHERE e.cache_key IS NOT p.cache_key"
+        assert PG.translate(sql, False) == (
+            "SELECT 1 FROM t WHERE e.cache_key IS DISTINCT FROM p.cache_key"
+        )
+
+    def test_is_becomes_is_not_distinct_from(self):
+        sql = "SELECT 1 FROM t WHERE a IS b"
+        assert PG.translate(sql, False) == "SELECT 1 FROM t WHERE a IS NOT DISTINCT FROM b"
+
+    def test_unary_predicates_are_left_alone(self):
+        sql = "SELECT 1 FROM t WHERE a IS NULL OR b IS NOT NULL OR c IS NOT TRUE OR d IS FALSE"
+        assert PG.translate(sql, False) == sql
+
+    def test_already_standard_form_is_untouched(self):
+        sql = "SELECT 1 FROM t WHERE a IS DISTINCT FROM b"
+        assert PG.translate(sql, False) == sql
+
+    def test_placeholder_operand_is_rewritten(self):
+        sql = "SELECT 1 FROM t WHERE a IS NOT ?"
+        assert PG.translate(sql, True) == "SELECT 1 FROM t WHERE a IS DISTINCT FROM %s"
+
+    def test_literal_operand_across_a_chunk_boundary_is_rewritten(self):
+        # The scanner ends the code chunk at the quote, so the match runs to the
+        # end of the chunk — which only happens for a value comparison.
+        sql = "SELECT 1 FROM t WHERE a IS NOT 'x'"
+        assert PG.translate(sql, False) == "SELECT 1 FROM t WHERE a IS DISTINCT FROM 'x'"
+
+    def test_operator_inside_a_literal_or_comment_is_data(self):
+        assert PG.translate("SELECT 'a IS NOT b' FROM t", False) == "SELECT 'a IS NOT b' FROM t"
+        assert PG.translate("SELECT 1 -- a IS NOT b\n", False) == "SELECT 1 -- a IS NOT b\n"
+
+    def test_sqlite_keeps_its_own_spelling(self):
+        sql = "SELECT 1 FROM t WHERE a IS NOT b"
+        assert Dialect().translate(sql, False) == sql
+
+
 class TestDDLTranslation:
     def test_autoincrement_becomes_an_identity_column(self):
         out = PG.translate_ddl("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)")

@@ -7,8 +7,9 @@ another backend, so adding a backend never means a second copy of a query or of
 
 Two translation surfaces, deliberately separate:
 
-* :meth:`Dialect.translate` — runtime DML/DQL. Only placeholder style differs,
-  because no query in the codebase uses a SQLite-only function.
+* :meth:`Dialect.translate` — runtime DML/DQL. Placeholder style plus the
+  null-safe comparison operator; no query in the codebase uses a SQLite-only
+  function.
 * :meth:`Dialect.translate_ddl` — migration scripts, where column types and
   autoincrement syntax diverge.
 
@@ -159,9 +160,9 @@ class PostgresDialect(Dialect):
 
     Shares SQLite's ``ON CONFLICT (...) DO UPDATE SET x = excluded.x`` upsert
     syntax verbatim, which is why every upsert in the codebase needs no rewrite
-    at all. What does differ: ``%s`` placeholders, ``BYTEA`` for blobs, identity
-    columns instead of ``AUTOINCREMENT``, and ``jsonb`` operators instead of
-    ``json_extract``.
+    at all. What does differ: ``%s`` placeholders, ``IS DISTINCT FROM`` for
+    SQLite's ``IS NOT``, ``BYTEA`` for blobs, identity columns instead of
+    ``AUTOINCREMENT``, and ``jsonb`` operators instead of ``json_extract``.
     """
 
     name = "postgres"
@@ -185,6 +186,16 @@ class PostgresDialect(Dialect):
         return f" RETURNING {column}" if column else None
 
 
+#: SQLite spells null-safe comparison ``a IS b`` / ``a IS NOT b``; the standard
+#: (and PostgreSQL) spells it ``IS [NOT] DISTINCT FROM``. The lookaheads keep the
+#: unary predicates (``IS NULL``, ``IS NOT TRUE``, …) alone. A match that runs to
+#: the end of a code chunk means a string literal or quoted identifier follows,
+#: which is a value comparison too — so rewriting it is right.
+_IS_TAIL = r"(?!NOT\b|NULL\b|TRUE\b|FALSE\b|UNKNOWN\b|DISTINCT\b)"
+_IS_NOT_RE = re.compile(r"\bIS\s+NOT\s+" + _IS_TAIL, re.I)
+_IS_RE = re.compile(r"\bIS\s+" + _IS_TAIL, re.I)
+
+
 @lru_cache(maxsize=1024)
 def _translate_pg(sql: str, has_params: bool) -> str:
     out: list[str] = []
@@ -197,6 +208,8 @@ def _translate_pg(sql: str, has_params: bool) -> str:
             text = text.replace("%", "%%")
         if is_code:
             text = text.replace("?", "%s")
+            text = _IS_NOT_RE.sub("IS DISTINCT FROM ", text)
+            text = _IS_RE.sub("IS NOT DISTINCT FROM ", text)
         out.append(text)
     return "".join(out)
 

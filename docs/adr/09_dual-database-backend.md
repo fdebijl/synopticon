@@ -33,6 +33,15 @@ byte-identical in both, which is why no upsert needed rewriting.
 **Never add a SQLite-only function.** `json_extract` is translated; `strftime`, `printf` and
 `group_concat` are not. Do that work in Python instead.
 
+DML rules:
+
+| SQLite | PostgreSQL | Note |
+|---|---|---|
+| `?` | `%s` | a literal `%` is doubled, but only when binding — psycopg skips placeholder parsing for a parameterless statement |
+| `a IS NOT b` | `a IS DISTINCT FROM b` | SQLite spells null-safe comparison with `IS`; PostgreSQL has no such form and raised a bare `syntax error at or near "p"` on `extract`'s cache-key filter. The unary predicates (`IS NULL`, `IS NOT TRUE`, …) are left alone |
+| `a IS b` | `a IS NOT DISTINCT FROM b` | the same operator, negated |
+| `json_extract` | a `jsonb` path | DDL only, for generated columns and indexes |
+
 ### Translation is a character scanner, not a regex
 
 `_chunks` scans character by character, because a `?` inside a string literal is data and a `;`
@@ -46,7 +55,6 @@ DDL rules:
 | `INTEGER` | `BIGINT` | SQLite's INTEGER is int8; PostgreSQL's is int4. `photos.indexed_time` is epoch *milliseconds* (~1.8e12), so int4 overflowed on the first row `db-migrate` copied |
 | `BLOB` | `BYTEA` | |
 | `REAL` | `DOUBLE PRECISION` | PostgreSQL `REAL` is float4, and face bboxes take part in a `UNIQUE` key — narrowing them would collide distinct detections |
-| `json_extract` | a `jsonb` path | |
 
 Comments are dropped before any of it.
 
