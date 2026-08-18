@@ -133,7 +133,15 @@ def _connect_sqlite(db_path: Path, check_same_thread: bool) -> Connection:
 
 def _connect_postgres(conninfo: str, pool_size: int) -> Connection:
     raw, release = _pg.acquire(conninfo, pool_size)
-    conn = Connection(raw, _postgres_dialect(), release)
+    # `reopen` is what lets a multi-hour command outlive a database restart: the
+    # wrapper re-acquires from the pool instead of ending the run. Migrations are
+    # not re-checked, `_pg_migrated` having already recorded this DSN.
+    conn = Connection(
+        raw,
+        _postgres_dialect(),
+        release,
+        reopen=lambda: _pg.acquire(conninfo, pool_size),
+    )
     if conninfo not in _pg_migrated:
         _migrate_postgres(conn, conninfo)
     return conn

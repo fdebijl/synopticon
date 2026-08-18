@@ -56,6 +56,30 @@ def dsn(config: Any) -> str:
     return uri
 
 
+#: libpq leaves TCP keepalives to the OS, and Linux waits two hours before its
+#: first probe — long enough for a NAT table or a stateful firewall to forget an
+#: idle session, so the next statement fails instead of the socket. A batch
+#: command can sit minutes between statements, so probe early. Anything the
+#: user's own connection string states explicitly wins.
+_KEEPALIVES = {
+    "keepalives": "1",
+    "keepalives_idle": "30",
+    "keepalives_interval": "10",
+    "keepalives_count": "5",
+}
+
+
+def connect_kwargs(conninfo: str) -> dict[str, str]:
+    """libpq settings to layer under ``conninfo``: the keepalives it omits."""
+    from psycopg.conninfo import conninfo_to_dict
+
+    try:
+        given = conninfo_to_dict(conninfo)
+    except Exception:  # noqa: BLE001 - let the connect attempt report a bad DSN
+        given = {}
+    return {key: value for key, value in _KEEPALIVES.items() if key not in given}
+
+
 def _make_pool(conninfo: str, size: int) -> Any:
     from psycopg_pool import ConnectionPool
 
@@ -63,7 +87,7 @@ def _make_pool(conninfo: str, size: int) -> Any:
         conninfo,
         min_size=1,
         max_size=max(1, size),
-        kwargs={"row_factory": row_factory},
+        kwargs={"row_factory": row_factory, **connect_kwargs(conninfo)},
         # Hand out a connection only after checking it is still alive: a database
         # restart or an idle-timeout reaper would otherwise surface as a failed
         # request rather than a transparent reconnect.
@@ -85,7 +109,7 @@ def acquire(conninfo: str, size: int) -> tuple[Any, Any]:
         # have only psycopg. Unpooled still works; it is just slower per request.
         import psycopg
 
-        conn = psycopg.connect(conninfo, row_factory=row_factory)
+        conn = psycopg.connect(conninfo, row_factory=row_factory, **connect_kwargs(conninfo))
         return conn, lambda c: c.close()
     return pool.getconn(timeout=30), pool.putconn
 

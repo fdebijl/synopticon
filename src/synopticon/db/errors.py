@@ -40,6 +40,20 @@ def _driver_bases() -> list[tuple[type, type, type]]:
     return triples
 
 
+#: SQLSTATEs that mean the *session* is gone rather than the statement rejected:
+#: class 08 (connection exception) plus the operator and crash shutdowns. A socket
+#: that died before the server could answer carries no SQLSTATE at all, which is
+#: why :mod:`synopticon.db.connection` asks the connection's own state as well.
+_LOST_CONNECTION_STATES = frozenset(
+    {"08000", "08001", "08003", "08004", "08006", "08P01", "57P01", "57P02", "57P03"}
+)
+
+
+def lost_connection(exc: BaseException) -> bool:
+    """True when ``exc`` reports that the connection itself no longer exists."""
+    return getattr(exc, "sqlstate", None) in _LOST_CONNECTION_STATES
+
+
 def translate(exc: BaseException) -> BaseException:
     """Map a driver exception onto the neutral hierarchy.
 

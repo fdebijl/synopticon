@@ -105,6 +105,37 @@ The four recovery sites — `web/auth.create_user`, `review/lookups.fingerprint`
 `ops_routes._count`, `setup_routes._count` — all call `rollback()` before continuing, which is a
 no-op on SQLite. **Any new `except db_errors.*` that keeps using the connection must do the same.**
 
+### A lost session reconnects itself, at a transaction boundary only
+
+A file cannot hang up. A network database can, and a batch command is the worst case for it: one
+connection held for hours, with minutes of CPU-bound detection between two statements. An `extract`
+run died at photo 25 of 500 that way — `server closed the connection unexpectedly` on the first
+statement after a gap, and then `rollback()` in the per-photo handler raised `the connection is
+lost` on top of it, which escaped the handler that exists so *one bad photo must not abort the run*.
+
+Three parts, all inside `db/`:
+
+- **Keepalives are set, because libpq does not set them.** libpq defers TCP keepalives to the OS and
+  Linux waits two hours before its first probe, which is ample time for a NAT table or a stateful
+  firewall to forget an idle session. `postgres.connect_kwargs` layers `keepalives_idle=30` under
+  the DSN, and anything the user's own connection string states explicitly wins.
+- **`rollback()` is silent when the session is already gone.** There is nothing left to roll back —
+  the server discarded the transaction when the socket died — and raising there would displace the
+  error the caller is already handling.
+- **`Connection` re-acquires from the pool and replays the statement — but only when the current
+  transaction has written nothing.** This is the load-bearing half. A dropped socket rolls the whole
+  transaction back server-side, so replaying a statement that followed earlier writes would commit a
+  *fragment* of a transaction. `_dirty` tracks whether anything in this transaction may have
+  written; past that point the transaction is the caller's to redo, and the batch loops already roll
+  back and skip per item, so the statement after that rollback is the one that reconnects.
+
+**Do not widen the replay rule to every statement.** Silent partial transactions are a far worse
+failure than a run that stops with a clear error, and nothing in the codebase retries a *transaction*
+automatically. `_RECONNECT_PAUSES` bounds the wait; after that the mapped `OperationalError` reaches
+the caller as before.
+
+SQLite passes no `reopen`, so none of this changes its behaviour.
+
 ### Schema versioning differs, migrations do not
 
 SQLite uses `PRAGMA user_version`, unchanged, so existing databases are untouched.
@@ -144,6 +175,8 @@ next insert collides.
 ## Testing
 
 - `test_db_dialect.py` covers translation with no database, and always runs.
+- `test_db_connection.py` covers the reconnect and replay-safety rules against a stub driver that
+  can go bad on command, so a lost session is tested without a server to unplug. It always runs.
 - `test_postgres_backend.py` is the real round trip — schema application, upserts, `RETURNING`,
   blob/float fidelity, error recovery, the copy, and the web API. It skips unless
   `SYNOPTICON_TEST_POSTGRES_DSN` points at a throwaway server, and it drops and recreates `public`
@@ -155,3 +188,6 @@ next insert collides.
   needs no PostgreSQL counterpart.
 - Credential fields in `DatabaseConfig` must be `SecretStr`, never plain `str`, or `configio`'s
   masking does not cover them.
+- A long-running command survives a database restart, but a transaction interrupted mid-write is
+  lost — which is fine only because every phase is resumable and each item is one transaction. A new
+  batch loop must keep that shape: commit per item, and roll back before continuing.
