@@ -43,11 +43,25 @@ DDL rules:
 | SQLite | PostgreSQL | Note |
 |---|---|---|
 | `INTEGER PRIMARY KEY AUTOINCREMENT` | identity column | |
+| `INTEGER` | `BIGINT` | SQLite's INTEGER is int8; PostgreSQL's is int4. `photos.indexed_time` is epoch *milliseconds* (~1.8e12), so int4 overflowed on the first row `db-migrate` copied |
 | `BLOB` | `BYTEA` | |
 | `REAL` | `DOUBLE PRECISION` | PostgreSQL `REAL` is float4, and face bboxes take part in a `UNIQUE` key — narrowing them would collide distinct detections |
 | `json_extract` | a `jsonb` path | |
 
 Comments are dropped before any of it.
+
+### A migration may be scoped to one backend
+
+`_MIGRATIONS` entries ending in `.pg.sql` apply to PostgreSQL only, and still consume a schema
+version everywhere so the numbering stays shared. There is exactly one, and the reason it exists
+is the `INTEGER` → `BIGINT` row above: the translator fixes a *fresh* database, but a PostgreSQL
+library created before that fix carries int4 columns that no amount of translation reaches, so
+`0009_widen_integers.pg.sql` alters them in place. SQLite has no half to write — its INTEGER was
+64-bit all along, and `ALTER COLUMN ... TYPE` is not syntax it accepts.
+
+The widening list is cross-checked against the `INTEGER` columns declared by migrations 1-8
+(`test_db_dialect.py::TestIntegerWidening`), because a column missing from it stays capped at
+2.1e9 on upgraded installs only — the hardest kind of divergence to notice.
 
 ### `cur.lastrowid` works on both
 

@@ -231,6 +231,9 @@ def _translate_pg_ddl(sql: str) -> str:
             text,
             flags=re.I,
         )
+        # SQLite's INTEGER is 64-bit; PostgreSQL's is 32-bit. `photos.indexed_time`
+        # holds epoch *milliseconds*, so int4 overflows on the first row copied.
+        text = re.sub(r"\bINTEGER\b", "BIGINT", text, flags=re.I)
         text = re.sub(r"\bBLOB\b", "BYTEA", text, flags=re.I)
         # SQLite REAL is a 64-bit float; PostgreSQL REAL is 32-bit. Face bboxes
         # take part in a UNIQUE key, so narrowing them would collapse distinct

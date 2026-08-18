@@ -54,8 +54,20 @@ _MIGRATIONS = [
     _SCHEMA_DIR / "migrations" / "0006_web_auth.sql",  # version 6
     _SCHEMA_DIR / "migrations" / "0007_similar_top_pick.sql",  # version 7
     _SCHEMA_DIR / "migrations" / "0008_schedules.sql",  # version 8
+    _SCHEMA_DIR / "migrations" / "0009_widen_integers.pg.sql",  # version 9
     # Future migrations: append db/migrations/000N_*.sql paths here.
 ]
+
+#: A `.pg.sql` migration applies to PostgreSQL only, and still consumes a version
+#: on every backend so the numbering stays shared. It is how a PostgreSQL-only
+#: repair (widening int4 columns SQLite always stored as int8) gets expressed
+#: without inventing a SQLite dialect for something SQLite never needed.
+_PG_ONLY_SUFFIX = ".pg.sql"
+
+
+def _applies_to(migration: Path, backend: str) -> bool:
+    return backend == "postgres" or not migration.name.endswith(_PG_ONLY_SUFFIX)
+
 
 #: Version bookkeeping on backends without SQLite's `PRAGMA user_version`.
 _VERSION_TABLE = "synopticon_schema_version"
@@ -136,7 +148,8 @@ def _migrate_sqlite(conn: Connection) -> None:
         return
     for i, migration in enumerate(_MIGRATIONS, start=1):
         if i > version:
-            conn.executescript(migration.read_text())
+            if _applies_to(migration, "sqlite"):
+                conn.executescript(migration.read_text())
             conn.execute(f"PRAGMA user_version = {i}")
     conn.commit()
 
@@ -156,7 +169,7 @@ def _migrate_postgres(conn: Connection, conninfo: str) -> None:
         try:
             version = _pg_schema_version(conn)
             for i, migration in enumerate(_MIGRATIONS, start=1):
-                if i > version:
+                if i > version and _applies_to(migration, "postgres"):
                     conn.executescript(migration.read_text())
             conn.execute(
                 f"CREATE TABLE IF NOT EXISTS {_VERSION_TABLE} (version INTEGER NOT NULL)"

@@ -61,6 +61,7 @@ syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writ
 SQLite (`data/synopticon.db`) is the default and needs no configuration; PostgreSQL is opt-in via `[database] backend = "postgres"` plus the `[postgres]` extra. MySQL/MariaDB are out of scope. (ADR 09)
 
 - **Write SQL in SQLite's dialect, always**, with `?` placeholders — `db/dialect.py` translates per backend. `json_extract` is translated; `strftime`/`printf`/`group_concat` are not, so do that work in Python.
+- **A migration is written once, in SQLite's dialect**, and appended to `_MIGRATIONS`. A `.pg.sql` name makes it PostgreSQL-only (it still consumes a version on both) — for a repair SQLite never needed, like widening int4 columns.
 - **Catching a database error means calling `rollback()` before reusing the connection.** PostgreSQL aborts the whole transaction where SQLite shrugs it off; the `rollback()` is a no-op on SQLite. Driver exceptions arrive as `db.errors.*`.
 - **A row iterates values, not keys** — it is deliberately not a `Mapping`, because `lookups.fingerprint` depends on `tuple(row)`.
 - **Every caller must `close()`** — under PostgreSQL that is what returns the connection to the pool.

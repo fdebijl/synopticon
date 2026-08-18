@@ -254,6 +254,40 @@ def test_db_migrate_copies_a_sqlite_library_across(pg, tmp_path):
     src.close()
 
 
+def test_no_column_is_left_at_int4(pg):
+    # SQLite's INTEGER is 64-bit, so every column the schema calls INTEGER has to
+    # land as bigint here; int4 would silently cap a column at 2.1e9.
+    narrow = conn_columns(pg[0], "integer")
+    assert narrow == []
+
+
+def test_millisecond_timestamps_survive_a_copy(pg, tmp_path):
+    conn, _ = pg
+    src = store.connect(tmp_path / "source.db")
+    ms = 1_755_000_000_000  # epoch milliseconds — three orders of magnitude past int4
+    src.execute(
+        "INSERT INTO photos (id, space, filesize, time, indexed_time, synced_at, deleted) "
+        "VALUES (?,?,?,?,?,?,0)",
+        (1, "personal", 8 * 1024**3, ms // 1000, ms, store.now()),
+    )
+    src.commit()
+    try:
+        db_copy.copy_database(src, conn)
+        row = conn.execute("SELECT filesize, indexed_time FROM photos").fetchone()
+        assert row["indexed_time"] == ms and row["filesize"] == 8 * 1024**3
+    finally:
+        src.close()
+
+
+def conn_columns(conn, data_type: str) -> list[tuple[str, str]]:
+    rows = conn.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND data_type = ? AND table_name <> ?",
+        (data_type, store._VERSION_TABLE),
+    ).fetchall()
+    return sorted((r[0], r[1]) for r in rows)
+
+
 def test_web_api_serves_from_postgres(pg, tmp_path):
     from fastapi.testclient import TestClient
 
