@@ -1,6 +1,6 @@
 [project]
 name = "synopticon"
-version = "0.12.0"
+version = "0.12.1"
 description = "Ensemble face-recognition supplement for Synology Photos: catch what it missed, correct what it got wrong."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
