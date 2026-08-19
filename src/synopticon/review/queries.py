@@ -40,11 +40,19 @@ MERGE_NAMED_KIND = "merge_named"
 # means the item would tag a face onto a person nobody has named yet.
 _TARGETED_KINDS = frozenset({"assign", "low_confidence", "reassign"})
 
-_DECISIONS = {"approve": "approved", "reject": "rejected"}
+_DECISIONS = {"approve": "approved", "reject": "rejected", "hide": "hidden"}
 
 # Statuses a human decision may be reverted from. Never touch applied/failed
 # (the NAS write already happened / was attempted) or pending (nothing to undo).
-_UNDOABLE = frozenset({"approved", "rejected"})
+_UNDOABLE = frozenset({"approved", "rejected", "hidden"})
+
+# Kinds whose target person a human may override from the review UI.
+_RETARGETABLE_KINDS = frozenset({"assign", "low_confidence", "new_person"})
+
+# Statuses a retarget refuses. `applied` already reached the NAS, so rewriting
+# its target would describe a write that never happened; `hidden` is either a
+# deliberate dismissal or a row that has already been merged into someone.
+_UNRETARGETABLE = frozenset({"applied", "hidden"})
 
 
 # --------------------------------------------------------------------------- #
@@ -174,6 +182,25 @@ def _is_hidden(hidden: set[tuple[str, int]], space: Any, person_id: Any) -> bool
     return (space, int(person_id)) in hidden
 
 
+def _person_crops(
+    person_face_map: dict[tuple[str, int], list[int]] | None,
+    key: tuple[str, int],
+    crops: dict[int, str | None],
+    limit: int = 3,
+) -> list[str]:
+    """Up to ``limit`` crop URLs for one ``(space, person_id)``, best quality first."""
+    if not person_face_map:
+        return []
+    out = []
+    for fid in person_face_map.get(key, []):
+        url = crops.get(fid)
+        if url:
+            out.append(url)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _target_crops(
     person_face_map: dict[tuple[str, int], list[int]],
     payload: dict,
@@ -183,14 +210,7 @@ def _target_crops(
     space, person_id = payload.get("space"), payload.get("person_id")
     if not space or person_id is None:
         return []
-    out = []
-    for fid in person_face_map.get((space, int(person_id)), []):
-        url = crops.get(fid)
-        if url:
-            out.append(url)
-        if len(out) >= limit:
-            break
-    return out
+    return _person_crops(person_face_map, (space, int(person_id)), crops, limit)
 
 
 def _merge_side_crops(
@@ -323,7 +343,7 @@ def load_review_items(
                 and not str(person_b.get("name") or "").strip(),
                 "named_merge": r["kind"] == "merge_named",
                 "target_crops": _target_crops(person_face_map, payload, crops)
-                if r["kind"] == "reassign"
+                if r["kind"] == "reassign" or payload.get("manual_target")
                 else [],
                 "target_hidden": _is_hidden(
                     hidden, payload.get("space"), payload.get("person_id")
@@ -337,6 +357,60 @@ def load_review_items(
             }
         )
     return items
+
+
+def person_search(
+    conn: Connection,
+    q: str,
+    *,
+    space: str = "",
+    limit: int = 10,
+    crops: dict[int, str | None] | None = None,
+    person_face_map: dict[tuple[str, int], list[int]] | None = None,
+    hidden: set[tuple[str, int]] | None = None,
+) -> list[dict]:
+    """Named persons matching ``q``, for the review UI's retarget picker.
+
+    Searches the **local** ``persons`` mirror rather than
+    ``foto.suggest_person``: review is a local-DB surface (it must work with no
+    NAS reachable), and this way the target thumbnails are the same
+    ``/crops/...`` URLs the cards already show. Unnamed persons are excluded —
+    there is no name to search them by, and QuickMerger is the surface for
+    those.
+    """
+    needle = q.strip()
+    if not needle:
+        return []
+    if crops is None:
+        crops = {}
+    args: list[Any] = [f"%{needle.lower()}%"]
+    space_clause = ""
+    if space:
+        space_clause = "AND space = ? "
+        args.append(space)
+    args.append(max(1, min(int(limit), 25)))
+    rows = conn.execute(
+        "SELECT space, id, name, item_count FROM persons "
+        "WHERE deleted = 0 AND name IS NOT NULL AND name <> '' "
+        f"AND LOWER(name) LIKE ? {space_clause}"
+        "ORDER BY item_count DESC, name LIMIT ?",
+        args,
+    ).fetchall()
+
+    out = []
+    for row in rows:
+        key = (row["space"], int(row["id"]))
+        out.append(
+            {
+                "space": row["space"],
+                "person_id": int(row["id"]),
+                "name": row["name"],
+                "item_count": row["item_count"],
+                "hidden": key in hidden if hidden else False,
+                "crops": _person_crops(person_face_map, key, crops),
+            }
+        )
+    return out
 
 
 def queue_counts(conn: Connection) -> dict[str, dict[str, int]]:
@@ -400,16 +474,27 @@ def undo_decision(conn: Connection, item_id: int) -> str | None:
     """Revert an approve/reject back to ``pending``.
 
     Resets ``status`` to ``pending`` and clears ``decided_at``/``decided_by`` —
-    but **only** when the item currently sits at ``approved`` or ``rejected``.
-    Returns the new status (``"pending"``) on success, or ``None`` (DB
-    untouched) when the item is missing or in a non-undoable state
+    but **only** when the item currently sits at ``approved``, ``rejected`` or
+    ``hidden``. Returns the new status (``"pending"``) on success, or ``None``
+    (DB untouched) when the item is missing or in a non-undoable state
     (``applied``/``failed``/``pending``), so the API can signal a conflict.
+
+    A row hidden by a *retarget* is also refused: its faces already live in
+    approved ``assign`` rows, so restoring the suggestion would offer a decision
+    the human has made.
     """
     row = conn.execute(
-        "SELECT status FROM review_queue WHERE item_id = ?", (item_id,)
+        "SELECT status, payload_json FROM review_queue WHERE item_id = ?",
+        (item_id,),
     ).fetchone()
     if row is None or row["status"] not in _UNDOABLE:
         return None
+    if row["status"] == "hidden":
+        try:
+            if json.loads(row["payload_json"]).get("retargeted_to"):
+                return None
+        except (json.JSONDecodeError, TypeError):
+            pass
     conn.execute(
         "UPDATE review_queue SET status = 'pending', decided_at = NULL, "
         "decided_by = NULL WHERE item_id = ?",
@@ -434,6 +519,187 @@ def bulk_approve(
     )
     conn.commit()
     return cur.rowcount
+
+
+class SpaceMismatch(ValueError):
+    """A retarget named a person in a different space than the face lives in."""
+
+
+def _cluster_face_ids(
+    conn: Connection, run_id: Any, exemplars: list[int]
+) -> list[int]:
+    """Every face in the cluster the ``new_person`` item came from.
+
+    The payload keeps only the first 20 exemplars, so a "these are all P" merge
+    has to recover full membership from ``cluster_members`` — seeded from an
+    exemplar, since the payload does not carry the cluster id either. Falls back
+    to the exemplars when the run is gone (``run_id`` is ``ON DELETE SET NULL``)
+    or the members were cleared.
+    """
+    if run_id is None or not exemplars:
+        return list(exemplars)
+    rows = conn.execute(
+        "SELECT face_id FROM cluster_members WHERE run_id = ? AND cluster_id = "
+        "(SELECT cluster_id FROM cluster_members WHERE run_id = ? AND face_id = ?) "
+        "ORDER BY face_id",
+        (run_id, run_id, exemplars[0]),
+    ).fetchall()
+    return [int(r["face_id"]) for r in rows] or list(exemplars)
+
+
+def _face_targets(conn: Connection, face_ids: list[int]) -> dict[int, dict]:
+    """``face_id -> {space, photo_id, bbox_normalized}`` for the given faces only.
+
+    Same normalization as ``crossref._load_face_meta``, but keyed on a handful
+    of ids instead of scanning every face in the library. Faces whose photo has
+    no stored dimensions are omitted — there is no bbox to write without them.
+    """
+    if not face_ids:
+        return {}
+    placeholders = ",".join("?" for _ in face_ids)
+    out: dict[int, dict] = {}
+    for row in conn.execute(
+        "SELECT f.face_id, f.space, f.photo_id, f.x, f.y, f.w, f.h, "
+        "p.width AS pw, p.height AS ph FROM faces f "
+        "JOIN photos p ON p.space = f.space AND p.id = f.photo_id "
+        f"WHERE f.face_id IN ({placeholders})",
+        list(face_ids),
+    ):
+        pw, ph = row["pw"], row["ph"]
+        if not pw or not ph:
+            continue
+        out[int(row["face_id"])] = {
+            "space": row["space"],
+            "photo_id": int(row["photo_id"]),
+            "bbox_normalized": [
+                float(row["x"]) / pw,
+                float(row["y"]) / ph,
+                (float(row["x"]) + float(row["w"])) / pw,
+                (float(row["y"]) + float(row["h"])) / ph,
+            ],
+        }
+    return out
+
+
+def retarget_item(
+    conn: Connection, item_id: int, space: str, person_id: int, person_name: str = ""
+) -> dict | None:
+    """Point a suggestion at the person a human picked instead.
+
+    Two shapes, one entry point — both queue-only, so the NAS write still
+    happens later through ``apply`` under its own flags:
+
+    * ``assign``/``low_confidence`` — rewrite the payload's target person. The
+      stored ``confidence`` was a similarity to the *old* person, so it is
+      cleared rather than left to read as an endorsement of the new one.
+    * ``new_person`` — the kind ``apply`` cannot write at all. Expand the whole
+      cluster into one ``assign`` row per face against the chosen person and
+      retire the original row as ``hidden``, with a breadcrumb naming what it
+      became.
+
+    Rows land ``approved``: picking the person *is* the decision. Returns
+    ``None`` (DB untouched) for a missing item, a kind that has no target to
+    retarget, or a status in :data:`_UNRETARGETABLE` — which is also what stops a
+    repeated call from expanding the same cluster twice. Raises
+    :class:`SpaceMismatch` when the person lives in another space than the face.
+    """
+    row = conn.execute(
+        "SELECT kind, payload_json, run_id, status FROM review_queue "
+        "WHERE item_id = ?",
+        (item_id,),
+    ).fetchone()
+    if (
+        row is None
+        or row["kind"] not in _RETARGETABLE_KINDS
+        or row["status"] in _UNRETARGETABLE
+    ):
+        return None
+    kind, payload = row["kind"], json.loads(row["payload_json"])
+    now = store.now()
+
+    if kind != "new_person":
+        if payload.get("space") and payload["space"] != space:
+            raise SpaceMismatch(
+                f"that person is in the {space} space "
+                f"but the face is in {payload['space']}"
+            )
+        payload["original_person_id"] = payload.get("person_id")
+        payload["person_id"] = person_id
+        payload["person_name"] = person_name or None
+        payload["manual_target"] = True
+        conn.execute(
+            "UPDATE review_queue SET payload_json = ?, confidence = NULL, "
+            "status = 'approved', decided_at = ?, decided_by = ? WHERE item_id = ?",
+            (json.dumps(payload), now, "review-ui", item_id),
+        )
+        conn.commit()
+        return {
+            "status": "approved",
+            "kind": kind,
+            "person_id": person_id,
+            "person_name": payload["person_name"],
+            "created": 0,
+            "skipped": 0,
+        }
+
+    exemplars = [int(f) for f in payload.get("face_ids") or []]
+    face_ids = _cluster_face_ids(conn, row["run_id"], exemplars)
+    targets = _face_targets(conn, face_ids)
+    created: list[int] = []
+    skipped = 0
+    for fid in face_ids:
+        meta = targets.get(fid)
+        if meta is None or meta["space"] != space:
+            skipped += 1
+            continue
+        cur = conn.execute(
+            "INSERT INTO review_queue (run_id, kind, payload_json, confidence, "
+            "status, decided_at, decided_by, created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                row["run_id"],
+                "assign",
+                json.dumps(
+                    {
+                        "face_id": fid,
+                        "photo_id": meta["photo_id"],
+                        "space": meta["space"],
+                        "person_id": person_id,
+                        "person_name": person_name or None,
+                        "bbox_normalized": meta["bbox_normalized"],
+                        "confidence": None,
+                        "manual_target": True,
+                        "source_item_id": item_id,
+                    }
+                ),
+                None,
+                "approved",
+                now,
+                "review-ui",
+                now,
+            ),
+        )
+        created.append(int(cur.lastrowid))
+
+    payload["retargeted_to"] = {
+        "space": space,
+        "person_id": person_id,
+        "person_name": person_name or None,
+        "item_ids": created,
+    }
+    conn.execute(
+        "UPDATE review_queue SET payload_json = ?, status = 'hidden', "
+        "decided_at = ?, decided_by = ? WHERE item_id = ?",
+        (json.dumps(payload), now, "review-ui", item_id),
+    )
+    conn.commit()
+    return {
+        "status": "hidden",
+        "kind": kind,
+        "person_id": person_id,
+        "person_name": person_name or None,
+        "created": len(created),
+        "skipped": skipped,
+    }
 
 
 def set_suggested_name(

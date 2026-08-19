@@ -1279,6 +1279,59 @@ def create_app(
 
         return {"approved": await run_in_threadpool(work)}
 
+    @app.get("/api/review/persons")
+    def api_review_persons(q: str = "", space: str = "", limit: int = 10):
+        if not q.strip():
+            return {"persons": []}
+        c = conn()
+        try:
+            lk = lookups.get(c, settings)
+            return {
+                "persons": queries.person_search(
+                    c,
+                    q,
+                    space=space,
+                    limit=limit,
+                    crops=lk.crops,
+                    person_face_map=lk.person_face_map,
+                    hidden=lk.hidden,
+                )
+            }
+        finally:
+            c.close()
+
+    @app.post("/api/review/{item_id}/retarget")
+    async def api_review_retarget(request: Request, item_id: int):
+        body = await request.json()
+        space = (body.get("space") or "").strip()
+        person_id = body.get("person_id")
+        person_name = (body.get("person_name") or "").strip()
+        if not space or not isinstance(person_id, int):
+            return JSONResponse(
+                {"error": "space (str) and person_id (int) are required"},
+                status_code=422,
+            )
+
+        def work():
+            c = conn()
+            try:
+                return queries.retarget_item(
+                    c, item_id, space, person_id, person_name
+                )
+            finally:
+                c.close()
+
+        try:
+            result = await run_in_threadpool(work)
+        except queries.SpaceMismatch as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        if result is None:
+            return JSONResponse(
+                {"error": "this item has no target person to change"},
+                status_code=400,
+            )
+        return {"item_id": item_id, **result}
+
     @app.post("/api/review/{item_id}/name")
     async def api_review_name(request: Request, item_id: int):
         body = await request.json()

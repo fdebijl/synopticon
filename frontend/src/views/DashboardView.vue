@@ -107,7 +107,7 @@ const tiles = computed<Tile[]>(() => {
 
 const reviewPending = computed(() => statusTotal('pending'))
 const reviewBreakdown = computed(() =>
-  (['approved', 'applied', 'rejected', 'failed'] as const)
+  (['approved', 'applied', 'rejected', 'hidden', 'failed'] as const)
     .map((st) => ({ st, n: statusTotal(st) }))
     .filter((r) => r.n > 0),
 )
@@ -145,7 +145,15 @@ const stages = computed<Stage[]>(() => {
   const pending = statusTotal('pending')
   const approved = statusTotal('approved')
   const applied = statusTotal('applied')
-  const totalItems = pending + approved + applied + statusTotal('rejected') + statusTotal('failed')
+  // Hidden items are reviewed items — a human decided "never again" — so they
+  // count toward the queue being worked through.
+  const totalItems =
+    pending +
+    approved +
+    applied +
+    statusTotal('rejected') +
+    statusTotal('hidden') +
+    statusTotal('failed')
 
   let revState: Stage['state']
   let revNote: string

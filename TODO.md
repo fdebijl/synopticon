@@ -10,10 +10,6 @@
 
 12. Add toggle to Hide unnamed for all operations in review ui
 
-13. Let users reassign if synopticon got a match wrong
-
-14. Click to focus card in review ui
-
 15. UI should have a quick redirect to /login if not logged in, instead of waiting for the server
 
 19. Ensure the health endpoint always responds when the container is live, still gets bogged down by jobs.
@@ -28,6 +24,6 @@
 
 27. Add object detection
 
-30. For new people suggestions, add 'Hide' button and 'Merge into ... instead'
-
 31. Detect missing crops on review page and tell user to regen crops
+
+32. Change default SCRFD and YOLO score to 0.45

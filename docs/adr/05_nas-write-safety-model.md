@@ -119,3 +119,7 @@ once-per-session confirmation.
   then whether it is schedulable. In that order.
 - Any new surface that can reach `SynoWriter` needs its own answer to "how can this not perform a
   named merge?"
+- A GUI click may create `status='approved'` rows directly (the review UI's retarget actions, ADR
+  14) without any consent gate. That does not weaken this model: those actions only rewrite
+  `review_queue`, and the flags above are still the only thing that writes to the NAS. A review-side
+  action that wanted to write *now* would be a second QuickMerger and would owe the same guarantees.

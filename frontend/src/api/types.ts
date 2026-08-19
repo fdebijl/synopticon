@@ -46,12 +46,35 @@ export type ReviewKind =
   | 'merge_named'
   | 'new_person'
 
-export type ReviewDecision = 'approve' | 'reject'
+// Exactly what POST /api/review/{id}/decide accepts. 'hide' is the sticky
+// counterpart to 'reject': the next Group faces run re-proposes a rejected
+// suggestion but never a hidden one.
+export type ReviewDecision = 'approve' | 'reject' | 'hide'
 
 export interface ReviewPerson {
   person_id?: number | string | null
   name?: string | null
   space?: string | null
+}
+
+// One person the retarget picker can point an item at (GET /api/review/persons).
+export interface ReviewPersonSuggestion {
+  space: string
+  person_id: number
+  name: string
+  item_count: number | null
+  hidden: boolean
+  crops: string[]
+}
+
+export interface RetargetResponse {
+  item_id: number
+  status: string
+  kind: string
+  person_id: number
+  person_name: string | null
+  created: number
+  skipped: number
 }
 
 // payload_json is loosely shaped — only the fields the UI reads are typed.
@@ -68,6 +91,17 @@ export interface ReviewPayload {
   photo_id?: number | string | null
   face_id?: number | null
   face_ids?: number[]
+  size?: number | null
+  /** Set when a human picked the target person instead of the pipeline. */
+  manual_target?: boolean
+  original_person_id?: number | string | null
+  /** On a retargeted new_person row: what it became. */
+  retargeted_to?: {
+    space: string
+    person_id: number
+    person_name: string | null
+    item_ids: number[]
+  } | null
   [k: string]: unknown
 }
 

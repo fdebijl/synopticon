@@ -295,6 +295,87 @@ def test_run_clustering_dedup_across_runs(db_helpers, tmp_settings):
     assert (4, 100) in identities
 
 
+def test_hidden_new_person_is_not_reproposed(db_helpers, tmp_settings):
+    """Hiding is the sticky counterpart to rejecting: a hidden cluster must not
+    come back on the next run, where a rejected one deliberately does."""
+    h = db_helpers
+    for i in range(5):  # crossref.new_person_min_faces default
+        h.insert_photo("personal", i)
+        h.insert_face("personal", i, 100, 100, 200, 200)
+    for fid in range(1, 6):
+        h.insert_embedding(fid, "arcface", [1.0, 0.0, 0.0, 0.0])
+    h.commit()
+
+    crossref.run_clustering(h.conn, tmp_settings)
+    rows = h.conn.execute(
+        "SELECT item_id FROM review_queue WHERE kind = 'new_person'"
+    ).fetchall()
+    assert len(rows) == 1
+
+    h.conn.execute(
+        "UPDATE review_queue SET status = 'hidden' WHERE item_id = ?",
+        (rows[0]["item_id"],),
+    )
+    h.conn.commit()
+    crossref.run_clustering(h.conn, tmp_settings)
+    assert (
+        h.conn.execute(
+            "SELECT COUNT(*) AS c FROM review_queue WHERE kind = 'new_person'"
+        ).fetchone()["c"]
+        == 1
+    )
+
+    # A rejected one, by contrast, is offered again.
+    h.conn.execute("UPDATE review_queue SET status = 'rejected'")
+    h.conn.commit()
+    crossref.run_clustering(h.conn, tmp_settings)
+    assert (
+        h.conn.execute(
+            "SELECT COUNT(*) AS c FROM review_queue WHERE kind = 'new_person'"
+        ).fetchone()["c"]
+        == 2
+    )
+
+
+def test_retargeted_assign_does_not_resurrect_the_old_suggestion(
+    db_helpers, tmp_settings
+):
+    import json
+
+    h = db_helpers
+    h.insert_person("personal", 100, "Alice")
+    h.insert_person("personal", 200, "Bob")
+    for i in range(4):
+        h.insert_photo("personal", i)
+        h.insert_face("personal", i, 100, 100, 200, 200)
+    for fid in range(1, 5):
+        h.insert_embedding(fid, "arcface", [1.0, 0.0, 0.0, 0.0])
+    for si, photo in enumerate([0, 1, 2]):
+        h.insert_syno_face("personal", si + 1, photo, 100, (0.1, 0.1, 0.3, 0.3))
+    h.commit()
+
+    crossref.run_clustering(h.conn, tmp_settings)
+    row = h.conn.execute(
+        "SELECT item_id, payload_json FROM review_queue WHERE kind = 'assign'"
+    ).fetchone()
+    payload = json.loads(row["payload_json"])
+    assert (payload["face_id"], payload["person_id"]) == (4, 100)
+
+    # A human says "no, that's Bob" — the (4, 100) identity now exists nowhere.
+    from synopticon.review import queries
+
+    queries.retarget_item(h.conn, row["item_id"], "personal", 200, "Bob")
+
+    crossref.run_clustering(h.conn, tmp_settings)
+    identities = [
+        (json.loads(r["payload_json"])["face_id"], json.loads(r["payload_json"])["person_id"])
+        for r in h.conn.execute(
+            "SELECT payload_json FROM review_queue WHERE kind IN ('assign','low_confidence')"
+        )
+    ]
+    assert identities == [(4, 200)]
+
+
 def _split_person_cluster(h, name_a, name_b):
     """5 identical faces in one cluster: 3 labeled person 10, 2 labeled person 20."""
     h.insert_person("personal", 10, name_a)

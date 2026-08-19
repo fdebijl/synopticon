@@ -520,14 +520,19 @@ def _load_person_names(conn: Connection) -> dict[PersonKey, str | None]:
 
 
 def _existing_identities(conn: Connection) -> dict[str, set]:
-    """Payload identities already pending/approved/applied from ANY run."""
+    """Payload identities already pending/approved/applied/hidden from ANY run.
+
+    ``hidden`` counts as seen — that is the whole difference between hiding a
+    suggestion and rejecting it. A rejected row is deliberately re-proposed on
+    the next run; a hidden one is a human saying "never again".
+    """
     assigns: set[tuple[int, int]] = set()
     merges: set[tuple] = set()
     new_persons: set[tuple] = set()
     reassigns: set[tuple[int, int]] = set()
     for row in conn.execute(
         "SELECT kind, payload_json FROM review_queue "
-        "WHERE status IN ('pending','approved','applied')"
+        "WHERE status IN ('pending','approved','applied','hidden')"
     ):
         try:
             payload = json.loads(row["payload_json"])
@@ -537,6 +542,13 @@ def _existing_identities(conn: Connection) -> dict[str, set]:
         if kind in ("assign", "low_confidence"):
             if "face_id" in payload and "person_id" in payload:
                 assigns.add((int(payload["face_id"]), int(payload["person_id"])))
+                # A human retargeted this face: the suggestion they overruled is
+                # no longer in any payload, so register it too or the next run
+                # proposes the wrong person all over again.
+                if payload.get("original_person_id") is not None:
+                    assigns.add(
+                        (int(payload["face_id"]), int(payload["original_person_id"]))
+                    )
         elif kind in ("merge", "merge_named"):
             pa, pb = payload.get("person_a"), payload.get("person_b")
             if pa and pb:

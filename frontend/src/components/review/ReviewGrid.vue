@@ -25,6 +25,8 @@ const skeletonCount = computed(() =>
 const emit = defineEmits<{
   (e: 'decide', payload: { item: ClientReviewItem; decision: ReviewDecision }): void
   (e: 'name', payload: { item: ClientReviewItem; value: string }): void
+  (e: 'retarget', payload: { item: ClientReviewItem; mode: 'merge' | 'reassign' }): void
+  (e: 'select', item: ClientReviewItem): void
   (e: 'load-more'): void
 }>()
 
@@ -78,6 +80,8 @@ onUnmounted(() => {
         :selected="it.item_id === selectedId"
         @decide="(d) => emit('decide', { item: it, decision: d })"
         @name="(v) => emit('name', { item: it, value: v })"
+        @retarget="(m) => emit('retarget', { item: it, mode: m })"
+        @select="emit('select', it)"
       />
       <ReviewCardSkeleton v-for="n in skeletonCount" :key="`sk-${n}`" />
     </div>

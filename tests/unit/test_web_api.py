@@ -380,6 +380,107 @@ def test_review_bulk_and_name(app, db):
         assert r2.json()["suggested_name"] == "Carol"
 
 
+def test_review_hide_and_unhide(app, db):
+    _seed_user(db)
+    iid = _add_item(db, "new_person", {"face_ids": [1, 2]})
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.post(f"/api/review/{iid}/decide", json={"decision": "hide"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "hidden"
+        assert c.get("/api/review/counts").json()["counts"]["hidden"]["new_person"] == 1
+        # hiding is reversible from the same endpoint
+        assert (
+            c.post(f"/api/review/{iid}/decide", json={"decision": "undo"}).json()["status"]
+            == "pending"
+        )
+
+
+def test_review_persons_search(app, db):
+    _seed_user(db)
+    now = store.now()
+    db.execute(
+        "INSERT INTO persons (id, space, name, item_count, synced_at) VALUES (?,?,?,?,?)",
+        (7, "personal", "Hannah Lips", 12, now),
+    )
+    db.commit()
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        assert c.get("/api/review/persons").json() == {"persons": []}
+        hits = c.get("/api/review/persons?q=hann").json()["persons"]
+        assert [(h["person_id"], h["name"]) for h in hits] == [(7, "Hannah Lips")]
+
+
+def test_review_retarget_assign(app, db):
+    _seed_user(db)
+    iid = _add_item(
+        db,
+        "assign",
+        {"face_id": 1, "photo_id": 1, "space": "personal", "person_id": 11},
+        confidence=0.7,
+    )
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.post(
+            f"/api/review/{iid}/retarget",
+            json={"space": "personal", "person_id": 22, "person_name": "Hannah"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["item_id"] == iid
+        assert body["status"] == "approved"
+        # a person in another space than the face -> 422, not a silent write
+        assert (
+            c.post(
+                f"/api/review/{iid}/retarget",
+                json={"space": "shared", "person_id": 33},
+            ).status_code
+            == 422
+        )
+        # missing/ill-typed body -> 422
+        assert c.post(f"/api/review/{iid}/retarget", json={}).status_code == 422
+        assert (
+            c.post(
+                f"/api/review/{iid}/retarget",
+                json={"space": "personal", "person_id": "22"},
+            ).status_code
+            == 422
+        )
+    payload = json.loads(
+        db.execute(
+            "SELECT payload_json FROM review_queue WHERE item_id = ?", (iid,)
+        ).fetchone()["payload_json"]
+    )
+    assert payload["person_id"] == 22
+    assert payload["original_person_id"] == 11
+
+
+def test_review_retarget_refuses_a_merge(app, db):
+    _seed_user(db)
+    iid = _add_item(db, "merge", {"person_a": {"person_id": 1}, "person_b": {"person_id": 2}})
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.post(
+            f"/api/review/{iid}/retarget", json={"space": "personal", "person_id": 22}
+        )
+        assert r.status_code == 400
+        assert r.json()["error"]
+
+
+def test_review_retarget_and_persons_require_authentication(app, db):
+    _seed_user(db)
+    iid = _add_item(db, "assign", {"space": "personal", "person_id": 1})
+    with TestClient(app, follow_redirects=False) as c:
+        assert c.get("/api/review/persons?q=a").status_code == 401
+        assert (
+            c.post(
+                f"/api/review/{iid}/retarget",
+                json={"space": "personal", "person_id": 22},
+            ).status_code
+            == 401
+        )
+
+
 # --------------------------------------------------------------------------- #
 # SPA serving: catch-all, dist root files, traversal, missing dist, pre-flight
 # --------------------------------------------------------------------------- #

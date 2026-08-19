@@ -23,6 +23,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `11_web-authentication.md` | `web/auth.py`, sessions, API keys, the middleware's auth branch |
 | `12_in-process-cron-scheduling.md` | `cron.py`, `web/schedule*` |
 | `13_backup-downloads.md` | `web/backup_routes.py`, `db/snapshot.py`, `configio.export_config` |
+| `14_review-retargeting.md` | `review/queries.py` mutations, the `hidden` status, `_existing_identities` |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -117,6 +118,14 @@ Everything before `apply` is read-only toward the NAS. `apply` is dry-run by def
 - **`eval`, `reset-password` and `db-migrate` stay CLI-only** — never give them a `JOB_SPECS` entry.
 - Schedules replay a stored submission with `confirm_phrase` always `None`, so every typed-phrase job is unschedulable by construction.
 - QuickMerger is the one GUI surface that writes outside `apply`; it refuses a named↔named merge with 409. (ADR 05)
+- The review UI's Hide / Merge into / Reassign actions rewrite `review_queue` and never call the NAS, which is why they carry no consent gate. Keep it that way. (ADR 14)
+
+### Review queue statuses
+
+`pending | approved | rejected | hidden | applied | failed`. Two of them are easy to conflate:
+
+- **`rejected` is re-proposed by the next `cluster` run; `hidden` is not** — `_existing_identities` counts `hidden` as seen. That is the only difference, and it is the point of having both.
+- **`approved` does not imply the pipeline proposed it.** A retarget writes an approved row from a human's pick; `payload.manual_target` marks those, and their `confidence` is NULL because the stored score belonged to the person that got overruled (`payload.original_person_id`).
 
 ### Web GUI (`web/`)
 

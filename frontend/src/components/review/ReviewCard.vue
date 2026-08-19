@@ -23,11 +23,16 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'decide', decision: ReviewDecision): void
   (e: 'name', value: string): void
+  /** Open the person picker: 'merge' folds a new person into an existing one,
+   * 'reassign' re-points a single face. */
+  (e: 'retarget', mode: 'merge' | 'reassign'): void
+  (e: 'select'): void
 }>()
 
 const STATUS_BY_DECISION: Record<ReviewDecision, string> = {
   approve: 'approved',
   reject: 'rejected',
+  hide: 'hidden',
 }
 
 const decided = computed(() => props.decision != null)
@@ -51,6 +56,13 @@ function fmt(n: number | null | undefined): string {
 function onName(e: Event): void {
   emit('name', (e.target as HTMLInputElement).value)
 }
+
+// Click anywhere on the card to make it the current one, so the hotkeys act on
+// what was clicked. The card's own controls keep their meaning.
+function onActivate(e: Event): void {
+  if ((e.target as HTMLElement).closest('button, a, input')) return
+  emit('select')
+}
 </script>
 
 <template>
@@ -62,6 +74,8 @@ function onName(e: Event): void {
     :data-unnamed-merge="item.unnamed_merge ? '1' : undefined"
     :data-named-merge="item.named_merge ? '1' : undefined"
     tabindex="0"
+    @click="onActivate"
+    @focusin="onActivate"
   >
     <!-- Top face crop for every non-reassign kind. -->
     <template v-if="item.crop && item.kind !== 'reassign'">
@@ -228,7 +242,22 @@ function onName(e: Event): void {
         <strong>{{ p.person_name || p.person_id }}</strong
         ><HiddenBadge v-if="item.target_hidden" cls="name-hidden" />
       </div>
-      <div class="muted">conf {{ fmt(item.confidence) }}</div>
+      <div v-if="p.manual_target" class="thumbs">
+        <img
+          v-for="(c, i) in item.target_crops"
+          :key="i"
+          :src="c"
+          alt=""
+          loading="lazy"
+          decoding="async"
+        />
+      </div>
+      <!-- A retargeted item's stored confidence was a similarity to the person
+           the human overruled, so there is no score left to show. -->
+      <div class="muted">
+        <template v-if="p.manual_target">you picked this person</template>
+        <template v-else>conf {{ fmt(item.confidence) }}</template>
+      </div>
     </template>
 
     <div class="muted card-kind">{{ item.kind }} · {{ displayStatus }}</div>
@@ -246,6 +275,33 @@ function onName(e: Event): void {
         @click="emit('decide', 'reject')"
       >
         &cross; <kbd>n</kbd>
+      </button>
+      <template v-if="item.kind === 'new_person'">
+        <button
+          class="btn btn-sm btn-ghost"
+          type="button"
+          title="Never suggest this group again"
+          @click="emit('decide', 'hide')"
+        >
+          Hide <kbd>h</kbd>
+        </button>
+        <button
+          class="btn btn-sm btn-ghost"
+          type="button"
+          title="These faces belong to a person who already exists"
+          @click="emit('retarget', 'merge')"
+        >
+          Merge into&hellip; <kbd>m</kbd>
+        </button>
+      </template>
+      <button
+        v-else-if="item.kind === 'assign' || item.kind === 'low_confidence'"
+        class="btn btn-sm btn-ghost"
+        type="button"
+        title="Pick a different person for this face"
+        @click="emit('retarget', 'reassign')"
+      >
+        Reassign&hellip; <kbd>r</kbd>
       </button>
     </div>
   </div>
@@ -331,7 +387,13 @@ function onName(e: Event): void {
 }
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-2);
   margin-top: var(--sp-2);
+}
+/* new_person carries four actions, which do not fit one row of a 240px card:
+   let a whole button drop to the next row rather than squeeze its label. */
+.card-actions .btn {
+  white-space: nowrap;
 }
 </style>

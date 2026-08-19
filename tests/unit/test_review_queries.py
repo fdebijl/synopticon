@@ -265,6 +265,272 @@ def test_set_suggested_name(conn, settings):
     assert queries.set_suggested_name(conn, 999999, "Missing") is False
 
 
+def _add_face(conn, face_id, space, photo_id, w=1000, h=1000, crop_path=None):
+    conn.execute(
+        "INSERT INTO photos (id, space, width, height, synced_at) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(space, id) DO NOTHING",
+        (photo_id, space, w, h, store.now()),
+    )
+    conn.execute(
+        "INSERT INTO faces (face_id, space, photo_id, detector, x, y, w, h, "
+        "crop_path, pipeline_version, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        (face_id, space, photo_id, "scrfd", 100, 200, 50, 50, crop_path, "v1", store.now()),
+    )
+    conn.commit()
+
+
+def test_hide_is_a_decision_and_is_undoable(conn, settings):
+    iid = _add_item(conn, "new_person", {"face_ids": [1, 2]})
+    assert queries.decide_item(conn, iid, "hide") == "hidden"
+    assert (
+        conn.execute(
+            "SELECT status FROM review_queue WHERE item_id = ?", (iid,)
+        ).fetchone()["status"]
+        == "hidden"
+    )
+    assert queries.undo_decision(conn, iid) == "pending"
+
+
+def test_retarget_assign_rewrites_the_target(conn, settings):
+    iid = _add_item(
+        conn,
+        "assign",
+        {
+            "face_id": 5,
+            "photo_id": 1,
+            "space": "personal",
+            "person_id": 11,
+            "person_name": "Wrong",
+            "bbox_normalized": [0.1, 0.2, 0.3, 0.4],
+        },
+        confidence=0.42,
+    )
+
+    result = queries.retarget_item(conn, iid, "personal", 22, "Hannah")
+    assert result["status"] == "approved"
+    assert result["created"] == 0
+
+    row = conn.execute(
+        "SELECT payload_json, confidence, status, decided_by FROM review_queue "
+        "WHERE item_id = ?",
+        (iid,),
+    ).fetchone()
+    payload = json.loads(row["payload_json"])
+    assert payload["person_id"] == 22
+    assert payload["person_name"] == "Hannah"
+    assert payload["original_person_id"] == 11
+    assert payload["manual_target"] is True
+    # The stored similarity was to person 11; keeping it would read as an
+    # endorsement of person 22.
+    assert row["confidence"] is None
+    assert row["status"] == "approved"
+    assert row["decided_by"] == "review-ui"
+
+
+def test_retarget_refuses_a_cross_space_person(conn, settings):
+    iid = _add_item(conn, "assign", {"face_id": 5, "space": "personal", "person_id": 1})
+    with pytest.raises(queries.SpaceMismatch):
+        queries.retarget_item(conn, iid, "shared", 22, "Hannah")
+    payload = json.loads(
+        conn.execute(
+            "SELECT payload_json FROM review_queue WHERE item_id = ?", (iid,)
+        ).fetchone()["payload_json"]
+    )
+    assert payload["person_id"] == 1  # untouched
+
+
+@pytest.mark.parametrize("kind", ["merge", "merge_named", "reassign"])
+def test_retarget_refuses_untargetable_kinds(conn, settings, kind):
+    iid = _add_item(conn, kind, {"space": "personal", "person_id": 1})
+    assert queries.retarget_item(conn, iid, "personal", 22, "Hannah") is None
+    assert queries.retarget_item(conn, 999999, "personal", 22, "Hannah") is None
+
+
+def test_retarget_new_person_expands_the_whole_cluster(conn, settings):
+    """The payload keeps 20 exemplars; the merge must cover every cluster member."""
+    for fid in range(1, 6):
+        _add_face(conn, fid, "personal", photo_id=fid)
+    conn.execute(
+        "INSERT INTO cluster_runs (run_id, params_json, created_at) VALUES (1,'{}',?)",
+        (store.now(),),
+    )
+    for fid in range(1, 6):
+        conn.execute(
+            "INSERT INTO cluster_members (run_id, cluster_id, face_id) VALUES (1, 7, ?)",
+            (fid,),
+        )
+    conn.commit()
+    cur = conn.execute(
+        "INSERT INTO review_queue (run_id, kind, payload_json, status, created_at) "
+        "VALUES (1, 'new_person', ?, 'pending', ?)",
+        (json.dumps({"face_ids": [1, 2], "size": 5}), store.now()),
+    )
+    iid = int(cur.lastrowid)
+    conn.commit()
+
+    result = queries.retarget_item(conn, iid, "personal", 22, "Hannah")
+    assert result["status"] == "hidden"
+    assert result["created"] == 5  # not just the two stored exemplars
+    assert result["skipped"] == 0
+
+    rows = conn.execute(
+        "SELECT payload_json, confidence, status FROM review_queue "
+        "WHERE kind = 'assign' ORDER BY item_id"
+    ).fetchall()
+    assert len(rows) == 5
+    payloads = [json.loads(r["payload_json"]) for r in rows]
+    assert sorted(p["face_id"] for p in payloads) == [1, 2, 3, 4, 5]
+    assert all(r["status"] == "approved" and r["confidence"] is None for r in rows)
+    assert all(p["person_id"] == 22 and p["manual_target"] for p in payloads)
+    assert all(p["source_item_id"] == iid for p in payloads)
+    # 100,200 + 50x50 in a 1000x1000 photo -> normalized corners
+    assert payloads[0]["bbox_normalized"] == [0.1, 0.2, 0.15, 0.25]
+
+    original = conn.execute(
+        "SELECT status, payload_json FROM review_queue WHERE item_id = ?", (iid,)
+    ).fetchone()
+    assert original["status"] == "hidden"
+    breadcrumb = json.loads(original["payload_json"])["retargeted_to"]
+    assert breadcrumb["person_id"] == 22
+    assert len(breadcrumb["item_ids"]) == 5
+
+
+def test_retarget_is_not_repeatable(conn, settings):
+    """A second call must not expand the same cluster into a second set of rows."""
+    for fid in (1, 2):
+        _add_face(conn, fid, "personal", photo_id=fid)
+    iid = _add_item(conn, "new_person", {"face_ids": [1, 2], "size": 2})
+
+    assert queries.retarget_item(conn, iid, "personal", 22, "Hannah")["created"] == 2
+    assert queries.retarget_item(conn, iid, "personal", 33, "Someone") is None
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) AS c FROM review_queue WHERE kind = 'assign'"
+        ).fetchone()["c"]
+        == 2
+    )
+
+
+@pytest.mark.parametrize("state", ["applied", "hidden"])
+def test_retarget_refused_on_applied_or_hidden(conn, settings, state):
+    iid = _add_item(
+        conn, "assign", {"face_id": 1, "space": "personal", "person_id": 11}, status=state
+    )
+    assert queries.retarget_item(conn, iid, "personal", 22, "Hannah") is None
+    assert (
+        conn.execute(
+            "SELECT status FROM review_queue WHERE item_id = ?", (iid,)
+        ).fetchone()["status"]
+        == state
+    )
+
+
+def test_undo_refuses_a_retargeted_row(conn, settings):
+    """Un-hiding it would re-offer a suggestion whose faces are already queued."""
+    _add_face(conn, 1, "personal", photo_id=1)
+    iid = _add_item(conn, "new_person", {"face_ids": [1], "size": 1})
+    queries.retarget_item(conn, iid, "personal", 22, "Hannah")
+
+    assert queries.undo_decision(conn, iid) is None
+    assert (
+        conn.execute(
+            "SELECT status FROM review_queue WHERE item_id = ?", (iid,)
+        ).fetchone()["status"]
+        == "hidden"
+    )
+    # A plain hide (no retarget breadcrumb) still undoes.
+    plain = _add_item(conn, "new_person", {"face_ids": [9]})
+    queries.decide_item(conn, plain, "hide")
+    assert queries.undo_decision(conn, plain) == "pending"
+
+
+def test_retarget_new_person_falls_back_to_exemplars_without_a_run(conn, settings):
+    for fid in (1, 2):
+        _add_face(conn, fid, "personal", photo_id=fid)
+    iid = _add_item(conn, "new_person", {"face_ids": [1, 2], "size": 9})
+
+    result = queries.retarget_item(conn, iid, "personal", 22, "Hannah")
+    assert result["created"] == 2
+
+
+def test_retarget_new_person_skips_faces_outside_the_target_space(conn, settings):
+    _add_face(conn, 1, "personal", photo_id=1)
+    _add_face(conn, 2, "shared", photo_id=2)
+    _add_face(conn, 3, "personal", photo_id=3, w=0, h=0)  # no dimensions -> no bbox
+    iid = _add_item(conn, "new_person", {"face_ids": [1, 2, 3], "size": 3})
+
+    result = queries.retarget_item(conn, iid, "personal", 22, "Hannah")
+    assert result["created"] == 1
+    assert result["skipped"] == 2
+
+
+def test_retargeted_assign_shows_target_crops(conn, settings):
+    """A manually retargeted assign renders the picked person's thumbnails,
+    which plain assign cards do not."""
+    crops_dir = settings.storage.crops_dir
+    crops_dir.mkdir(parents=True, exist_ok=True)
+    crop_path = str(crops_dir / "personal" / "1" / "9.jpg")
+    _add_face(conn, 9, "personal", photo_id=1, crop_path=crop_path)
+    _add_item(
+        conn,
+        "assign",
+        {"face_id": 9, "space": "personal", "photo_id": 1, "person_id": 22,
+         "manual_target": True},
+    )
+
+    (item,) = queries.load_review_items(
+        conn, settings, kind="assign", person_face_map={("personal", 22): [9]}
+    )
+    assert item["target_crops"] == ["/crops/personal/1/9.jpg"]
+
+
+def test_person_search(conn, settings):
+    now = store.now()
+    conn.execute(
+        "INSERT INTO persons (id, space, name, item_count, synced_at) VALUES (?,?,?,?,?)",
+        (1, "personal", "Hannah Lips", 40, now),
+    )
+    conn.execute(
+        "INSERT INTO persons (id, space, name, item_count, synced_at) VALUES (?,?,?,?,?)",
+        (2, "personal", "Johanna", 90, now),
+    )
+    conn.execute(
+        "INSERT INTO persons (id, space, name, item_count, synced_at) VALUES (?,?,?,?,?)",
+        (3, "shared", "Hannes", 10, now),
+    )
+    conn.execute(  # unnamed and deleted are both invisible to the picker
+        "INSERT INTO persons (id, space, name, item_count, synced_at) VALUES (?,?,?,?,?)",
+        (4, "personal", None, 5, now),
+    )
+    conn.execute(
+        "INSERT INTO persons (id, space, name, item_count, synced_at, deleted) "
+        "VALUES (?,?,?,?,?,1)",
+        (5, "personal", "Hannah Gone", 5, now),
+    )
+    conn.commit()
+
+    hits = queries.person_search(conn, "hann")
+    # substring match, case-insensitive, most-photographed first
+    assert [(h["space"], h["person_id"]) for h in hits] == [
+        ("personal", 2),
+        ("personal", 1),
+        ("shared", 3),
+    ]
+
+    assert [h["person_id"] for h in queries.person_search(conn, "hann", space="shared")] == [3]
+    assert queries.person_search(conn, "   ") == []
+    assert len(queries.person_search(conn, "hann", limit=1)) == 1
+
+    with_crops = queries.person_search(
+        conn, "Johanna", crops={9: "/crops/x.jpg"},
+        person_face_map={("personal", 2): [9]},
+        hidden={("personal", 2)},
+    )
+    assert with_crops[0]["crops"] == ["/crops/x.jpg"]
+    assert with_crops[0]["hidden"] is True
+    assert with_crops[0]["item_count"] == 90
+
+
 def test_queue_counts(conn, settings):
     _add_item(conn, "assign", {}, status="pending")
     _add_item(conn, "assign", {}, status="pending")

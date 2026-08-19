@@ -29,6 +29,7 @@ const showSkeleton = computed(() => props.loading && !props.items.length)
 const emit = defineEmits<{
   (e: 'decide', payload: { item: ClientReviewItem; decision: ReviewDecision }): void
   (e: 'name', payload: { item: ClientReviewItem; value: string }): void
+  (e: 'retarget', payload: { item: ClientReviewItem; mode: 'merge' | 'reassign' }): void
   (e: 'select', item: ClientReviewItem): void
 }>()
 
@@ -83,13 +84,15 @@ function names(it: ClientReviewItem): string[] {
 function statusOf(it: ClientReviewItem): string {
   if (it.decision === 'approve') return 'approved'
   if (it.decision === 'reject') return 'rejected'
+  if (it.decision === 'hide') return 'hidden'
   return it.status || 'pending'
 }
 
-// data-decision only carries approved/rejected (the check/cross overlay).
+// data-decision drives the check/cross/slash overlay.
 function decisionOf(it: ClientReviewItem): string | undefined {
   if (it.decision === 'approve') return 'approved'
   if (it.decision === 'reject') return 'rejected'
+  if (it.decision === 'hide') return 'hidden'
   return undefined
 }
 
@@ -140,6 +143,7 @@ watch(
         :decision="current.decision"
         @decide="(d) => emit('decide', { item: current!, decision: d })"
         @name="(v) => emit('name', { item: current!, value: v })"
+        @retarget="(m) => emit('retarget', { item: current!, mode: m })"
       />
       <ReviewCardSkeleton v-else-if="showSkeleton" />
     </div>
@@ -276,6 +280,10 @@ watch(
 .carousel-thumb[data-decision='rejected']::after {
   content: '\2717';
   color: var(--danger);
+}
+.carousel-thumb[data-decision='hidden']::after {
+  content: '\2298';
+  color: var(--text-2);
 }
 .carousel-thumb.skeleton {
   border-color: var(--border-soft);

@@ -21,19 +21,22 @@ import { getJSON, postJSON } from '../api/client'
 import { toast } from '../stores/toasts'
 import type {
   ClientReviewItem,
+  RetargetResponse,
   ReviewCounts,
   ReviewDecision,
   ReviewItem,
   ReviewItemsResponse,
+  ReviewPersonSuggestion,
 } from '../api/types'
 import ReviewGrid from '../components/review/ReviewGrid.vue'
 import ReviewFocus from '../components/review/ReviewFocus.vue'
 import BulkApproveBar from '../components/review/BulkApproveBar.vue'
+import PersonPickerDialog from '../components/review/PersonPickerDialog.vue'
 import { useKeyboard } from '../composables/useKeyboard'
 
 const PAGE_SIZE = 100
 const KINDS = ['', 'assign', 'low_confidence', 'reassign', 'merge', 'merge_named', 'new_person']
-const STATUSES = ['pending', 'approved', 'rejected', 'applied', 'failed']
+const STATUSES = ['pending', 'approved', 'rejected', 'hidden', 'applied', 'failed']
 const PREFETCH_MARGIN = 20 // focus: prefetch when within N of the loaded tail
 
 const route = useRoute()
@@ -208,6 +211,12 @@ function maybePrefetch(): void {
 }
 
 // -- decisions --------------------------------------------------------------- #
+const DECISION_VERB: Record<ReviewDecision, string> = {
+  approve: 'approve',
+  reject: 'reject',
+  hide: 'hide',
+}
+
 async function decide(
   item: ClientReviewItem,
   decision: ReviewDecision,
@@ -237,10 +246,67 @@ async function undo(): Promise<void> {
     await postJSON(`/api/review/${last.id}/decide`, { decision: 'undo' })
     const item = items.value.find((it) => it.item_id === last.id)
     if (item) item.decision = null
-    toast(`Undid ${last.decision} of ${last.kind} #${last.id}`)
+    toast(`Undid ${DECISION_VERB[last.decision]} of ${last.kind} #${last.id}`)
     if (item) select(navIndexOf(item.item_id))
   } catch (e) {
     toast(errMsg(e), 'error')
+  }
+}
+
+// -- retargeting ------------------------------------------------------------- #
+// The picker rewrites the queue only; the NAS write still happens later through
+// Apply. A retarget is not pushed onto the undo stack: a merge creates one
+// approved assign row per face, and undoing the source row would orphan them.
+const picker = ref<{ item: ClientReviewItem; mode: 'merge' | 'reassign' } | null>(null)
+const retargeting = ref(false)
+
+const RETARGET_DECISION: Record<string, ReviewDecision> = {
+  approved: 'approve',
+  hidden: 'hide',
+}
+
+function openPicker(item: ClientReviewItem, mode: 'merge' | 'reassign'): void {
+  picker.value = { item, mode }
+}
+
+async function onPickerConfirm(target: ReviewPersonSuggestion): Promise<void> {
+  const open = picker.value
+  if (!open || retargeting.value) return
+  const { item, mode } = open
+  // The item leaves `navigable` the moment it gets a decision; remember its slot
+  // so the selection lands on whatever takes its place (same trick as decide()).
+  const idx = navIndexOf(item.item_id)
+  retargeting.value = true
+  try {
+    const res = await postJSON<RetargetResponse>(
+      `/api/review/${item.item_id}/retarget`,
+      {
+        space: target.space,
+        person_id: target.person_id,
+        person_name: target.name,
+      },
+    )
+    item.decision = RETARGET_DECISION[res.status] ?? 'approve'
+    item.payload.person_id = res.person_id
+    item.payload.person_name = res.person_name
+    item.payload.manual_target = true
+    picker.value = null
+    if (mode === 'merge') {
+      toast(
+        `Queued ${res.created} face${res.created === 1 ? '' : 's'} as ${target.name}` +
+          (res.skipped ? ` · ${res.skipped} skipped` : ''),
+        'ok',
+      )
+    } else {
+      toast(`Reassigned to ${target.name}`, 'ok')
+    }
+    if (idx >= 0) select(idx)
+    void refreshCounts()
+    if (view.value === 'focus') maybePrefetch()
+  } catch (e) {
+    toast(errMsg(e), 'error')
+  } finally {
+    retargeting.value = false
   }
 }
 
@@ -274,7 +340,7 @@ const canUndo = computed(() => undoStack.value.length > 0)
 const undoTitle = computed(() => {
   const last = undoStack.value[undoStack.value.length - 1]
   return last
-    ? `Undo ${last.decision} of ${last.kind} #${last.id}`
+    ? `Undo ${DECISION_VERB[last.decision]} of ${last.kind} #${last.id}`
     : 'Nothing to undo'
 })
 
@@ -342,6 +408,12 @@ useKeyboard((e) => {
   const idx = currentNavIndex()
   if (e.key === 'y' && cur) void decide(cur, 'approve', true)
   else if (e.key === 'n' && cur) void decide(cur, 'reject', true)
+  // Kind-specific corrections: hide/merge a suggested new person, reassign a
+  // face the pipeline aimed at the wrong person. No-ops on other kinds.
+  else if (e.key === 'h' && cur?.kind === 'new_person') void decide(cur, 'hide', true)
+  else if (e.key === 'm' && cur?.kind === 'new_person') openPicker(cur, 'merge')
+  else if (e.key === 'r' && (cur?.kind === 'assign' || cur?.kind === 'low_confidence'))
+    openPicker(cur, 'reassign')
   else if (e.key === 's') select(idx + 1)
   else if (e.key === 'j') select(idx + 1)
   else if (e.key === 'k') select(idx - 1)
@@ -472,6 +544,7 @@ onMounted(async () => {
       :loading="loading"
       @decide="(pl) => decide(pl.item, pl.decision, true)"
       @name="(pl) => setName(pl.item, pl.value)"
+      @retarget="(pl) => openPicker(pl.item, pl.mode)"
       @select="onSelectItem"
     />
     <ReviewGrid
@@ -482,9 +555,20 @@ onMounted(async () => {
       :loading="loading"
       @decide="(pl) => decide(pl.item, pl.decision, false)"
       @name="(pl) => setName(pl.item, pl.value)"
+      @retarget="(pl) => openPicker(pl.item, pl.mode)"
+      @select="onSelectItem"
       @load-more="loadMore"
     />
   </div>
+
+  <PersonPickerDialog
+    v-if="picker"
+    :item="picker.item"
+    :mode="picker.mode"
+    :busy="retargeting"
+    @confirm="onPickerConfirm"
+    @cancel="picker = null"
+  />
 
   <div
     v-if="legendOpen"
@@ -498,6 +582,13 @@ onMounted(async () => {
       <li><kbd>j</kbd> next card · <kbd>k</kbd> previous card</li>
       <li><kbd>&larr;</kbd> previous · <kbd>&rarr;</kbd> next (focus view)</li>
       <li><kbd>u</kbd> undo last decision (this session)</li>
+      <li>
+        New people: <kbd>h</kbd> hide for good · <kbd>m</kbd> merge into an
+        existing person
+      </li>
+      <li>
+        Suggested tags: <kbd>r</kbd> reassign to a different person (not undoable)
+      </li>
     </ul>
     <button class="btn btn-sm" type="button" @click="legendOpen = false">Close</button>
   </div>
