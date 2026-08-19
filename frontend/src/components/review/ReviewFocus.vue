@@ -180,3 +180,124 @@ watch(
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Big card: the grid .card scaled up for a single-item focus. */
+.focus-current {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--sp-4);
+}
+.focus-current :deep(.card) {
+  max-width: 720px;
+  width: 100%;
+  padding: var(--sp-5);
+  font-size: var(--fs-lg);
+}
+.focus-current :deep(.card.sel) {
+  outline: none;
+}
+.focus-current :deep(.card img) {
+  width: 224px;
+  height: 224px;
+}
+.focus-current :deep(.card .thumbs img) {
+  width: 88px;
+  height: 88px;
+}
+.focus-current :deep(.card .card-actions .btn) {
+  font-size: var(--fs-lg);
+  padding: var(--sp-2) var(--sp-4);
+}
+.focus-current :deep(.skeleton-img) {
+  width: 224px;
+  height: 224px;
+}
+.focus-empty {
+  text-align: center;
+  padding: var(--sp-5);
+}
+
+/* Carousel: horizontal strip of thumbs, current one centered. */
+.carousel {
+  display: flex;
+  gap: var(--sp-2);
+  overflow-x: auto;
+  padding: var(--sp-2);
+  background: var(--bg-sunken);
+  border-radius: var(--radius-lg);
+  scroll-behavior: smooth;
+}
+.carousel-thumb {
+  flex: 0 0 auto;
+  width: 64px;
+  height: 64px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  color: var(--text-2);
+}
+.carousel-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  border-radius: 0;
+}
+.carousel-thumb.no-img {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+.carousel-thumb[aria-current='true'] {
+  border-color: var(--action);
+  box-shadow: 0 0 0 2px var(--action);
+}
+.carousel-thumb.decided {
+  opacity: 0.45;
+}
+.carousel-thumb.decided::after {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: var(--fs-base);
+  font-weight: 700;
+}
+.carousel-thumb[data-decision='approved']::after {
+  content: '\2713';
+  color: var(--ok);
+}
+.carousel-thumb[data-decision='rejected']::after {
+  content: '\2717';
+  color: var(--danger);
+}
+.carousel-thumb.skeleton {
+  border-color: var(--border-soft);
+}
+
+@media (max-width: 900px) {
+  .focus-current :deep(.card) {
+    padding: var(--sp-3);
+  }
+  .focus-current :deep(.card img) {
+    width: 160px;
+    height: 160px;
+  }
+  .focus-current :deep(.skeleton-img) {
+    width: 160px;
+    height: 160px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carousel {
+    scroll-behavior: auto;
+  }
+}
+</style>

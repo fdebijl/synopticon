@@ -8,6 +8,7 @@ import { useRoute } from 'vue-router'
 import router from '../router'
 import { login } from '../stores/auth'
 import { ApiError } from '../api/client'
+import '../styles/auth.css'
 
 const route = useRoute()
 const username = ref('')

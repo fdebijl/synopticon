@@ -44,3 +44,11 @@ async function submit(): Promise<void> {
     </button>
   </div>
 </template>
+
+<style scoped>
+.bulk {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+</style>

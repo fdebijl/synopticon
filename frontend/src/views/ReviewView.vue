@@ -367,52 +367,62 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="page review-page" :class="{ 'view-focus': view === 'focus' }" id="review-page">
-    <div class="toolbar review-toolbar" role="region" aria-label="Review controls">
+  <div class="page review-page" id="review-page">
+    <div class="toolbar" role="region" aria-label="Review controls">
       <div class="filters">
-        <label class="sr-only" for="f-kind">Kind</label>
-        <select
-          name="kind"
-          id="f-kind"
-          class="select"
-          v-model="kind"
-          @change="applyFilters"
-        >
-          <option v-for="k in KINDS" :key="k" :value="k">{{ k || 'all kinds' }}</option>
-        </select>
-        <label class="sr-only" for="f-status">Status</label>
-        <select
-          name="status"
-          id="f-status"
-          class="select"
-          v-model="status"
-          @change="applyFilters"
-        >
-          <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
-        </select>
+        <label for="f-kind">
+          <span class="muted">Kind</span>
+          <select
+            name="kind"
+            id="f-kind"
+            class="select"
+            v-model="kind"
+            @change="applyFilters"
+          >
+            <option v-for="k in KINDS" :key="k" :value="k">{{ k || 'all kinds' }}</option>
+          </select>
+        </label>
+        <label for="f-status">
+          <span class="muted">Status</span>
+          <select
+            name="status"
+            id="f-status"
+            class="select"
+            v-model="status"
+            @change="applyFilters"
+          >
+            <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+          </select>
+        </label>
+
         <button type="button" class="btn btn-sm" @click="applyFilters">Filter</button>
       </div>
 
-      <div class="seg" role="group" aria-label="Review layout">
-        <button
-          type="button"
-          class="seg-btn"
-          data-view="grid"
-          :aria-pressed="view !== 'focus'"
-          @click="setView('grid')"
-        >
-          Grid
-        </button>
-        <button
-          type="button"
-          class="seg-btn"
-          data-view="focus"
-          :aria-pressed="view === 'focus'"
-          @click="setView('focus')"
-        >
-          Focus
-        </button>
-      </div>
+      <div class="toolbar-sep"></div>
+
+      <label for="f-view">
+        <span class="muted">View</span>
+        <div class="seg" role="group" aria-label="Review layout">
+          <button
+            type="button"
+            class="seg-btn"
+            data-view="grid"
+            :aria-pressed="view !== 'focus'"
+            @click="setView('grid')"
+          >
+            Grid
+          </button>
+          <button
+            type="button"
+            class="seg-btn"
+            data-view="focus"
+            :aria-pressed="view === 'focus'"
+            @click="setView('focus')"
+          >
+            Focus
+          </button>
+        </div>
+      </label>
 
       <div class="toolbar-spacer"></div>
       <span class="loaded-count" id="loaded-count" aria-live="polite">
@@ -488,3 +498,89 @@ onMounted(async () => {
     <button class="btn btn-sm" type="button" @click="legendOpen = false">Close</button>
   </div>
 </template>
+
+<style scoped>
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  background: var(--bg-raised);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  position: sticky;
+  top: var(--toolbar-h);
+  z-index: 10;
+}
+.toolbar label {
+  display: flex;
+  gap: var(--sp-1);
+  flex-flow: column nowrap;
+}
+.toolbar-sep {
+  width: 1px;
+  height: 60px;
+  background: var(--border-soft);
+  margin: 0 var(--sp-2);
+}
+.toolbar-spacer {
+  flex: 1;
+}
+.filters {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: center;
+}
+.loaded-count {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+/* Segmented Grid|Focus control. */
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.seg-btn {
+  border: 0;
+  background: var(--bg-raised);
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-3);
+  cursor: pointer;
+}
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--border);
+}
+.seg-btn[aria-pressed='true'] {
+  background: var(--sel-tint-strong);
+  color: var(--action);
+  font-weight: 600;
+}
+
+/* Keyboard-shortcut legend, pinned bottom-right. */
+.popover {
+  position: fixed;
+  bottom: var(--sp-5);
+  right: var(--sp-5);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  padding: var(--sp-4);
+  z-index: 50;
+  max-width: 320px;
+}
+.popover ul {
+  margin: var(--sp-2) 0;
+  padding-left: var(--sp-4);
+}
+.popover li {
+  margin: var(--sp-1) 0;
+}
+</style>

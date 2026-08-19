@@ -14,6 +14,7 @@ const JOB_LABELS: Record<string, string> = {
   dedupe: 'Duplicate photos',
   reset: 'Reset',
   'clear-queue': 'Clear review queue',
+  'clear-applies': 'Clear queued applies',
   'delete-crops': 'Delete crop images',
 }
 

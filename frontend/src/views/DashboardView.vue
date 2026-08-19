@@ -441,4 +441,7 @@ a.tile:hover {
   color: var(--danger);
   font-weight: 600;
 }
+.placeholder-card {
+  max-width: 640px;
+}
 </style>

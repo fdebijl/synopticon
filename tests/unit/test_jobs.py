@@ -542,7 +542,7 @@ def test_reset_consent_mapping():
 
 
 def test_clear_queue_and_delete_crops_confirm():
-    for name in ("clear-queue", "delete-crops"):
+    for name in ("clear-queue", "clear-applies", "delete-crops"):
         with pytest.raises(ConsentError):
             resolve_argv(name)
         assert resolve_argv(name, confirm=True) == [name, "-y"]
@@ -556,6 +556,7 @@ def test_no_apply_all_or_capital_Y_anywhere():
         ("reset", {"all": True}, {"confirm_phrase": "reset all"}),
         ("reset", {}, {"confirm": True}),
         ("clear-queue", {}, {"confirm": True}),
+        ("clear-applies", {}, {"confirm": True}),
         ("delete-crops", {}, {"confirm": True}),
     ]
     for name, params, kw in combos:
@@ -572,6 +573,7 @@ def test_danger_levels():
 
     assert JOB_SPECS["sync"].danger is DangerLevel.SAFE
     assert JOB_SPECS["clear-queue"].danger is DangerLevel.CONFIRM
+    assert JOB_SPECS["clear-applies"].danger is DangerLevel.CONFIRM
     assert JOB_SPECS["apply"].danger is DangerLevel.TYPED_PHRASE
     assert JOB_SPECS["dedupe"].danger is DangerLevel.TYPED_PHRASE
     assert JOB_SPECS["reset"].danger is DangerLevel.TYPED_PHRASE

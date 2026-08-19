@@ -1,0 +1,51 @@
+/* Centred card shell for the two unauthenticated pages — LoginView and
+   SetupView. Not scoped: both views style form rows nested arbitrarily deep
+   inside the card, and the wizard's own chrome lives in SetupView.vue. */
+.auth-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--sp-4);
+}
+.auth-card {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-card);
+  padding: var(--sp-6);
+  width: 100%;
+  max-width: 360px;
+}
+.auth-title {
+  text-align: center;
+  font-size: var(--fs-xl);
+}
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+.auth-form label {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+.auth-form input {
+  font: inherit;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
+}
+.auth-form .btn {
+  margin-top: var(--sp-3);
+}
+.auth-error {
+  background: rgba(216, 67, 67, .12);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-base);
+}

@@ -30,3 +30,21 @@ defineProps<{ cls?: string }>()
     </svg>
   </span>
 </template>
+
+<style scoped>
+.hidden-badge {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.62);
+  border-radius: 999px;
+  padding: 2px;
+}
+/* Trailing badge after a person's name, rather than an overlay on a thumb. */
+.name-hidden {
+  margin-left: 0.3rem;
+  vertical-align: middle;
+  opacity: 0.85;
+}
+</style>

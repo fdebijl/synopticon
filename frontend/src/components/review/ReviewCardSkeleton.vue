@@ -15,3 +15,31 @@
     </div>
   </div>
 </template>
+
+<style scoped>
+.card-skeleton {
+  pointer-events: none;
+}
+.skeleton-img {
+  width: 96px;
+  height: 96px;
+}
+.skeleton-line {
+  height: 12px;
+  margin-top: var(--sp-2);
+  width: 70%;
+}
+.skeleton-line + .skeleton-line {
+  width: 45%;
+}
+.skeleton-btn {
+  width: 72px;
+  height: 26px;
+}
+/* Mirrors ReviewCard's action row so the swap-in doesn't reflow. */
+.card-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+</style>

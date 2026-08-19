@@ -85,3 +85,13 @@ onUnmounted(() => {
     <p v-if="exhausted" class="muted end-note">End of queue.</p>
   </div>
 </template>
+
+<style scoped>
+.scroll-sentinel {
+  height: 1px;
+}
+.end-note {
+  text-align: center;
+  padding: var(--sp-4);
+}
+</style>

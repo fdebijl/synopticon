@@ -71,7 +71,7 @@ the phrase.
 | apply merge_named | `confirm_phrase == "merge named people"` | `--apply --apply-merges-named` |
 | dedupe `--apply` | `confirm_phrase == "delete duplicates"` | `--apply -y` |
 | reset `--all` | `confirm_phrase == "reset all"` | `-y` |
-| reset / clear-queue / delete-crops | `confirm` | `-y` |
+| reset / clear-queue / clear-applies / delete-crops | `confirm` | `-y` |
 
 `recluster` whitelists only `clustering.*` and `crossref.*` override keys — no arbitrary `--set`.
 `models-download` is SAFE and whitelists `only` plus an `allow_record_hash` boolean

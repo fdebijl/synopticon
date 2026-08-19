@@ -1,11 +1,12 @@
 <script setup lang="ts">
 // Maintenance page: one card per destructive local-state command with live
 // "what will be removed" counts (/api/maintenance/counts). Consent (plan §6) is
-// enforced by the shared confirm dialog: clear-queue / delete-crops / reset take
-// a plain confirm, reset --all takes the typed phrase "reset all". Each action
-// submits a job so the shared JobPanel streams its progress. The server's
-// validate_consent re-checks every gate regardless. Photo deduplication lives on
-// the Utilities page — it acts on the NAS library, not on local pipeline state.
+// enforced by the shared confirm dialog: clear-queue / clear-applies /
+// delete-crops / reset take a plain confirm, reset --all takes the typed phrase
+// "reset all". Each action submits a job so the shared JobPanel streams its
+// progress. The server's validate_consent re-checks every gate regardless.
+// Photo deduplication lives on the Utilities page — it acts on the NAS library,
+// not on local pipeline state.
 import { ref, reactive, onMounted } from 'vue'
 import JobPanel from '../components/JobPanel.vue'
 import { getJSON, ApiError } from '../api/client'
@@ -16,6 +17,7 @@ const PHRASE_RESET_ALL = 'reset all'
 
 interface Counts {
   pending_queue: number | null
+  queued_applies: { approved: number | null; failed: number | null }
   faces: number | null
   embeddings: number | null
   cluster_runs: number | null
@@ -80,6 +82,21 @@ async function clearQueue(): Promise<void> {
   if (ok) startJob('clear-queue', {}, { confirm: true })
 }
 
+const queuedApplies = () => {
+  const q = counts.value?.queued_applies
+  return (q?.approved || 0) + (q?.failed || 0)
+}
+
+async function clearApplies(): Promise<void> {
+  const ok = await confirm({
+    title: 'Clear queued applies',
+    message:
+      'Send approved decisions that were never written to the NAS — plus any that failed — back to the review queue? Nothing is deleted, and already-applied decisions are kept.',
+    okLabel: 'Clear queued applies',
+  })
+  if (ok) startJob('clear-applies', {}, { confirm: true })
+}
+
 async function deleteCrops(): Promise<void> {
   const ok = await confirm({
     title: 'Delete crop images',
@@ -125,6 +142,28 @@ onMounted(() => void loadCounts())
         <p>Pending items: <span class="maint-count">{{ show(counts?.pending_queue) }}</span></p>
         <div class="maint-actions">
           <button type="button" class="btn btn-danger" @click="clearQueue">Clear queue…</button>
+        </div>
+      </section>
+
+      <section class="card maint-card">
+        <h3>Clear queued applies</h3>
+        <p class="muted">
+          Return approved decisions that never reached the NAS, and failed ones, to the review
+          queue. Applied decisions are kept.
+        </p>
+        <p>
+          Waiting: <span class="maint-count">{{ show(counts?.queued_applies?.approved) }}</span> ·
+          Failed: <span class="maint-count">{{ show(counts?.queued_applies?.failed) }}</span>
+        </p>
+        <div class="maint-actions">
+          <button
+            type="button"
+            class="btn btn-danger"
+            :disabled="queuedApplies() === 0"
+            @click="clearApplies"
+          >
+            Clear queued applies…
+          </button>
         </div>
       </section>
 

@@ -171,3 +171,143 @@ defineExpose({ start, attach })
       >{{ line.message }}</div></pre>
   </section>
 </template>
+
+<style scoped>
+.job-panel {
+  background: var(--bg-raised);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+  box-shadow: var(--shadow-card);
+  margin-top: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.job-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.job-panel-title {
+  font-weight: 600;
+}
+.job-panel-spacer {
+  flex: 1;
+}
+.job-panel-cmd {
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.phase-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+.phase-chip {
+  font-size: var(--fs-sm);
+  padding: 2px var(--sp-2);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-2);
+  border: 1px solid var(--border-soft);
+}
+.phase-chip.active {
+  background: var(--sel-tint-strong);
+  color: var(--action);
+  border-color: transparent;
+}
+.phase-chip.done {
+  background: rgba(31, 157, 77, 0.12);
+  color: var(--ok);
+  border-color: transparent;
+}
+
+/* Live counts/rate/ETA above the bar. Tabular figures stop the digits jittering
+   as the numbers tick over. */
+.job-progress-meta {
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+  margin-bottom: var(--sp-1);
+  font-variant-numeric: tabular-nums;
+  min-height: 1.2em;
+}
+.progress {
+  height: 8px;
+  background: var(--bg-sunken);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  width: 0;
+  background: var(--action);
+  border-radius: 999px;
+  transition: width 0.2s;
+}
+.progress.indeterminate .progress-bar {
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--action), transparent);
+  animation: indeterminate 1.2s infinite;
+}
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+.job-log {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-sunken);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.job-log .log-warning {
+  color: var(--warn);
+}
+.job-log .log-error {
+  color: var(--danger);
+}
+/* Phase transitions are the log's structure — brighter than the lines they group. */
+.job-log .log-phase {
+  color: var(--action);
+  font-weight: 600;
+  margin-top: var(--sp-1);
+}
+/* Console-mirrored lines are secondary to the structured ones. */
+.job-log .log-stream-stdout {
+  color: var(--text-2);
+}
+.job-log .log-placeholder {
+  color: var(--text-2);
+  font-style: italic;
+}
+.job-error {
+  margin: 0;
+  background: rgba(216, 67, 67, 0.12);
+  color: var(--danger);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-base);
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress.indeterminate .progress-bar {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+}
+</style>

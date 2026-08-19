@@ -1,6 +1,8 @@
 /* =========================================================================
-   Synopticon web GUI — single stylesheet.
-   Sections: TOKENS · RESET/BASE · LAYOUT · COMPONENTS · JOB PANEL · REVIEW
+   Synopticon web GUI — the shared stylesheet: tokens, reset, app shell, and
+   the primitives more than one view uses. Anything that belongs to a single
+   view or component lives in that component's <style scoped> block instead.
+   Sections: TOKENS · RESET/BASE · LAYOUT · COMPONENTS
    Design tokens are the plan §8 set (original, Synology-evocative hues), with a
    dark set applied via prefers-color-scheme AND a [data-theme] override so the
    sidebar toggle wins in both directions.
@@ -120,18 +122,28 @@ kbd {
   position: sticky; top: 0; z-index: 20;
 }
 .topbar-title { font-size: var(--fs-lg); margin: 0; }
-.topbar-spacer, .topbar .job-panel-spacer { flex: 1; }
+.topbar-spacer { flex: 1; }
 .nav-toggle { display: none; }
 .main { flex: 1; }
 .page { padding: var(--sp-5); max-width: 1200px; margin: 0 auto; width: 100%; }
 .cta-row { display: flex; gap: var(--sp-3); margin-top: var(--sp-3); flex-wrap: wrap; }
+
+@media (max-width: 900px) {
+  .sidebar {
+    position: fixed; left: 0; top: 0; z-index: 40; transform: translateX(-100%);
+    transition: transform .2s; box-shadow: var(--shadow-menu);
+  }
+  body.nav-open .sidebar { transform: translateX(0); }
+  body.nav-open .nav-scrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(15, 25, 35, .4); }
+  .nav-toggle { display: inline-flex; }
+}
 
 /* --------------------------- COMPONENTS -------------------------------- */
 .card {
   background: var(--bg-raised); border: 1px solid var(--border-soft);
   border-radius: var(--radius-lg); padding: var(--sp-4); box-shadow: var(--shadow-card);
 }
-.placeholder-card { max-width: 640px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--sp-3); }
 .btn {
   font: inherit; font-size: var(--fs-base); cursor: pointer; border: 1px solid var(--border);
   background: var(--bg-raised); color: var(--text); border-radius: var(--radius);
@@ -154,6 +166,7 @@ kbd {
   border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-2);
 }
 .input-sm { font-size: var(--fs-sm); padding: 4px var(--sp-2); width: 5.5rem; }
+.check { display: inline-flex; align-items: center; gap: var(--sp-1); margin: 0 var(--sp-3) var(--sp-2) 0; }
 .icon-btn {
   border: none; background: transparent; color: var(--text-2); cursor: pointer;
   width: 30px; height: 30px; border-radius: var(--radius); font-size: var(--fs-lg);
@@ -206,206 +219,19 @@ kbd {
 .toast.error { border-left-color: var(--danger); }
 .toast.ok { border-left-color: var(--ok); }
 
-/* dialogs / modals */
-.modal { border: none; border-radius: var(--radius-xl); box-shadow: var(--shadow-modal); padding: 0; max-width: 480px; width: 90%; background: var(--bg-raised); color: var(--text); }
-.modal::backdrop { background: rgba(15, 25, 35, .4); }
-.modal-body { padding: var(--sp-5); }
-.modal-title { margin-bottom: var(--sp-3); }
-.modal-phrase { margin: var(--sp-3) 0; display: flex; flex-direction: column; gap: var(--sp-1); }
-.modal-phrase input { font: inherit; padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius); }
-.modal-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-4); }
-
 /* tables */
 table.data { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 table.data th, table.data td { text-align: left; padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border-soft); }
 table.data th { color: var(--text-2); font-weight: 600; }
 
-/* progress bar */
-.progress { height: 8px; background: var(--bg-sunken); border-radius: 999px; overflow: hidden; }
-.progress-bar { height: 100%; width: 0; background: var(--action); border-radius: 999px; transition: width .2s; }
-.progress.indeterminate .progress-bar {
-  width: 40%; background: linear-gradient(90deg, transparent, var(--action), transparent);
-  animation: indeterminate 1.2s infinite;
-}
-@keyframes indeterminate { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
-
-/* phase chips */
-.phase-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
-.phase-chip {
-  font-size: var(--fs-sm); padding: 2px var(--sp-2); border-radius: 999px;
-  background: var(--bg-sunken); color: var(--text-2); border: 1px solid var(--border-soft);
-}
-.phase-chip.active { background: var(--sel-tint-strong); color: var(--action); border-color: transparent; }
-.phase-chip.done { background: rgba(31, 157, 77, .12); color: var(--ok); border-color: transparent; }
-
-/* ------------------------------ AUTH ----------------------------------- */
-.auth-body { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: var(--sp-4); }
-.auth-card { background: var(--bg-raised); border: 1px solid var(--border-soft); border-radius: var(--radius-xl); box-shadow: var(--shadow-card); padding: var(--sp-6); width: 100%; max-width: 360px; }
-.auth-card-wide { max-width: 560px; }
-.auth-title { text-align: center; font-size: var(--fs-xl); }
-.auth-form { display: flex; flex-direction: column; gap: var(--sp-2); margin-top: var(--sp-4); }
-.auth-form label { font-size: var(--fs-sm); color: var(--text-2); }
-.auth-form input { font: inherit; padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); color: var(--text); }
-.auth-form .btn { margin-top: var(--sp-3); }
-.auth-error { background: rgba(216, 67, 67, .12); color: var(--danger); border-radius: var(--radius); padding: var(--sp-2) var(--sp-3); font-size: var(--fs-base); }
-
-/* ---------------------------- JOB PANEL -------------------------------- */
-.job-panel { background: var(--bg-raised); border: 1px solid var(--border-soft); border-radius: var(--radius-lg); padding: var(--sp-4); box-shadow: var(--shadow-card); margin-top: var(--sp-4); display: flex; flex-direction: column; gap: var(--sp-3); }
-.job-panel-head { display: flex; align-items: center; gap: var(--sp-2); }
-.job-panel-title { font-weight: 600; }
-.job-panel-spacer { flex: 1; }
-.job-panel-cmd { font-size: var(--fs-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Live counts/rate/ETA above the bar. Tabular figures stop the digits jittering
-   as the numbers tick over. */
-.job-progress-meta {
-  font-size: var(--fs-sm); color: var(--text-2); margin-bottom: var(--sp-1);
-  font-variant-numeric: tabular-nums; min-height: 1.2em;
-}
-.job-log {
-  margin: 0; max-height: 320px; overflow: auto; background: var(--bg-sunken);
-  border-radius: var(--radius); padding: var(--sp-2) var(--sp-3); font-size: var(--fs-sm);
-  white-space: pre-wrap; word-break: break-word;
-}
-.job-log .log-warning { color: var(--warn); }
-.job-log .log-error { color: var(--danger); }
-/* Phase transitions are the log's structure — brighter than the lines they group. */
-.job-log .log-phase { color: var(--action); font-weight: 600; margin-top: var(--sp-1); }
-/* Console-mirrored lines are secondary to the structured ones. */
-.job-log .log-stream-stdout { color: var(--text-2); }
-.job-log .log-placeholder { color: var(--text-2); font-style: italic; }
-.job-error {
-  margin: 0; background: rgba(216, 67, 67, .12); color: var(--danger);
-  border-radius: var(--radius); padding: var(--sp-2) var(--sp-3);
-  font-size: var(--fs-base); word-break: break-word;
-}
-
-/* ----------------------------- REVIEW ---------------------------------- */
-.toolbar {
-  display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap;
-  background: var(--bg-raised); border: 1px solid var(--border-soft); border-radius: var(--radius-lg);
-  padding: var(--sp-2) var(--sp-3); margin-bottom: var(--sp-3); position: sticky; top: var(--toolbar-h); z-index: 10;
-}
-.toolbar-spacer { flex: 1; }
-.filters { display: flex; gap: var(--sp-2); align-items: center; }
-.bulk { display: flex; gap: var(--sp-2); align-items: center; }
-.loaded-count { font-size: var(--fs-sm); color: var(--text-2); }
-.check { display: inline-flex; align-items: center; gap: var(--sp-1); margin: 0 var(--sp-3) var(--sp-2) 0; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--sp-3); }
-.review-grid .card { padding: var(--sp-3); font-size: var(--fs-base); }
-.card.sel { outline: 3px solid var(--action); outline-offset: 1px; }
-.card.decided { opacity: .35; }
-.card img { width: 96px; height: 96px; object-fit: cover; border-radius: var(--radius); }
-.thumbs { display: flex; flex-wrap: wrap; }
-.thumbs img { width: 48px; height: 48px; margin: 2px; border-radius: var(--radius); object-fit: cover; }
-.merge { display: flex; align-items: center; gap: var(--sp-2); }
-.merge-side { flex: 1; min-width: 0; }
-.merge-arrow { flex: 0 0 auto; opacity: .6; }
-.name-input { width: 100%; margin-top: var(--sp-2); font: inherit; padding: 4px var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-raised); color: var(--text); }
-.card-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-2); }
-.card-kind { margin-top: var(--sp-1); }
-.thumb-group { position: relative; display: inline-block; }
-.hidden-badge { display: inline-flex; align-items: center; line-height: 0; color: #fff; background: rgba(0, 0, 0, .62); border-radius: 999px; padding: 2px; }
-.thumb-group > .hidden-badge { position: absolute; top: 3px; right: 3px; z-index: 1; }
-.name-hidden { margin-left: .3rem; vertical-align: middle; opacity: .85; }
-body.hide-unnamed .card[data-unnamed-target] { display: none; }
-body.hide-unnamed-merges .card[data-unnamed-merge] { display: none; }
-.card[data-named-merge] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger) inset; }
-.danger-banner { background: var(--danger); color: #fff; font-weight: 600; font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-2); border-radius: var(--radius); margin-bottom: var(--sp-2); }
-.scroll-sentinel { height: 1px; }
-.end-note { text-align: center; padding: var(--sp-4); }
-
-/* Loading skeletons: placeholder cards/thumbs while a page of items is in
-   flight. Same .card chrome as real cards so the swap-in doesn't reflow. */
+/* loading placeholder: the pulse itself is shared, the shapes are per-component */
 .skeleton {
   background: var(--bg-sunken); border-radius: var(--radius);
   animation: skeleton-pulse 1.4s ease-in-out infinite;
 }
 @keyframes skeleton-pulse { 50% { opacity: .5; } }
-.card-skeleton { pointer-events: none; }
-.skeleton-img { width: 96px; height: 96px; }
-.skeleton-line { height: 12px; margin-top: var(--sp-2); width: 70%; }
-.skeleton-line + .skeleton-line { width: 45%; }
-.skeleton-btn { width: 72px; height: 26px; }
-.carousel-thumb.skeleton { border-color: var(--border-soft); }
-
-/* ----------------------------- FOCUS VIEW ------------------------------ */
-/* Segmented Grid|Focus control lives in the toolbar. */
-.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-.seg-btn {
-  border: 0; background: var(--bg-raised); color: var(--text-2);
-  font: inherit; font-size: var(--fs-sm); padding: var(--sp-1) var(--sp-3); cursor: pointer;
-}
-.seg-btn + .seg-btn { border-left: 1px solid var(--border); }
-.seg-btn[aria-pressed="true"] { background: var(--sel-tint-strong); color: var(--action); font-weight: 600; }
-
-/* Mode switch: focus DOM is always present, CSS shows one view at a time. */
-.focus-view { display: none; }
-.review-page.view-focus .focus-view { display: block; }
-.review-page.view-focus .review-grid,
-.review-page.view-focus .scroll-sentinel,
-.review-page.view-focus .end-note { display: none; }
-
-/* Big card: the cloned grid .card scaled up for a single-item focus. */
-.focus-current { display: flex; justify-content: center; margin-bottom: var(--sp-4); }
-.focus-current .skeleton-img { width: 224px; height: 224px; }
-.focus-current .card {
-  max-width: 720px; width: 100%; padding: var(--sp-5); font-size: var(--fs-lg);
-}
-.focus-current .card.sel { outline: none; }
-.focus-current .card img { width: 224px; height: 224px; }
-.focus-current .card .thumbs img { width: 88px; height: 88px; }
-.focus-current .card .card-actions .btn { font-size: var(--fs-lg); padding: var(--sp-2) var(--sp-4); }
-.focus-empty { text-align: center; padding: var(--sp-5); }
-
-/* Carousel: horizontal strip of thumbs, current one centered. */
-.carousel {
-  display: flex; gap: var(--sp-2); overflow-x: auto; padding: var(--sp-2);
-  background: var(--bg-sunken); border-radius: var(--radius-lg); scroll-behavior: smooth;
-}
-.carousel-thumb {
-  flex: 0 0 auto; width: 64px; height: 64px; padding: 0; border: 2px solid var(--border);
-  border-radius: var(--radius); background: var(--bg-raised); cursor: pointer; position: relative;
-  overflow: hidden; color: var(--text-2);
-}
-.carousel-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; border-radius: 0; }
-.carousel-thumb.no-img {
-  display: flex; align-items: center; justify-content: center; font-size: var(--fs-sm); text-align: center;
-}
-.carousel-thumb[aria-current="true"] { border-color: var(--action); box-shadow: 0 0 0 2px var(--action); }
-.carousel-thumb.decided { opacity: .45; }
-.carousel-thumb.decided::after {
-  position: absolute; top: 2px; right: 4px; font-size: var(--fs-base); font-weight: 700;
-}
-.carousel-thumb[data-decision="approved"]::after { content: "\2713"; color: var(--ok); }
-.carousel-thumb[data-decision="rejected"]::after { content: "\2717"; color: var(--danger); }
-body.hide-unnamed .carousel-thumb[data-unnamed-target] { display: none; }
-body.hide-unnamed-merges .carousel-thumb[data-unnamed-merge] { display: none; }
-
-.popover {
-  position: fixed; bottom: var(--sp-5); right: var(--sp-5); background: var(--bg-raised);
-  border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-modal);
-  padding: var(--sp-4); z-index: 50; max-width: 320px;
-}
-.popover ul { margin: var(--sp-2) 0; padding-left: var(--sp-4); }
-.popover li { margin: var(--sp-1) 0; }
-
-/* --------------------------- RESPONSIVE -------------------------------- */
-@media (max-width: 900px) {
-  .sidebar {
-    position: fixed; left: 0; top: 0; z-index: 40; transform: translateX(-100%);
-    transition: transform .2s; box-shadow: var(--shadow-menu);
-  }
-  body.nav-open .sidebar { transform: translateX(0); }
-  body.nav-open .nav-scrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(15, 25, 35, .4); }
-  .nav-toggle { display: inline-flex; }
-  .focus-current .card { padding: var(--sp-3); }
-  .focus-current .card img { width: 160px; height: 160px; }
-  .focus-current .skeleton-img { width: 160px; height: 160px; }
-}
 
 /* --------------------- REDUCED MOTION ---------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
-  .progress.indeterminate .progress-bar { animation: none; width: 100%; opacity: .5; }
-  .carousel { scroll-behavior: auto; }
 }

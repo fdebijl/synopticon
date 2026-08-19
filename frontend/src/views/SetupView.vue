@@ -17,6 +17,7 @@ import type {
   ProbeResult,
   StorageCheckResult,
 } from '../api/types'
+import '../styles/auth.css'
 
 const LAST_STEP = 5
 const current = ref(0)
@@ -311,7 +312,7 @@ onMounted(async () => {
   <main class="auth-body">
     <div
       ref="wizardEl"
-      class="auth-card auth-card-wide wizard"
+      class="auth-card wizard"
       role="main"
       aria-labelledby="wizard-heading"
     >

@@ -250,3 +250,88 @@ function onName(e: Event): void {
     </div>
   </div>
 </template>
+
+<style scoped>
+.card {
+  padding: var(--sp-3);
+  font-size: var(--fs-base);
+}
+.card.sel {
+  outline: 3px solid var(--action);
+  outline-offset: 1px;
+}
+.card.decided {
+  opacity: 0.35;
+}
+.card[data-named-merge] {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 1px var(--danger) inset;
+}
+.card img {
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+  border-radius: var(--radius);
+}
+.thumbs {
+  display: flex;
+  flex-wrap: wrap;
+}
+.thumbs img {
+  width: 48px;
+  height: 48px;
+  margin: 2px;
+  border-radius: var(--radius);
+  object-fit: cover;
+}
+.merge {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.merge-side {
+  flex: 1;
+  min-width: 0;
+}
+.merge-arrow {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+.thumb-group {
+  position: relative;
+  display: inline-block;
+}
+.thumb-group > :deep(.hidden-badge) {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 1;
+}
+.name-input {
+  width: 100%;
+  margin-top: var(--sp-2);
+  font: inherit;
+  padding: 4px var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--text);
+}
+.danger-banner {
+  background: var(--danger);
+  color: #fff;
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius);
+  margin-bottom: var(--sp-2);
+}
+.card-kind {
+  margin-top: var(--sp-1);
+}
+.card-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+</style>

@@ -194,6 +194,13 @@ SCHEDULABLE: dict[str, ScheduleForm] = {
         "Drop pending review items. Approved and applied decisions are kept.",
         needs_confirm=True,
     ),
+    "clear-applies": ScheduleForm(
+        "clear-applies",
+        "Clear queued applies",
+        "Send approved-but-unwritten and failed decisions back to pending for "
+        "another look. Nothing is deleted and the NAS is untouched.",
+        needs_confirm=True,
+    ),
     "delete-crops": ScheduleForm(
         "delete-crops",
         "Delete crop images",

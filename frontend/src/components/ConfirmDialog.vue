@@ -74,3 +74,43 @@ function onClose(): void {
     </div>
   </dialog>
 </template>
+
+<style scoped>
+.modal {
+  border: none;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  padding: 0;
+  max-width: 480px;
+  width: 90%;
+  background: var(--bg-raised);
+  color: var(--text);
+}
+.modal::backdrop {
+  background: rgba(15, 25, 35, 0.4);
+}
+.modal-body {
+  padding: var(--sp-5);
+}
+.modal-title {
+  margin-bottom: var(--sp-3);
+}
+.modal-phrase {
+  margin: var(--sp-3) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.modal-phrase input {
+  font: inherit;
+  padding: var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+</style>

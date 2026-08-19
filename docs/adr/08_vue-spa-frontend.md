@@ -18,9 +18,16 @@ A Vue 3 + TypeScript SPA built by Vite, served by a FastAPI backend that speaks 
 
 ### Layout and build
 
-`frontend/` at the repo root: `src/{views,components,composables,stores,api}` plus a global
+`frontend/` at the repo root: `src/{views,components,composables,stores,api}` plus
 `styles/app.css`. Runtime dependencies are just `vue` and `vue-router` — shared state is
 module-scoped reactive singletons in `stores/`, no Pinia.
+
+`styles/app.css` carries only what is genuinely shared: the design tokens, the reset, the app
+shell (sidebar/topbar/page) and the primitives several views use (`.card`, `.btn`, `.badge`,
+`.grid`, `.skeleton`, toasts, tables). Everything belonging to one view or component lives in that
+SFC's `<style scoped>` block, so the styles ship with the route chunk and cannot leak. The one
+exception is `styles/auth.css`, imported by both `LoginView` and `SetupView`, which style form rows
+nested arbitrarily deep inside the shared card shell.
 
 `npm run build` runs `vue-tsc -b` (strict typecheck) then `vite build`, emitting into
 `src/synopticon/web/dist/` (Vite's `outDir` is `../src/synopticon/web/dist` relative to
@@ -122,7 +129,8 @@ query; infinite scroll fetches `/api/review/items`, and there is an undo stack p
 
 Every crop `<img>` in `ReviewCard.vue` and `ReviewFocus.vue` carries `loading="lazy"
 decoding="async"`. A 100-item grid otherwise fires 100+ image requests at once on every scroll
-page. The fixed `width`/`height` in `styles/app.css` mean lazy loading costs no layout shift.
+page. The fixed `width`/`height` in those components' scoped styles mean lazy loading costs no
+layout shift.
 
 ### Server-driven forms
 

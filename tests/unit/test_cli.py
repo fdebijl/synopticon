@@ -233,6 +233,64 @@ def pw_env(monkeypatch, tmp_path, tmp_settings):
     conn.close()
 
 
+# -- clear-applies ---------------------------------------------------------
+
+
+@pytest.fixture
+def clear_applies_env(monkeypatch, tmp_path, tmp_settings):
+    """A temp DB holding one review_queue row per status."""
+    conn = store.connect(tmp_path / "synopticon.db")
+    for status in ("pending", "approved", "failed", "applied", "rejected"):
+        decided = None if status == "pending" else store.now()
+        conn.execute(
+            "INSERT INTO review_queue (kind, payload_json, status, decided_at, "
+            "decided_by, created_at) VALUES ('assign', '{}', ?, ?, ?, ?)",
+            (status, decided, None if decided is None else "review-ui", store.now()),
+        )
+    conn.commit()
+    monkeypatch.setattr(cli, "_settings", lambda: tmp_settings)
+    monkeypatch.setattr(cli, "_conn", lambda s: conn)
+    yield conn
+    conn.close()
+
+
+def _statuses(conn):
+    return {
+        row["status"]: int(row["n"])
+        for row in conn.execute(
+            "SELECT status, COUNT(*) AS n FROM review_queue GROUP BY status"
+        )
+    }
+
+
+def test_clear_applies_returns_approved_and_failed_to_pending(clear_applies_env):
+    result = CliRunner().invoke(cli.app, ["clear-applies"], input="y\n")
+    assert result.exit_code == 0, result.output
+    # approved + failed folded into pending; the ledger statuses are untouched.
+    assert _statuses(clear_applies_env) == {"pending": 3, "applied": 1, "rejected": 1}
+    row = clear_applies_env.execute(
+        "SELECT decided_at, decided_by FROM review_queue WHERE status = 'pending' "
+        "AND decided_at IS NOT NULL"
+    ).fetchone()
+    assert row is None
+    assert "1 approved, 1 failed" in result.output
+
+
+def test_clear_applies_aborts_on_no(clear_applies_env):
+    result = CliRunner().invoke(cli.app, ["clear-applies"], input="n\n")
+    assert result.exit_code != 0
+    assert _statuses(clear_applies_env)["approved"] == 1
+
+
+def test_clear_applies_yes_flag_skips_prompt_and_noop_is_quiet(clear_applies_env):
+    assert CliRunner().invoke(cli.app, ["clear-applies", "-y"]).exit_code == 0
+    assert "approved" not in _statuses(clear_applies_env)
+    # Second run has nothing left to do and must not prompt.
+    result = CliRunner().invoke(cli.app, ["clear-applies"])
+    assert result.exit_code == 0, result.output
+    assert "no queued applies to clear" in result.output
+
+
 def test_reset_password_sets_new_hash_and_revokes_sessions(pw_env):
     result = CliRunner().invoke(
         cli.app, ["reset-password", "--password", "new-pw"]

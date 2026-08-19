@@ -490,6 +490,50 @@ def clear_queue(
     get_emitter().result(stats={"cleared": n})
 
 
+@app.command("clear-applies")
+def clear_applies(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """Send queued-but-unwritten decisions back to PENDING so you can review them again.
+
+    Targets the two statuses that sit between a decision and the NAS: `approved`
+    (waiting for `apply`) and `failed` (an apply attempt that errored and is no
+    longer eligible for retry). Both revert to `pending` with `decided_at`/
+    `decided_by` cleared — the bulk form of the review UI's per-item undo. Rows
+    are kept, so crossref still sees them and will not re-surface duplicates.
+    `applied` and `rejected` are left untouched. Never contacts the NAS.
+    """
+    settings = _settings()
+    conn = _conn(settings)
+
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM review_queue "
+        "WHERE status IN ('approved', 'failed') GROUP BY status"
+    ).fetchall()
+    counts = {row["status"]: int(row["n"]) for row in rows}
+    n = sum(counts.values())
+    if n == 0:
+        typer.echo("no queued applies to clear")
+        return
+
+    breakdown = ", ".join(f"{counts[s]} {s}" for s in sorted(counts))
+    typer.echo(
+        f"Return {n} item(s) ({breakdown}) to pending in {store.describe(settings)}"
+    )
+    typer.echo("Nothing is deleted; they reappear in the review queue.")
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    conn.execute(
+        "UPDATE review_queue SET status = 'pending', decided_at = NULL, "
+        "decided_by = NULL WHERE status IN ('approved', 'failed')"
+    )
+    conn.commit()
+
+    typer.echo(f"returned {n} item(s) to pending — next: synopticon review")
+    get_emitter().result(stats={"cleared": n, "by_status": counts})
+
+
 @app.command("regen-crops")
 def regen_crops_cmd(
     space: str = typer.Option(None, help="Limit to one space (default: all configured)."),

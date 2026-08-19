@@ -8,8 +8,8 @@ big app factory stays untouched. Everything here is DB-only and NAS-free:
   used to populate the Apply page's typed-phrase confirmation dialog (the same
   warning list the CLI's ``apply-all`` prints).
 * ``GET /api/maintenance/counts`` — "what will be removed" counts for the
-  Maintenance cards (pending queue, crop disk usage, row counts, approved
-  corrections by kind).
+  Maintenance cards (pending queue, queued applies, crop disk usage, row
+  counts, approved corrections by kind).
 
 The heavy ``pipeline.crops`` import is done lazily and every failure degrades to
 ``null`` disk-usage figures rather than 500ing the endpoint (a fresh install
@@ -84,9 +84,14 @@ def register_ops_routes(
             counts = queries.queue_counts(c)
             pending = sum((counts.get("pending") or {}).values())
             approved = dict(counts.get("approved") or {})
+            failed = dict(counts.get("failed") or {})
             data = {
                 "pending_queue": pending,
                 "approved_by_kind": approved,
+                "queued_applies": {
+                    "approved": sum(approved.values()),
+                    "failed": sum(failed.values()),
+                },
                 "photos": _count(c, "photos"),
                 "faces": _count(c, "faces"),
                 "embeddings": _count(c, "embeddings"),

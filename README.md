@@ -175,7 +175,7 @@ docker run --rm --gpus all \
 
 Schedules puts recurring work on a cron timer without a cron daemon in the image. This is the intended setup for a container where `synopticon web` is the only long-running process. Pick a job, fill in the same parameters the Pipeline/Utilities/Apply pages expose, give it a 5-field cron expression (or one of the presets), and optionally a timezone.
 
-- Schedulable: `sync`, `extract`, `cluster`, `recluster`, `regen-crops`, `report`, `apply`, `dedupe` (dry run), `clear-queue`, `delete-crops`.
+- Schedulable: `sync`, `extract`, `cluster`, `recluster`, `regen-crops`, `report`, `apply`, `dedupe` (dry run), `clear-queue`, `clear-applies`, `delete-crops`.
 - Not schedulable: anything behind a typed phrase. Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely.
 - A firing is skipped when the same command is still in flight (a long `extract` never stacks) and missed — recorded, not backfilled — for occurrences that fell while the server was down.
 - Each schedule keeps a short history of its firings, linking to the job log of each run. Run now fires one immediately without disturbing the next scheduled time.
@@ -390,6 +390,15 @@ Delete only the pending review-queue items so the next `cluster` run re-generate
 | `--yes` / `-y` | off | Skip the confirmation prompt. |
 
 Typical use after a `sync` fills in previously-missing person names: `synopticon clear-queue` then `synopticon cluster`.
+
+#### `clear-applies`
+Send queued-but-unwritten decisions back to `pending` so they turn up in the review UI again. It targets the two statuses that sit between a decision and the NAS: `approved` (waiting for an `apply` that never ran) and `failed` (an apply attempt that errored and is no longer eligible for retry). Both revert to `pending` with the decision metadata cleared — the bulk form of the review UI's per-item undo. Nothing is deleted, so crossref still sees the rows and won't re-surface duplicates; `applied` and `rejected` rows are left alone. Never touches the NAS.
+
+| Option | Default | Description |
+|---|---|---|
+| `--yes` / `-y` | off | Skip the confirmation prompt. |
+
+Typical use after bulk-approving more than you meant to, or after an `apply` failed partway: `synopticon clear-applies` then re-review.
 
 #### `delete-crops`
 Delete every face crop image from disk to reclaim space, leaving the `faces` table (bboxes, landmarks, embeddings) untouched. Crops are a pure derived artifact, so this is safe and reversible — rebuild them on demand with `regen-crops`. Never touches the NAS.

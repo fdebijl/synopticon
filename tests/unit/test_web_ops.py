@@ -141,12 +141,16 @@ def test_maintenance_counts_shape(app, db):
     _add_item(db, "assign", {"space": "personal"}, status="pending")
     _add_item(db, "assign", {"space": "personal"}, status="approved")
     _add_item(db, "merge_named", _named_pair(), status="approved")
+    _add_item(db, "assign", {"space": "personal"}, status="failed")
+    _add_item(db, "assign", {"space": "personal"}, status="applied")  # not queued
     with TestClient(app, follow_redirects=False) as c:
         _login(c)
         d = c.get("/api/maintenance/counts").json()
     assert d["pending_queue"] == 1
     assert d["approved_by_kind"]["assign"] == 1
     assert d["approved_by_kind"]["merge_named"] == 1
+    # What `clear-applies` would sweep: approved + failed, never applied.
+    assert d["queued_applies"] == {"approved": 2, "failed": 1}
     for key in ("photos", "faces", "embeddings", "cluster_runs"):
         assert isinstance(d[key], int)
     assert set(d["crops"].keys()) == {"files", "bytes"}
