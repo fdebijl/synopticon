@@ -291,6 +291,103 @@ def test_clear_applies_yes_flag_skips_prompt_and_noop_is_quiet(clear_applies_env
     assert "no queued applies to clear" in result.output
 
 
+# -- prune-queue -----------------------------------------------------------
+
+
+@pytest.fixture
+def prune_env(monkeypatch, tmp_path, tmp_settings):
+    """A temp DB with one live face and orphaned queue rows at several statuses."""
+    conn = store.connect(tmp_path / "synopticon.db")
+    conn.execute(
+        "INSERT INTO photos (id, space, synced_at) VALUES (1, 'personal', ?)",
+        (store.now(),),
+    )
+    conn.execute(
+        "INSERT INTO faces (face_id, space, photo_id, detector, x, y, w, h, "
+        "crop_path, pipeline_version, created_at) "
+        "VALUES (10, 'personal', 1, 'scrfd', 0, 0, 1, 1, '/crops/10.jpg', 'v1', ?)",
+        (store.now(),),
+    )
+    rows = [
+        ("pending", 10),  # alive: the face still exists
+        ("pending", 901),
+        ("rejected", 902),
+        ("approved", 903),
+        ("applied", 904),
+    ]
+    for status, face_id in rows:
+        conn.execute(
+            "INSERT INTO review_queue (kind, payload_json, status, created_at) "
+            "VALUES ('assign', ?, ?, ?)",
+            (json.dumps({"face_id": face_id, "space": "personal"}), status, store.now()),
+        )
+    conn.commit()
+    monkeypatch.setattr(cli, "_settings", lambda: tmp_settings)
+    monkeypatch.setattr(cli, "_conn", lambda s: conn)
+    yield conn
+    conn.close()
+
+
+def _face_ids(conn):
+    return sorted(
+        json.loads(row["payload_json"])["face_id"]
+        for row in conn.execute("SELECT payload_json FROM review_queue")
+    )
+
+
+def test_prune_queue_removes_pending_and_rejected_orphans(prune_env):
+    result = CliRunner().invoke(cli.app, ["prune-queue"], input="y\n")
+    assert result.exit_code == 0, result.output
+    # The live row and both decided orphans survive; the two prunable ones go.
+    assert _face_ids(prune_env) == [10, 903, 904]
+    assert "pruned 2 item(s)" in result.output
+
+
+def test_prune_queue_reports_every_status_but_marks_only_the_targets(prune_env):
+    result = CliRunner().invoke(cli.app, ["prune-queue", "--check"])
+    assert result.exit_code == 0, result.output
+    assert _face_ids(prune_env) == [10, 901, 902, 903, 904]  # --check deletes nothing
+    lines = {
+        line.split(":")[0].strip(): line
+        for line in result.output.splitlines()
+        if ":" in line
+    }
+    assert "will be removed" in lines["pending"]
+    assert "will be removed" in lines["rejected"]
+    assert "will be removed" not in lines["approved"]
+    assert "will be removed" not in lines["applied"]
+    assert "2 item(s) would be removed" in result.output
+
+
+def test_prune_queue_include_approved_widens_to_decided_rows(prune_env):
+    result = CliRunner().invoke(cli.app, ["prune-queue", "--include-approved", "-y"])
+    assert result.exit_code == 0, result.output
+    assert _face_ids(prune_env) == [10]
+    assert "pruned 4 item(s)" in result.output
+
+
+def test_prune_queue_aborts_on_no(prune_env):
+    result = CliRunner().invoke(cli.app, ["prune-queue"], input="n\n")
+    assert result.exit_code != 0
+    assert _face_ids(prune_env) == [10, 901, 902, 903, 904]
+
+
+def test_prune_queue_points_at_the_flag_when_only_decided_orphans_remain(prune_env):
+    assert CliRunner().invoke(cli.app, ["prune-queue", "-y"]).exit_code == 0
+    result = CliRunner().invoke(cli.app, ["prune-queue"])
+    assert result.exit_code == 0, result.output
+    assert "--include-approved" in result.output
+    assert _face_ids(prune_env) == [10, 903, 904]
+
+
+def test_prune_queue_is_quiet_when_there_is_nothing_to_prune(prune_env):
+    assert CliRunner().invoke(cli.app, ["prune-queue", "--include-approved", "-y"]).exit_code == 0
+    # Second run has nothing left and must not prompt.
+    result = CliRunner().invoke(cli.app, ["prune-queue"])
+    assert result.exit_code == 0, result.output
+    assert "no orphaned review items" in result.output
+
+
 def test_reset_password_sets_new_hash_and_revokes_sessions(pw_env):
     result = CliRunner().invoke(
         cli.app, ["reset-password", "--password", "new-pw"]

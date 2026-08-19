@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -451,8 +452,197 @@ def named_merge_pairs(conn: Connection) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# Orphan detection
+# --------------------------------------------------------------------------- #
+def payload_face_ids(payload: dict) -> set[int]:
+    """Every ``faces.face_id`` a review payload points at.
+
+    Three shapes across the kinds: a single ``face_id`` (assign, low_confidence,
+    reassign, restore_disagreement), a ``face_ids`` list (new_person), and
+    ``evidence.exemplars`` — a ``"space:person_id" -> [face_id, ...]`` map on both
+    merge kinds. One payload may carry more than one of them, and a payload
+    written by an older pipeline may carry a shape that has since changed, so
+    every read here is defensive.
+    """
+    out: set[int] = set()
+
+    def add(value: Any) -> None:
+        try:
+            out.add(int(value))
+        except (TypeError, ValueError):  # a null or a non-numeric leftover
+            pass
+
+    if payload.get("face_id") is not None:
+        add(payload["face_id"])
+    face_ids = payload.get("face_ids")
+    if isinstance(face_ids, (list, tuple)):
+        for fid in face_ids:
+            add(fid)
+    evidence = payload.get("evidence")
+    exemplars = evidence.get("exemplars") if isinstance(evidence, dict) else None
+    if isinstance(exemplars, dict):
+        for fids in exemplars.values():
+            if isinstance(fids, (list, tuple)):
+                for fid in fids:
+                    add(fid)
+    return out
+
+
+#: What a referenced face can still contribute to a review card.
+FACE_OK = "ok"  #: ``crop_path`` is set — the card renders, and regen replaces a lost file.
+FACE_REPAIRABLE = "repairable"  #: no ``crop_path`` yet, but the original is still fetchable.
+FACE_LOST = "lost"  #: no ``faces`` row at all, or no crop and no original to rebuild from.
+
+#: ``IN (...)`` batch size for face-id lookups. Well under SQLite's default
+#: 999-parameter ceiling, which the whole referenced set would blow past.
+_ID_CHUNK = 500
+
+
+def face_render_state(conn: Connection, face_ids: Iterable[int]) -> dict[int, str]:
+    """Classify each ``face_id`` as :data:`FACE_OK` / :data:`FACE_REPAIRABLE` /
+    :data:`FACE_LOST`.
+
+    Ids with no ``faces`` row are reported as lost rather than omitted, so a
+    caller never has to distinguish "absent" from "classified". This is what
+    separates a review item a ``regen-crops`` pass can still fix from one whose
+    inputs are gone for good: a crop is rebuildable from ``bbox`` + the original,
+    so it needs both the face row *and* a live photo row behind it.
+    """
+    ids = sorted({int(f) for f in face_ids})
+    state = dict.fromkeys(ids, FACE_LOST)
+    for start in range(0, len(ids), _ID_CHUNK):
+        chunk = ids[start : start + _ID_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        for row in conn.execute(
+            "SELECT f.face_id, f.crop_path, p.id AS photo_row, p.deleted AS photo_deleted "
+            "FROM faces f LEFT JOIN photos p ON p.space = f.space AND p.id = f.photo_id "
+            f"WHERE f.face_id IN ({placeholders})",
+            chunk,
+        ):
+            fid = int(row["face_id"])
+            if row["crop_path"]:
+                state[fid] = FACE_OK
+            elif row["photo_row"] is not None and not row["photo_deleted"]:
+                state[fid] = FACE_REPAIRABLE
+            else:
+                state[fid] = FACE_LOST
+    return state
+
+
+#: Statuses :func:`orphaned_items` targets unless told otherwise. These are the
+#: two the next ``cluster`` run re-proposes from scratch, so dropping an orphan
+#: loses nothing: ``pending`` was never decided, and ``rejected`` is re-offered by
+#: design (see ADR 14 on why ``hidden`` is the status that is *not*). Every other
+#: status holds either a human decision or a completed NAS write.
+DEFAULT_PRUNE_STATUSES: tuple[str, ...] = ("pending", "rejected")
+
+
+def orphaned_items(
+    conn: Connection, statuses: Sequence[str] = DEFAULT_PRUNE_STATUSES
+) -> dict[str, list[int]]:
+    """``status -> item_ids`` for queue rows whose faces are all unrecoverable.
+
+    A row is an orphan when it references at least one face and *none* of them
+    survive: ``review_queue`` stores raw ``face_id``s in its JSON payload with no
+    foreign key, while a re-extract deletes and re-inserts a photo's faces under
+    fresh autoincrement ids. Any row proposed before that bump then points at ids
+    that no longer exist, so its card renders with no crop and no ``regen-crops``
+    pass can bring it back.
+
+    Partial survival is deliberately not an orphan: a merge whose exemplar list
+    still resolves in part renders thumbnails and stays reviewable. Nor is a row
+    that references no faces at all, since there is nothing to judge it on.
+    """
+    if not statuses:
+        return {}
+    placeholders = ",".join("?" * len(statuses))
+    rows = conn.execute(
+        "SELECT item_id, status, payload_json FROM review_queue "
+        f"WHERE status IN ({placeholders}) ORDER BY item_id",
+        list(statuses),
+    ).fetchall()
+
+    referenced: dict[int, tuple[str, set[int]]] = {}
+    every_id: set[int] = set()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (json.JSONDecodeError, TypeError):
+            # An unparseable payload is unreviewable, but it is also not
+            # something a face lookup can speak to. Leave it to a human.
+            continue
+        if not isinstance(payload, dict):
+            continue
+        fids = payload_face_ids(payload)
+        if not fids:
+            continue
+        referenced[int(row["item_id"])] = (str(row["status"]), fids)
+        every_id |= fids
+
+    state = face_render_state(conn, every_id)
+    out: dict[str, list[int]] = {}
+    for item_id, (status, fids) in referenced.items():
+        if all(state.get(fid, FACE_LOST) == FACE_LOST for fid in fids):
+            out.setdefault(status, []).append(item_id)
+    return out
+
+
+#: Every status ``review_queue.status`` can hold (mirrors schema.sql).
+ALL_STATUSES: tuple[str, ...] = (
+    "pending",
+    "approved",
+    "rejected",
+    "hidden",
+    "applied",
+    "failed",
+)
+
+
+def orphan_counts(conn: Connection) -> dict[str, int]:
+    """``status -> orphan count`` across *every* status.
+
+    Reported wider than :data:`DEFAULT_PRUNE_STATUSES` prunes on purpose: an
+    orphaned ``approved`` row still applies to the NAS from its stored payload
+    alone (``writeback.apply_reviewed`` never reads ``faces``), so it is a write
+    a human green-lit without being able to see it. Surfacing the count is how
+    that becomes visible; whether to drop it stays the human's call.
+    """
+    return {
+        status: len(ids)
+        for status, ids in orphaned_items(conn, ALL_STATUSES).items()
+        if ids
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Mutations (review_queue only)
 # --------------------------------------------------------------------------- #
+def delete_items(conn: Connection, item_ids: Sequence[int]) -> int:
+    """Delete queue rows by id, returning how many were removed.
+
+    ``audit_log.review_item_id`` references ``review_queue`` with no cascade, so
+    any link to a row being dropped is nulled first or the delete trips the FK —
+    the same order ``cli.py``'s ``clear-queue`` uses.
+    """
+    ids = sorted({int(i) for i in item_ids})
+    if not ids:
+        return 0
+    deleted = 0
+    for start in range(0, len(ids), _ID_CHUNK):
+        chunk = ids[start : start + _ID_CHUNK]
+        placeholders = ",".join("?" * len(chunk))
+        conn.execute(
+            f"UPDATE audit_log SET review_item_id = NULL WHERE review_item_id IN ({placeholders})",
+            chunk,
+        )
+        cur = conn.execute(
+            f"DELETE FROM review_queue WHERE item_id IN ({placeholders})", chunk
+        )
+        deleted += max(cur.rowcount, 0)
+    conn.commit()
+    return deleted
+
+
 def decide_item(
     conn: Connection, item_id: int, decision: str
 ) -> str | None:

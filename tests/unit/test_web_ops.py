@@ -154,6 +154,120 @@ def test_maintenance_counts_shape(app, db):
     for key in ("photos", "faces", "embeddings", "cluster_runs"):
         assert isinstance(d[key], int)
     assert set(d["crops"].keys()) == {"files", "bytes"}
+    # Nothing in this fixture names a face, so nothing is orphaned.
+    assert d["orphaned_queue"] == {"by_status": {}, "prunable": 0}
+
+
+def _add_face(db, face_id, photo_id, crop_path="/crops/x.jpg"):
+    db.execute(
+        "INSERT INTO photos (id, space, synced_at) VALUES (?,'personal',?) "
+        "ON CONFLICT(space, id) DO NOTHING",
+        (photo_id, store.now()),
+    )
+    db.execute(
+        "INSERT INTO faces (face_id, space, photo_id, detector, x, y, w, h, "
+        "crop_path, pipeline_version, created_at) "
+        "VALUES (?,'personal',?,'scrfd',0,0,1,1,?,'v1',?)",
+        (face_id, photo_id, crop_path, store.now()),
+    )
+    db.commit()
+
+
+def test_maintenance_counts_reports_orphaned_queue(app, db):
+    """A re-extract renumbers face ids; the rows left pointing at the old ones
+    render with no crop, and only the count makes that visible."""
+    _seed_user(db)
+    _add_face(db, 10, photo_id=1)
+    _add_item(db, "assign", {"face_id": 10, "space": "personal"})  # alive
+    _add_item(db, "assign", {"face_id": 999, "space": "personal"})
+    _add_item(db, "assign", {"face_id": 998, "space": "personal"}, status="rejected")
+    _add_item(db, "assign", {"face_id": 997, "space": "personal"}, status="approved")
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        d = c.get("/api/maintenance/counts").json()
+    orphans = d["orphaned_queue"]
+    assert orphans["by_status"] == {"pending": 1, "rejected": 1, "approved": 1}
+    # `prunable` covers only what prune-queue clears without --include-approved.
+    assert orphans["prunable"] == 2
+
+
+def test_orphan_scan_is_cached_but_invalidates_when_the_queue_changes(app, db, monkeypatch):
+    """A wall-clock TTL would show a count the user's own prune just corrected."""
+    _seed_user(db)
+    _add_face(db, 10, photo_id=1)
+    _add_item(db, "assign", {"face_id": 10, "space": "personal"})  # alive
+    orphan = _add_item(db, "assign", {"face_id": 999, "space": "personal"})
+
+    from synopticon.review import queries as queries_mod
+
+    calls = []
+    real = queries_mod.orphan_counts
+    monkeypatch.setattr(
+        queries_mod,
+        "orphan_counts",
+        lambda c: (calls.append(1), real(c))[1],
+    )
+
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        first = c.get("/api/maintenance/counts").json()["orphaned_queue"]
+        assert first["prunable"] == 1
+        # Nothing changed: served from cache, not rescanned.
+        assert c.get("/api/maintenance/counts").json()["orphaned_queue"] == first
+        assert len(calls) == 1
+
+        db.execute("DELETE FROM review_queue WHERE item_id = ?", (orphan,))
+        db.commit()
+        after = c.get("/api/maintenance/counts").json()["orphaned_queue"]
+
+    assert after == {"by_status": {}, "prunable": 0}
+    assert len(calls) == 2
+
+
+def test_orphan_scan_cache_notices_a_status_change_in_place(app, db, monkeypatch):
+    """Approving an orphan moves it between statuses without changing any extent."""
+    _seed_user(db)
+    item = _add_item(db, "assign", {"face_id": 999, "space": "personal"})
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        assert c.get("/api/maintenance/counts").json()["orphaned_queue"]["prunable"] == 1
+        db.execute(
+            "UPDATE review_queue SET status = 'approved' WHERE item_id = ?", (item,)
+        )
+        db.commit()
+        orphans = c.get("/api/maintenance/counts").json()["orphaned_queue"]
+    assert orphans["by_status"] == {"approved": 1}
+    assert orphans["prunable"] == 0
+
+
+def test_maintenance_counts_orphan_scan_error_degrades_to_empty(app, db, monkeypatch):
+    _seed_user(db)
+    from synopticon.review import queries as queries_mod
+
+    def boom(_conn):
+        raise RuntimeError("scan exploded")
+
+    monkeypatch.setattr(queries_mod, "orphan_counts", boom)
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        r = c.get("/api/maintenance/counts")
+        assert r.status_code == 200  # never 500
+        assert r.json()["orphaned_queue"] == {}
+
+
+def test_prune_queue_requires_confirm_and_never_schedules(app, db):
+    _seed_user(db)
+    from synopticon.web import schedules
+
+    with TestClient(app, follow_redirects=False) as c:
+        _login(c)
+        assert _submit(c, "prune-queue").status_code == 428
+        r = _submit(c, "prune-queue", {}, confirm=True)
+        assert r.status_code == 202
+        assert _job_argv(c, r.json()["job_id"]) == ["prune-queue", "-y"]
+    # Repairing what a pipeline upgrade orphaned is a one-off, not recurring work;
+    # the schedulable set is deliberately a subset of what would validate.
+    assert "prune-queue" not in schedules.SCHEDULABLE
 
 
 def test_maintenance_counts_crops_error_degrades_to_null(app, db, monkeypatch):

@@ -176,7 +176,7 @@ docker run --rm --gpus all \
 Schedules puts recurring work on a cron timer without a cron daemon in the image. This is the intended setup for a container where `synopticon web` is the only long-running process. Pick a job, fill in the same parameters the Pipeline/Utilities/Apply pages expose, give it a 5-field cron expression (or one of the presets), and optionally a timezone.
 
 - Schedulable: `sync`, `extract`, `cluster`, `recluster`, `regen-crops`, `report`, `apply`, `dedupe` (dry run), `clear-queue`, `clear-applies`, `delete-crops`.
-- Not schedulable: anything behind a typed phrase. Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely.
+- Not schedulable: anything behind a typed phrase. Named↔named merges, `dedupe --apply` and `reset --all` require a human to type the phrase at that moment, which a timer cannot do — the server refuses to save such a schedule at all. `reset` is left off the list entirely, as is `prune-queue` — repairing items a pipeline upgrade orphaned is a one-off, not recurring work.
 - A firing is skipped when the same command is still in flight (a long `extract` never stacks) and missed — recorded, not backfilled — for occurrences that fell while the server was down.
 - Each schedule keeps a short history of its firings, linking to the job log of each run. Run now fires one immediately without disturbing the next scheduled time.
 
@@ -409,6 +409,19 @@ Send queued-but-unwritten decisions back to `pending` so they turn up in the rev
 
 Typical use after bulk-approving more than you meant to, or after an `apply` failed partway: `synopticon clear-applies` then re-review.
 
+#### `prune-queue`
+Delete review items whose faces no longer exist, so they stop cluttering review as cards with no face on them. `review_queue` stores face ids inside its JSON payload with no foreign key, while re-detecting a photo deletes and re-inserts its faces under fresh ids — so every item proposed before a pipeline-version bump points at ids that are gone. Those cards can't be judged and `regen-crops` can't repair them, because the bounding box they'd be rebuilt from went with the old rows.
+
+Only items where *every* referenced face is unrecoverable are removed; a merge whose exemplar list partly survives still renders thumbnails and is left alone. Pending and rejected orphans go by default, since the next `cluster` run re-proposes both from the current faces. Never touches the NAS.
+
+| Option | Default | Description |
+|---|---|---|
+| `--include-approved` | off | Also drop orphans at the decided statuses (`approved`, `hidden`, `applied`, `failed`). Worth doing for approved rows in particular: `apply` writes those to the NAS from the stored payload alone, so they are corrections nobody could actually see. |
+| `--check` | off | Report the counts and exit without deleting anything. |
+| `--yes` / `-y` | off | Skip the confirmation prompt. |
+
+Typical use when the review grid fills with faceless cards after a pipeline upgrade: `synopticon prune-queue --check` to see the split by status, then `synopticon prune-queue` and `synopticon cluster`.
+
 #### `delete-crops`
 Delete every face crop image from disk to reclaim space, leaving the `faces` table (bboxes, landmarks, embeddings) untouched. Crops are a pure derived artifact, so this is safe and reversible — rebuild them on demand with `regen-crops`. Never touches the NAS.
 
@@ -420,6 +433,8 @@ Crop images can accumulate to many gigabytes over a large library. If you run th
 
 #### `regen-crops`
 Rebuild face crop images from the stored bboxes/landmarks and the originals (re-fetched from the NAS), without re-running detection or embedding. Use it to recover from a `delete-crops` (or an accidental wipe), or to repair a partial one. Resumable — it commits per photo. Originals are evicted afterward unless `storage.keep_originals` is set. Reads the NAS but never writes to it.
+
+A crop is two things: the images on disk and the `faces` row pointing at them. Only the row is read downstream — the review UI never looks at the filesystem — so a face whose files exist while its columns are unset shows no crop. Those are repaired with a bare database update, no original fetched (reported as `backfilled`). Faces on a photo that is deleted or missing are out of reach either way; `prune-queue` clears the review items left pointing at them.
 
 | Option | Default | Description |
 |---|---|---|

@@ -490,6 +490,72 @@ def clear_queue(
     get_emitter().result(stats={"cleared": n})
 
 
+@app.command("prune-queue")
+def prune_queue(
+    include_approved: bool = typer.Option(
+        False, "--include-approved",
+        help="Also drop orphans at the decided statuses (approved, hidden, applied, failed).",
+    ),
+    check: bool = typer.Option(
+        False, "--check", help="Report the counts and exit without deleting anything."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+):
+    """Delete review items whose faces no longer exist, so they stop cluttering review.
+
+    `review_queue` stores face ids inside its JSON payload with no foreign key, while
+    re-detecting a photo deletes and re-inserts its faces under fresh ids. An item
+    proposed before a pipeline-version bump therefore points at ids that are gone: its
+    card shows no face at all, and `regen-crops` cannot bring it back, because the
+    bounding box it would be rebuilt from went with the old rows.
+
+    Only items where *every* referenced face is unrecoverable are removed. Pending and
+    rejected ones go by default — the next `cluster` run re-proposes both from the
+    current faces. `--include-approved` widens it to the statuses holding a human
+    decision, which is worth doing for approved rows in particular: `apply` writes
+    those to the NAS from the stored payload alone, i.e. a correction nobody could
+    actually see. Never contacts the NAS.
+    """
+    from synopticon.review import queries
+
+    settings = _settings()
+    conn = _conn(settings)
+
+    everything = queries.orphan_counts(conn)
+    if not everything:
+        typer.echo("no orphaned review items")
+        get_emitter().result(stats={"pruned": 0, "orphans": {}})
+        return
+
+    statuses = (
+        queries.ALL_STATUSES if include_approved else queries.DEFAULT_PRUNE_STATUSES
+    )
+    targets = queries.orphaned_items(conn, statuses)
+    item_ids = [i for ids in targets.values() for i in ids]
+
+    typer.echo(f"Orphaned review items in {store.describe(settings)}:")
+    for status, n in sorted(everything.items(), key=lambda kv: -kv[1]):
+        mark = "  <- will be removed" if status in statuses else ""
+        typer.echo(f"  {status}: {n}{mark}")
+
+    if not item_ids:
+        typer.echo("nothing to remove at the selected statuses (see --include-approved)")
+        get_emitter().result(stats={"pruned": 0, "orphans": everything})
+        return
+    if check:
+        typer.echo(f"--check: {len(item_ids)} item(s) would be removed")
+        get_emitter().result(stats={"pruned": 0, "orphans": everything})
+        return
+
+    typer.echo(f"Remove {len(item_ids)} orphaned item(s)")
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    pruned = queries.delete_items(conn, item_ids)
+    typer.echo(f"pruned {pruned} item(s) — next: synopticon cluster")
+    get_emitter().result(stats={"pruned": pruned, "orphans": everything})
+
+
 @app.command("clear-applies")
 def clear_applies(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),

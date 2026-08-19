@@ -357,6 +357,13 @@ def _build_clear_applies(params: dict) -> list[str]:
     return ["clear-applies"]
 
 
+def _build_prune_queue(params: dict) -> list[str]:
+    argv = ["prune-queue"]
+    if _bool(params, "include_approved"):
+        argv.append("--include-approved")
+    return argv
+
+
 def _build_delete_crops(params: dict) -> list[str]:
     return ["delete-crops"]
 
@@ -376,6 +383,7 @@ JOB_SPECS: dict[str, JobSpec] = {
     "reset": JobSpec("reset", _build_reset, DangerLevel.TYPED_PHRASE),
     "clear-queue": JobSpec("clear-queue", _build_clear_queue, DangerLevel.CONFIRM),
     "clear-applies": JobSpec("clear-applies", _build_clear_applies, DangerLevel.CONFIRM),
+    "prune-queue": JobSpec("prune-queue", _build_prune_queue, DangerLevel.CONFIRM),
     "delete-crops": JobSpec("delete-crops", _build_delete_crops, DangerLevel.CONFIRM),
 }
 
@@ -450,7 +458,7 @@ def validate_consent(
         extra = _consent_dedupe(params, confirm, confirm_phrase)
     elif name == "reset":
         extra = _consent_reset(params, confirm, confirm_phrase)
-    elif name in ("clear-queue", "clear-applies", "delete-crops"):
+    elif name in ("clear-queue", "clear-applies", "prune-queue", "delete-crops"):
         if not confirm:
             raise ConsentError("confirm", "confirm")
         extra = ["-y"]

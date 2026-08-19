@@ -15,6 +15,7 @@ const JOB_LABELS: Record<string, string> = {
   reset: 'Reset',
   'clear-queue': 'Clear review queue',
   'clear-applies': 'Clear queued applies',
+  'prune-queue': 'Remove broken review items',
   'delete-crops': 'Delete crop images',
 }
 

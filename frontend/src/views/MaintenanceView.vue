@@ -2,7 +2,7 @@
 // Maintenance page: one card per destructive local-state command with live
 // "what will be removed" counts (/api/maintenance/counts). Consent (plan §6) is
 // enforced by the shared confirm dialog: clear-queue / clear-applies /
-// delete-crops / reset take a plain confirm, reset --all takes the typed phrase
+// prune-queue / delete-crops / reset take a plain confirm, reset --all takes the typed phrase
 // "reset all". Each action submits a job so the shared JobPanel streams its
 // progress. The server's validate_consent re-checks every gate regardless.
 // Photo deduplication lives on the Utilities page — it acts on the NAS library,
@@ -15,9 +15,15 @@ import { confirm } from '../composables/useConfirm'
 
 const PHRASE_RESET_ALL = 'reset all'
 
+interface OrphanCounts {
+  by_status?: Record<string, number>
+  prunable?: number | null
+}
+
 interface Counts {
   pending_queue: number | null
   queued_applies: { approved: number | null; failed: number | null }
+  orphaned_queue: OrphanCounts | null
   faces: number | null
   embeddings: number | null
   cluster_runs: number | null
@@ -97,6 +103,44 @@ async function clearApplies(): Promise<void> {
   if (ok) startJob('clear-applies', {}, { confirm: true })
 }
 
+// Orphans a human already decided on are counted but never pruned by default:
+// an approved one still writes to the NAS from its stored payload, so it is worth
+// naming in the dialog rather than sweeping up silently.
+const pruneOpts = reactive({ includeApproved: false })
+
+const prunable = () => counts.value?.orphaned_queue?.prunable ?? null
+const decidedOrphans = () => {
+  const by = counts.value?.orphaned_queue?.by_status
+  if (!by) return 0
+  return Object.entries(by)
+    .filter(([s]) => s !== 'pending' && s !== 'rejected')
+    .reduce((n, [, v]) => n + v, 0)
+}
+const orphanBreakdown = () => {
+  const by = counts.value?.orphaned_queue?.by_status
+  if (!by || Object.keys(by).length === 0) return 'none'
+  return Object.entries(by)
+    .sort((a, b) => b[1] - a[1])
+    .map(([s, n]) => `${n} ${s}`)
+    .join(' · ')
+}
+
+async function pruneQueue(): Promise<void> {
+  const decided = decidedOrphans()
+  const extra =
+    pruneOpts.includeApproved && decided > 0
+      ? ` This also drops ${decided} item(s) you already decided on.`
+      : ''
+  const ok = await confirm({
+    title: 'Remove broken review items',
+    message:
+      'Delete review items whose faces no longer exist in the database? Their photos were re-detected, so there is nothing left to show or apply — Group faces re-proposes them from the current faces.' +
+      extra,
+    okLabel: 'Remove items',
+  })
+  if (ok) startJob('prune-queue', { include_approved: pruneOpts.includeApproved }, { confirm: true })
+}
+
 async function deleteCrops(): Promise<void> {
   const ok = await confirm({
     title: 'Delete crop images',
@@ -163,6 +207,31 @@ onMounted(() => void loadCounts())
             @click="clearApplies"
           >
             Clear queued applies…
+          </button>
+        </div>
+      </section>
+
+      <section class="card maint-card">
+        <h3>Remove broken review items</h3>
+        <p class="muted">
+          Items whose faces were re-detected under new ids. They show no face and cannot be
+          repaired by Regenerate crops; Group faces re-proposes them from the current faces.
+        </p>
+        <p>Broken: <span class="maint-count">{{ orphanBreakdown() }}</span></p>
+        <div class="maint-opts">
+          <label class="opt-check"
+            ><input type="checkbox" v-model="pruneOpts.includeApproved" /> also remove ones you
+            already decided on ({{ decidedOrphans() }})</label
+          >
+        </div>
+        <div class="maint-actions">
+          <button
+            type="button"
+            class="btn btn-danger"
+            :disabled="!prunable() && !(pruneOpts.includeApproved && decidedOrphans() > 0)"
+            @click="pruneQueue"
+          >
+            Remove items…
           </button>
         </div>
       </section>

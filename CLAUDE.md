@@ -24,6 +24,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `12_in-process-cron-scheduling.md` | `cron.py`, `web/schedule*` |
 | `13_backup-downloads.md` | `web/backup_routes.py`, `db/snapshot.py`, `configio.export_config` |
 | `14_review-retargeting.md` | `review/queries.py` mutations, the `hidden` status, `_existing_identities` |
+| `15_orphaned-review-items.md` | `prune-queue`, `regen_crops`' skip logic, anything reading `face_id` out of `payload_json` |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -84,6 +85,7 @@ SQLite (`data/synopticon.db`) is the default and needs no configuration; Postgre
 - `pipeline_version` (model manifest + detection config) gates re-extraction; per-photo state is in `extract_log`. Each photo is one atomic transaction, so crash-resume is by construction.
 - **Leave each embedder's preprocessing alone** — ArcFace, AdaFace and MagFace have genuinely different input contracts, and "harmonizing" MagFace inverts its embedding space.
 - Clustering always uses `variant='orig'`; restored-face embeddings are advisory.
+- **A crop is two artifacts: the images and the `faces` row pointing at them.** Only the row is read downstream — the review UI maps `crop_path` to a URL and never stats the disk — so a skip check that asks only the filesystem leaves crop-less faces unrepairable. `regen_crops` treats a NULL column as work and repairs it with a bare UPDATE, no fetch. (ADR 15)
 - **A skipped photo must say why**: classify through `runner.skip_reason(exc, filename)` so the reason is plain language and lands in the run-level tally.
 - Pin model weights by sha256 to versioned release URLs, never `releases/latest`. Weights are never committed. (ADR 03)
 
@@ -126,6 +128,8 @@ Everything before `apply` is read-only toward the NAS. `apply` is dry-run by def
 
 - **`rejected` is re-proposed by the next `cluster` run; `hidden` is not** — `_existing_identities` counts `hidden` as seen. That is the only difference, and it is the point of having both.
 - **`approved` does not imply the pipeline proposed it.** A retarget writes an approved row from a human's pick; `payload.manual_target` marks those, and their `confidence` is NULL because the stored score belonged to the person that got overruled (`payload.original_person_id`).
+
+**`payload_json`'s face ids have no foreign key, and a re-extract renumbers them** (`faces.face_id` is AUTOINCREMENT; `_process_photo` deletes and re-inserts a photo's faces). Rows proposed before a `pipeline_version` bump therefore point at ids that are gone, render with no crop, and cannot be repaired by `regen-crops` — the bbox they would be rebuilt from went with the old rows. `queries.orphaned_items` finds them and `prune-queue` deletes them; **deleting is the point, never `hidden`**, which `_existing_identities` counts as seen and would suppress the correct re-proposal forever. An orphan is only an orphan when *every* face it names is unrecoverable. (ADR 15)
 
 ### Web GUI (`web/`)
 

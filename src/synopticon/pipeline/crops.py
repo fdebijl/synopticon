@@ -11,6 +11,13 @@ callable (never importing `sync/`) and commits per photo, so an interrupted pass
 resumes where it left off. It reuses the exact `align` + `_crop_paths` logic the
 runner writes with, so regenerated crops are byte-identical to freshly extracted
 ones.
+
+The crop is *two* artifacts, not one: the images on disk and the `faces` row's
+`crop_path`/`ctx_crop_path` pointing at them. Only the columns are read by
+anything downstream — the review UI maps `crop_path` to a `/crops/...` URL and
+never looks at the filesystem — so a face whose files exist while its columns sit
+NULL is invisible in review. `regen_crops` repairs that pairing without fetching
+anything, which is the cheap half of what it does.
 """
 
 from __future__ import annotations
@@ -46,6 +53,35 @@ def _crops_present(crops_dir: Path, face_id: int) -> bool:
     return crop_path.exists() and ctx_path.exists()
 
 
+def _needs_backfill(row: Row) -> bool:
+    """True when the crop files are on disk but the ``faces`` row forgot them.
+
+    The review UI reads ``faces.crop_path``, never the disk, so a row whose files
+    exist while its columns sit NULL renders with no crop at all — and the disk
+    check in :func:`_crops_present` used to declare that photo done and skip it,
+    which is why a ``regen-crops`` pass could not repair it. Both columns are
+    written together by the runner, so either being unset means the pair is stale.
+    """
+    return not row["crop_path"] or not row["ctx_crop_path"]
+
+
+def _backfill_paths(conn: Connection, crops_dir: Path, faces: list[Row]) -> None:
+    """Point ``crop_path``/``ctx_crop_path`` at the images already on disk.
+
+    No image is decoded and no original is fetched: the paths are a pure function
+    of ``face_id``, so re-deriving them is the whole repair. The caller commits.
+    """
+    from .runner import _crop_paths
+
+    for f in faces:
+        face_id = int(f["face_id"])
+        crop_path, ctx_path = _crop_paths(crops_dir, face_id)
+        conn.execute(
+            "UPDATE faces SET crop_path = ?, ctx_crop_path = ? WHERE face_id = ?",
+            (str(crop_path), str(ctx_path), face_id),
+        )
+
+
 def _photos_with_faces(conn: Connection, space: Space) -> list[Row]:
     return conn.execute(
         "SELECT p.* FROM photos p WHERE p.space = ? AND p.deleted = 0 "
@@ -68,9 +104,16 @@ def regen_crops(
 
     Each photo's original is fetched (via `fetch_original`) and decoded once, then
     every one of its faces' crops is re-emitted. With `only_missing` (the default)
-    a photo whose crops are all already on disk is skipped without fetching it, so
-    a re-run after a partial wipe only pulls what it must. A photo whose original
-    can't be fetched or decoded is skipped and counted — never fatal.
+    a photo whose crops are all already on disk *and* recorded on its `faces` row is
+    skipped without fetching it, so a re-run after a partial wipe only pulls what it
+    must; a face whose files are on disk but whose columns are unset is repaired with
+    a bare UPDATE (counted as `backfilled`), no fetch involved. `only_missing=False`
+    redraws everything unconditionally. A photo whose original can't be fetched or
+    decoded is skipped and counted — never fatal.
+
+    Faces on a photo that is deleted or absent from `photos` are out of reach here by
+    construction (`_photos_with_faces` filters them), because there is no original to
+    rebuild from. Review items pointing only at those are what `prune-queue` clears.
     """
     import cv2
 
@@ -82,22 +125,41 @@ def regen_crops(
 
     photos = _photos_with_faces(conn, space)
     total = len(photos)
-    processed = failed = crops_written = skipped = 0
+    processed = failed = crops_written = skipped = backfilled = 0
 
     for i, row in enumerate(photos, start=1):
         if limit is not None and processed >= limit:
             break
         pid = int(row["id"])
         faces = conn.execute(
-            "SELECT face_id, x, y, w, h, landmarks FROM faces "
+            "SELECT face_id, x, y, w, h, landmarks, crop_path, ctx_crop_path FROM faces "
             "WHERE space = ? AND photo_id = ?",
             (space, pid),
         ).fetchall()
 
-        todo = faces
-        if only_missing:
-            todo = [f for f in faces if not _crops_present(crops_dir, int(f["face_id"]))]
-            skipped += len(faces) - len(todo)
+        # Three outcomes per face: redraw it from the original, backfill just the
+        # DB columns because the images are already on disk, or leave it alone.
+        todo: list[Row] = []
+        backfill: list[Row] = []
+        for f in faces:
+            if not only_missing:
+                todo.append(f)
+            elif not _crops_present(crops_dir, int(f["face_id"])):
+                todo.append(f)
+            elif _needs_backfill(f):
+                backfill.append(f)
+            else:
+                skipped += 1
+
+        if backfill and not todo:
+            # Pure DB repair: no original to fetch, no image work, no NAS traffic.
+            _backfill_paths(conn, crops_dir, backfill)
+            conn.commit()
+            backfilled += len(backfill)
+            processed += 1
+            if progress and (i % 25 == 0 or i == total):
+                progress(i, total)
+            continue
         if not todo:
             if progress and (i % 25 == 0 or i == total):
                 progress(i, total)
@@ -135,6 +197,10 @@ def regen_crops(
             )
             crops_written += 1
 
+        if backfill:
+            _backfill_paths(conn, crops_dir, backfill)
+            backfilled += len(backfill)
+
         conn.commit()
         processed += 1
         if progress and (i % 25 == 0 or i == total):
@@ -143,6 +209,7 @@ def regen_crops(
     return {
         "photos": processed,
         "crops": crops_written,
+        "backfilled": backfilled,
         "skipped": skipped,
         "failed": failed,
     }

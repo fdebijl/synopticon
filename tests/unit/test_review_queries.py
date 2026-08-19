@@ -574,3 +574,159 @@ def test_named_merge_pairs(conn, settings):
     assert pairs[0]["label_b"] == "Bob"
     assert pairs[0]["person_a"]["person_id"] == 1
     assert pairs[1]["label_b"] == 6  # falls back to person_id when name is empty
+
+
+# --------------------------------------------------------------------------- #
+# Orphan detection
+# --------------------------------------------------------------------------- #
+def test_payload_face_ids_collects_all_three_shapes():
+    assert queries.payload_face_ids({"face_id": 7}) == {7}
+    assert queries.payload_face_ids({"face_ids": [1, 2, 2]}) == {1, 2}
+    assert queries.payload_face_ids(
+        {"evidence": {"exemplars": {"personal:1": [3, 4], "personal:2": [5]}}}
+    ) == {3, 4, 5}
+    # A payload may carry more than one shape at once.
+    assert queries.payload_face_ids(
+        {"face_id": 1, "face_ids": [2], "evidence": {"exemplars": {"personal:1": [3]}}}
+    ) == {1, 2, 3}
+
+
+def test_payload_face_ids_tolerates_junk():
+    """Payloads written by older pipeline versions must not raise."""
+    assert queries.payload_face_ids({}) == set()
+    assert queries.payload_face_ids({"face_id": None}) == set()
+    assert queries.payload_face_ids({"face_id": "nope"}) == set()
+    assert queries.payload_face_ids({"face_ids": "not-a-list"}) == set()
+    assert queries.payload_face_ids({"evidence": "not-a-dict"}) == set()
+    assert queries.payload_face_ids({"evidence": {"exemplars": {"k": None}}}) == set()
+    assert queries.payload_face_ids({"face_ids": [1, None, "x"]}) == {1}
+
+
+def test_face_render_state_classifies_each_case(conn):
+    _add_face(conn, 1, "personal", photo_id=1, crop_path="/crops/00/1.jpg")
+    _add_face(conn, 2, "personal", photo_id=2)  # crop_path NULL, photo alive
+    _add_face(conn, 3, "personal", photo_id=3)
+    conn.execute("UPDATE photos SET deleted = 1 WHERE space = 'personal' AND id = 3")
+    conn.execute(
+        "INSERT INTO faces (face_id, space, photo_id, detector, x, y, w, h, "
+        "pipeline_version, created_at) VALUES (4,'personal',999,'scrfd',0,0,1,1,'v1',?)",
+        (store.now(),),
+    )  # face row with no photo row at all
+    conn.commit()
+
+    state = queries.face_render_state(conn, [1, 2, 3, 4, 5])
+    assert state[1] == queries.FACE_OK
+    assert state[2] == queries.FACE_REPAIRABLE
+    assert state[3] == queries.FACE_LOST  # photo deleted -> nothing to rebuild from
+    assert state[4] == queries.FACE_LOST  # photo row gone
+    assert state[5] == queries.FACE_LOST  # no face row at all -> reported, not omitted
+
+
+def test_face_render_state_handles_more_ids_than_one_chunk(conn):
+    for fid in range(1, 4):
+        _add_face(conn, fid, "personal", photo_id=fid, crop_path=f"/crops/{fid}.jpg")
+    ids = list(range(1, queries._ID_CHUNK * 2 + 5))
+    state = queries.face_render_state(conn, ids)
+    assert len(state) == len(ids)
+    assert state[1] == queries.FACE_OK
+    assert state[queries._ID_CHUNK + 1] == queries.FACE_LOST
+
+
+def test_orphaned_items_finds_rows_whose_faces_are_gone(conn):
+    _add_face(conn, 10, "personal", photo_id=1, crop_path="/crops/10.jpg")
+
+    live = _add_item(conn, "assign", {"face_id": 10, "space": "personal"})
+    orphan = _add_item(conn, "assign", {"face_id": 999, "space": "personal"})
+
+    found = queries.orphaned_items(conn)
+    assert found == {"pending": [orphan]}
+    assert live not in found.get("pending", [])
+
+
+def test_orphaned_items_ignores_partial_survivors(conn):
+    """A card that still renders *some* thumbnails is reviewable, so it stays."""
+    _add_face(conn, 10, "personal", photo_id=1, crop_path="/crops/10.jpg")
+    _add_item(conn, "new_person", {"face_ids": [10, 998, 999]})
+    _add_item(
+        conn,
+        "merge",
+        {
+            "person_a": {"space": "personal", "person_id": 1},
+            "person_b": {"space": "personal", "person_id": 2},
+            "evidence": {"exemplars": {"personal:1": [10], "personal:2": [997]}},
+        },
+    )
+    assert queries.orphaned_items(conn) == {}
+
+
+def test_orphaned_items_ignores_rows_naming_no_faces(conn):
+    """No face reference means nothing to judge the row on — leave it alone."""
+    _add_item(conn, "merge", {"person_a": {"person_id": 1}, "person_b": {"person_id": 2}})
+    assert queries.orphaned_items(conn) == {}
+
+
+def test_orphaned_items_counts_repairable_faces_as_alive(conn):
+    """A NULL crop_path is regen-crops' job, not prune-queue's."""
+    _add_face(conn, 11, "personal", photo_id=1)  # crop_path NULL, photo alive
+    _add_item(conn, "assign", {"face_id": 11, "space": "personal"})
+    assert queries.orphaned_items(conn) == {}
+
+
+def test_orphaned_items_defaults_to_pending_and_rejected(conn):
+    ids = {
+        status: _add_item(conn, "assign", {"face_id": 999}, status=status)
+        for status in queries.ALL_STATUSES
+    }
+
+    default = queries.orphaned_items(conn)
+    assert set(default) == {"pending", "rejected"}
+
+    every = queries.orphaned_items(conn, queries.ALL_STATUSES)
+    assert set(every) == set(queries.ALL_STATUSES)
+    assert every["applied"] == [ids["applied"]]
+
+    assert queries.orphaned_items(conn, ()) == {}
+
+
+def test_orphaned_items_skips_unparseable_payload(conn):
+    conn.execute(
+        "INSERT INTO review_queue (kind, payload_json, status, created_at) "
+        "VALUES ('assign', 'not json', 'pending', ?)",
+        (store.now(),),
+    )
+    conn.commit()
+    assert queries.orphaned_items(conn) == {}
+
+
+def test_orphan_counts_reports_every_status(conn):
+    _add_face(conn, 10, "personal", photo_id=1, crop_path="/crops/10.jpg")
+    _add_item(conn, "assign", {"face_id": 10})  # alive
+    _add_item(conn, "assign", {"face_id": 999})
+    _add_item(conn, "assign", {"face_id": 998}, status="approved")
+    _add_item(conn, "assign", {"face_id": 997}, status="approved")
+
+    assert queries.orphan_counts(conn) == {"pending": 1, "approved": 2}
+
+
+def test_delete_items_removes_rows_and_unlinks_audit_log(conn):
+    keep = _add_item(conn, "assign", {"face_id": 1})
+    drop = _add_item(conn, "assign", {"face_id": 2})
+    conn.execute(
+        "INSERT INTO audit_log (ts, action, review_item_id) VALUES (?, 'assign', ?)",
+        (store.now(), drop),
+    )
+    conn.commit()
+
+    assert queries.delete_items(conn, [drop]) == 1
+    rows = conn.execute("SELECT item_id FROM review_queue").fetchall()
+    assert [int(r["item_id"]) for r in rows] == [keep]
+    # The audit trail survives; only its dangling link is cleared.
+    audit = conn.execute("SELECT review_item_id FROM audit_log").fetchone()
+    assert audit["review_item_id"] is None
+
+
+def test_delete_items_is_a_noop_for_an_empty_list(conn):
+    _add_item(conn, "assign", {"face_id": 1})
+    assert queries.delete_items(conn, []) == 0
+    assert queries.delete_items(conn, [999999]) == 0
+    assert conn.execute("SELECT COUNT(*) AS n FROM review_queue").fetchone()["n"] == 1
