@@ -19,6 +19,9 @@ Design (see the web-GUI plan §4):
   validates the merged result via :class:`~synopticon.config.Settings`, and on
   success writes atomically (temp + ``os.replace``), tightening the file to
   ``0600`` whenever a password is present.
+* :func:`export_config` (``GET /api/backup/config``, in ``backup_routes``) hands
+  the file back as a download. It is the one path that can serialize a plaintext
+  secret, and only when the caller opts in — the default blanks them.
 """
 
 import os
@@ -138,6 +141,78 @@ def read_config(settings: Settings) -> dict:
         "schema": Settings.model_json_schema(),
         "env_overrides": _env_overrides(settings),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Backup: the file itself, credentials optional                                #
+# --------------------------------------------------------------------------- #
+def secret_paths(settings: Settings) -> list[tuple[str, str]]:
+    """``(section, key)`` for every :class:`~pydantic.SecretStr` field."""
+    out: list[tuple[str, str]] = []
+    for section_name in type(settings).model_fields:
+        section = getattr(settings, section_name)
+        if not isinstance(section, BaseModel):
+            continue
+        for key in type(section).model_fields:
+            if isinstance(getattr(section, key), SecretStr):
+                out.append((section_name, key))
+    return out
+
+
+def _drop_none(data: dict) -> dict:
+    """Recursively strip ``None`` values — TOML has no null to write them as."""
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        if value is None:
+            continue
+        out[key] = _drop_none(value) if isinstance(value, dict) else value
+    return out
+
+
+def _plain_values(settings: Settings, include_secrets: bool) -> dict:
+    """``model_dump`` with the secrets substituted back in (or blanked).
+
+    ``model_dump(mode="json")`` renders a ``SecretStr`` as ``'**********'``,
+    which would be written to the backup as if it were the password.
+    """
+    data = _drop_none(settings.model_dump(mode="json"))
+    for section, key in secret_paths(settings):
+        value: SecretStr = getattr(getattr(settings, section), key)
+        data.setdefault(section, {})[key] = (
+            value.get_secret_value() if include_secrets else ""
+        )
+    return data
+
+
+def export_config(settings: Settings, *, include_secrets: bool = False) -> str:
+    """The TOML text of a settings backup.
+
+    Normally a verbatim copy of ``config.toml`` — comments, order and all — so
+    restoring is a file copy. With ``include_secrets`` false (the default) the
+    secret fields are blanked in place, which keeps the shape of the file while
+    honouring the rule that plaintext credentials are not serialized out of the
+    process unless the operator asked for them explicitly.
+
+    An install configured purely through environment variables has no file to
+    copy; it gets the effective settings rendered as TOML instead, so the backup
+    is still a usable starting point.
+    """
+    tomlkit = _require_tomlkit()
+    target = config_target(settings)
+
+    if target.is_file():
+        doc = tomlkit.parse(target.read_text(encoding="utf-8"))
+        if not include_secrets:
+            for section, key in secret_paths(settings):
+                table = doc.get(section)
+                if isinstance(table, dict) and key in table:
+                    table[key] = ""
+                    table[key].comment("redacted by settings backup")
+    else:
+        doc = tomlkit.document()
+        _deep_merge(doc, _plain_values(settings, include_secrets), tomlkit)
+
+    return tomlkit.dumps(doc)
 
 
 # --------------------------------------------------------------------------- #

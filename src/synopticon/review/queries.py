@@ -36,6 +36,10 @@ from ..links import item_url, person_url, syno_web_base  # noqa: F401 - re-expor
 # mirrors schema.sql and syno/writeback.py).
 MERGE_NAMED_KIND = "merge_named"
 
+# Kinds whose payload names a single target person, so an empty `person_name`
+# means the item would tag a face onto a person nobody has named yet.
+_TARGETED_KINDS = frozenset({"assign", "low_confidence", "reassign"})
+
 _DECISIONS = {"approve": "approved", "reject": "rejected"}
 
 # Statuses a human decision may be reverted from. Never touch applied/failed
@@ -312,7 +316,7 @@ def load_review_items(
                 "merge_crops_b": _merge_side_crops(
                     payload.get("person_b"), exemplars, crops
                 ),
-                "unnamed_target": r["kind"] == "reassign"
+                "unnamed_target": r["kind"] in _TARGETED_KINDS
                 and not str(payload.get("person_name") or "").strip(),
                 "unnamed_merge": r["kind"] == "merge"
                 and not str(person_a.get("name") or "").strip()

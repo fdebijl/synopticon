@@ -369,96 +369,100 @@ onMounted(async () => {
 <template>
   <div class="page review-page" id="review-page">
     <div class="toolbar" role="region" aria-label="Review controls">
-      <div class="filters">
-        <label for="f-kind">
-          <span class="muted">Kind</span>
-          <select
-            name="kind"
-            id="f-kind"
-            class="select"
-            v-model="kind"
-            @change="applyFilters"
-          >
-            <option v-for="k in KINDS" :key="k" :value="k">{{ k || 'all kinds' }}</option>
-          </select>
+      <div class="toolbar-row">
+        <div class="filters">
+          <label for="f-kind">
+            <span class="muted">Kind</span>
+            <select
+              name="kind"
+              id="f-kind"
+              class="select"
+              v-model="kind"
+              @change="applyFilters"
+            >
+              <option v-for="k in KINDS" :key="k" :value="k">{{ k || 'all kinds' }}</option>
+            </select>
+          </label>
+          <label for="f-status">
+            <span class="muted">Status</span>
+            <select
+              name="status"
+              id="f-status"
+              class="select"
+              v-model="status"
+              @change="applyFilters"
+            >
+              <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
+            </select>
+          </label>
+          <button type="button" class="btn btn-action btn-filter" @click="applyFilters">Filter</button>
+        </div>
+        <div class="toolbar-sep"></div>
+        <label for="f-view">
+          <span class="muted">View</span>
+          <div class="seg" role="group" aria-label="Review layout">
+            <button
+              type="button"
+              class="seg-btn"
+              data-view="grid"
+              :aria-pressed="view !== 'focus'"
+              @click="setView('grid')"
+            >
+              Grid
+            </button>
+            <button
+              type="button"
+              class="seg-btn"
+              data-view="focus"
+              :aria-pressed="view === 'focus'"
+              @click="setView('focus')"
+            >
+              Focus
+            </button>
+          </div>
         </label>
-        <label for="f-status">
-          <span class="muted">Status</span>
-          <select
-            name="status"
-            id="f-status"
-            class="select"
-            v-model="status"
-            @change="applyFilters"
+        <div class="toolbar-sep"></div>
+        <div class="toolbar-spacer"></div>
+        <span class="loaded-count" id="loaded-count" aria-live="polite">
+          {{ loaded }} of {{ total }} loaded<template v-if="pendingCount">
+            · {{ pendingCount }} pending</template
           >
-            <option v-for="s in STATUSES" :key="s" :value="s">{{ s }}</option>
-          </select>
-        </label>
-
-        <button type="button" class="btn btn-sm" @click="applyFilters">Filter</button>
+        </span>
+        <BulkApproveBar :kind="kind" @approve="onBulkApprove" />
+        <button
+          class="btn btn-sm btn-ghost"
+          type="button"
+          id="undo-btn"
+          :disabled="!canUndo"
+          :title="undoTitle"
+          @click="undo"
+        >
+          Undo <kbd>u</kbd>
+        </button>
+        <button
+          class="btn btn-sm btn-ghost"
+          type="button"
+          aria-haspopup="dialog"
+          @click="legendOpen = !legendOpen"
+        >
+          Shortcuts
+        </button>
       </div>
 
-      <div class="toolbar-sep"></div>
-
-      <label for="f-view">
-        <span class="muted">View</span>
-        <div class="seg" role="group" aria-label="Review layout">
-          <button
-            type="button"
-            class="seg-btn"
-            data-view="grid"
-            :aria-pressed="view !== 'focus'"
-            @click="setView('grid')"
-          >
-            Grid
-          </button>
-          <button
-            type="button"
-            class="seg-btn"
-            data-view="focus"
-            :aria-pressed="view === 'focus'"
-            @click="setView('focus')"
-          >
-            Focus
-          </button>
-        </div>
-      </label>
-
-      <div class="toolbar-spacer"></div>
-      <span class="loaded-count" id="loaded-count" aria-live="polite">
-        {{ loaded }} of {{ total }} loaded<template v-if="pendingCount">
-          · {{ pendingCount }} pending</template
+      <div class="toolbar-row">
+        <label
+          class="check muted"
+          title="Hide assigns, low-confidence assigns and reassigns whose target person has no name"
         >
-      </span>
-
-      <BulkApproveBar :kind="kind" @approve="onBulkApprove" />
-
-      <button
-        class="btn btn-sm btn-ghost"
-        type="button"
-        id="undo-btn"
-        :disabled="!canUndo"
-        :title="undoTitle"
-        @click="undo"
-      >
-        Undo <kbd>u</kbd>
-      </button>
-      <button
-        class="btn btn-sm btn-ghost"
-        type="button"
-        aria-haspopup="dialog"
-        @click="legendOpen = !legendOpen"
-      >
-        Shortcuts
-      </button>
+          Hide unnamed targets
+          <input type="checkbox" v-model="hideUnnamed" /> 
+        </label>
+        <label class="check muted">
+          Hide merges between unnamed
+          <input type="checkbox" v-model="hideUnnamedMerges" /> 
+        </label>
+      </div>
     </div>
-
-    <label class="check muted">
-      <input type="checkbox" v-model="hideUnnamed" /> hide reassigns to unnamed
-    </label>
-    <label class="check muted">
-      <input type="checkbox" v-model="hideUnnamedMerges" /> hide merges between unnamed
-    </label>
 
     <ReviewFocus
       v-if="view === 'focus'"
@@ -502,17 +506,28 @@ onMounted(async () => {
 <style scoped>
 .toolbar {
   display: flex;
-  align-items: center;
+  flex-flow: column wrap;
+  align-items: flex-start;
   gap: var(--sp-2);
-  flex-wrap: wrap;
   background: var(--bg-raised);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-lg);
-  padding: var(--sp-2) var(--sp-3);
   margin-bottom: var(--sp-3);
   position: sticky;
   top: var(--toolbar-h);
+  gap: var(--sp-4);
   z-index: 10;
+}
+.toolbar-row {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  width: 100%;
+}
+.toolbar-row:not(:first-child) {
+  border-top: 1px solid var(--border-soft);
 }
 .toolbar label {
   display: flex;
@@ -525,6 +540,11 @@ onMounted(async () => {
   background: var(--border-soft);
   margin: 0 var(--sp-2);
 }
+@media (max-width: 640px) {
+  .toolbar-sep {
+    display: none;
+  }
+}
 .toolbar-spacer {
   flex: 1;
 }
@@ -536,6 +556,9 @@ onMounted(async () => {
 .loaded-count {
   font-size: var(--fs-sm);
   color: var(--text-2);
+}
+.btn-filter {
+  margin-top: 20px;
 }
 
 /* Segmented Grid|Focus control. */

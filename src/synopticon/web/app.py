@@ -201,15 +201,20 @@ def _check_dist_built(dist_dir: Path) -> None:
         )
 
 
+#: Paths served raw. Compressing them would burn event-loop CPU for no gain:
+#: crops are already-compressed JPEG/PNG, and a database snapshot is mostly
+#: embedding blobs — gigabytes of incompressible float32 through a deflate
+#: stream that runs on the loop, not in a worker thread.
+_NO_GZIP = ("/crops/", "/api/backup/database")
+
+
 def _add_gzip(app) -> None:
-    """Compress everything except ``/crops``.
+    """Compress everything except :data:`_NO_GZIP`.
 
     A 100-item review page is ~97 KiB of JSON that gzips to ~11 KiB, and the SPA
-    bundle compresses similarly. Crops are already-compressed JPEG/PNG, so
-    running them through gzip would burn CPU on the event loop for no gain —
-    hence the path guard rather than a bare ``add_middleware``. Starlette's
-    GZipMiddleware already excludes ``text/event-stream``, so the job SSE stream
-    keeps flushing event by event.
+    bundle compresses similarly — hence the path guard rather than a bare
+    ``add_middleware``. Starlette's GZipMiddleware already excludes
+    ``text/event-stream``, so the job SSE stream keeps flushing event by event.
     """
     from starlette.middleware.gzip import GZipMiddleware
 
@@ -219,7 +224,7 @@ def _add_gzip(app) -> None:
             self.gzip = GZipMiddleware(app, minimum_size=1024, compresslevel=5)
 
         async def __call__(self, scope, receive, send):
-            if scope["type"] == "http" and not scope["path"].startswith("/crops/"):
+            if scope["type"] == "http" and not scope["path"].startswith(_NO_GZIP):
                 await self.gzip(scope, receive, send)
             else:
                 await self.app(scope, receive, send)
@@ -1310,6 +1315,10 @@ def create_app(
     from .schedule_routes import register_schedule_routes
 
     register_schedule_routes(app, settings, conn, jm, scheduler)
+
+    from .backup_routes import register_backup_routes
+
+    register_backup_routes(app, settings, conn)
 
     # -- SPA shell (catch-all, registered LAST) ----------------------------- #
     @app.get("/{path:path}")

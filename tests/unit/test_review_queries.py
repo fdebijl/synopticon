@@ -95,6 +95,46 @@ def test_load_review_items_derived_flags(conn, settings):
     assert by_kind["merge_named"]["item_id"] == named
 
 
+@pytest.mark.parametrize("kind", ["assign", "low_confidence", "reassign"])
+def test_unnamed_target_covers_every_targeted_kind(conn, settings, kind):
+    unnamed = _add_item(
+        conn, kind, {"space": "personal", "photo_id": 1, "person_id": 7, "person_name": ""}
+    )
+    missing = _add_item(
+        conn, kind, {"space": "personal", "photo_id": 2, "person_id": 8}
+    )
+    onlyspaces = _add_item(
+        conn, kind, {"space": "personal", "photo_id": 3, "person_id": 9, "person_name": "  "}
+    )
+    named = _add_item(
+        conn,
+        kind,
+        {"space": "personal", "photo_id": 4, "person_id": 10, "person_name": "Alice"},
+    )
+
+    flags = {
+        it["item_id"]: it["unnamed_target"]
+        for it in queries.load_review_items(conn, settings, kind=kind)
+    }
+    assert flags[unnamed] is True
+    assert flags[missing] is True
+    assert flags[onlyspaces] is True
+    assert flags[named] is False
+
+
+def test_unnamed_target_never_set_for_untargeted_kinds(conn, settings):
+    _add_item(conn, "new_person", {"face_ids": [1, 2], "space": "personal"})
+    _add_item(
+        conn,
+        "merge",
+        {"person_a": {"space": "personal", "person_id": 1, "name": ""},
+         "person_b": {"space": "personal", "person_id": 2, "name": ""}},
+    )
+
+    for it in queries.load_review_items(conn, settings, status="pending"):
+        assert it["unnamed_target"] is False
+
+
 def test_crop_url_and_deep_links(conn, settings):
     crops_dir = settings.storage.crops_dir
     crops_dir.mkdir(parents=True, exist_ok=True)

@@ -16,8 +16,6 @@
 
 15. UI should have a quick redirect to /login if not logged in, instead of waiting for the server
 
-17. Under utilities: Add button to backup settings (download the toml? Or an other portable format) and one to download the database (full dump)
-
 19. Ensure the health endpoint always responds when the container is live, still gets bogged down by jobs.
 
 20. Bug on extract: /opt/venv/lib/python3.11/site-packages/PIL/Image.py:1136: UserWarning: Palette images with Transparency expressed in bytes should be converted to RGBA images
@@ -30,10 +28,6 @@
 
 27. Add object detection
 
-29. 'About' button is not visible on mobile
-
 30. For new people suggestions, add 'Hide' button and 'Merge into ... instead'
 
 31. Detect missing crops on review page and tell user to regen crops
-
-32. Rework review UI topbar for usability

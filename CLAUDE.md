@@ -22,6 +22,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `10_docker-image-variants.md` | `docker/`, the publish workflow, deployment docs |
 | `11_web-authentication.md` | `web/auth.py`, sessions, API keys, the middleware's auth branch |
 | `12_in-process-cron-scheduling.md` | `cron.py`, `web/schedule*` |
+| `13_backup-downloads.md` | `web/backup_routes.py`, `db/snapshot.py`, `configio.export_config` |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -132,7 +133,7 @@ A Vue 3 + TS SPA (Vite) served by a FastAPI backend behind the `[review]` extra.
 
 Other things that are easy to regress:
 
-- **`quickmerger.py` and `schedule_routes.py` must not carry `from __future__ import annotations`** — FastAPI would degrade their `Request` params to required query fields (422 on every call).
+- **`quickmerger.py`, `schedule_routes.py` and `backup_routes.py` must not carry `from __future__ import annotations`** — FastAPI would degrade their `Request` params to required query fields (422 on every call).
 - Any new per-request map derived from the whole library needs a fingerprint-keyed cache, not a recomputation.
 - Any new poller must be `setTimeout`-chained with an in-flight guard, error backoff and `visibilitychange` gating. Subscribe to the existing `stores/jobs.ts` poller rather than adding a timer.
 - Every view that runs a job mounts the shared `JobPanel`. Don't build a second one.

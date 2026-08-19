@@ -182,6 +182,15 @@ Schedules puts recurring work on a cron timer without a cron daemon in the image
 
 Running the GUI bare-metal rather than in a container? Plain `cron` calling the CLI works just as well and survives the server being stopped.
 
+### Backups
+
+Utilities has two download buttons, both plain reads that touch nothing:
+
+- **Back up settings** hands you your `config.toml` verbatim — comments and all — so restoring is a file copy. Passwords are blanked out by default; tick *include credentials* if you want a copy that logs straight back into your NAS, and treat the file the way you'd treat the passwords themselves. Either way the download is recorded in the audit log.
+- **Download database** builds a compacted SQLite snapshot of everything Synopticon knows: photos, faces, embeddings, face groups, review decisions and your account. Restore it by dropping it in as `data/synopticon.db`. On PostgreSQL you get the same SQLite file (exported table by table), which you can load back into a server with [`synopticon db-migrate --from`](#db-migrate).
+
+The snapshot is built on the fly, so a large library takes a while before the download starts, and needs room for a second copy of the database on the data volume while it runs.
+
 ### Authentication
 
 - Admin account — one username/password, created in the wizard, stored scrypt-hashed. Sessions are HttpOnly, SameSite=Lax cookies (30-day expiry, surviving restarts). Change the password from Settings → Access, or — if you've locked yourself out — from the shell with [`synopticon reset-password`](#reset-password).

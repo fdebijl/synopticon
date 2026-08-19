@@ -71,10 +71,11 @@ but only the static-HTML `report` command uses it now.
 FastAPI, uvicorn and tomlkit sit behind the `[review]` extra, guarded by `_require_fastapi()`, so
 everything imports cleanly without it.
 
-Two route modules must **not** carry `from __future__ import annotations`: `quickmerger.py` and
-`schedule_routes.py`. FastAPI resolves handler annotations against module globals, and `Request` is
-imported inside the registrar in both. With postponed evaluation, every route silently degrades its
-`Request` parameter to a required query field — 422 on every call.
+Three route modules must **not** carry `from __future__ import annotations`: `quickmerger.py`,
+`schedule_routes.py` and `backup_routes.py`. FastAPI resolves handler annotations against module
+globals, and `Request` is imported inside the registrar in all three. With postponed evaluation,
+every route silently degrades its `Request` parameter to a required query field — 422 on every
+call.
 
 ## Frontend conventions that are easy to regress
 
