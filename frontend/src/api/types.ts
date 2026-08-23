@@ -113,6 +113,8 @@ export interface ReviewItem {
   payload: ReviewPayload
   crop: string | null
   item_url: string | null
+  /** In-app Inspect route for the photo (raw id, not the deep-link top pick). */
+  inspect_url: string | null
   person_a_url: string | null
   person_b_url: string | null
   person_url: string | null
@@ -396,4 +398,130 @@ export interface AboutInfo {
   }
   /** dist name → version, null when the distribution is not installed. */
   packages: Record<string, string | null>
+}
+
+// -- Inspect (per-photo debug view) ---------------------------------------- #
+/** A box normalized to the displayed frame: 0..1 of width/height. */
+export interface NormBox {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+export interface InspectPoint {
+  x: number
+  y: number
+}
+
+export interface InspectCluster {
+  run_id: number
+  cluster_id: number
+  size: number | null
+  mapped_person_id: number | null
+  map_space: string | null
+  vote_fraction: number | null
+  labeled_count: number | null
+  mapped_person_name: string | null
+  mapped_person_url: string | null
+}
+
+export interface InspectEmbedding {
+  model: string
+  variant: string
+  dim: number
+  model_version: string | null
+}
+
+export interface InspectFace {
+  face_id: number
+  detector: string
+  /** Pixel coords in the frame we detected against (see `display`). */
+  bbox: NormBox
+  /** The same box as 0..1, or null when the frame size is unknown. */
+  box: NormBox | null
+  det_score: number | null
+  det_score_secondary: number | null
+  quality: number | null
+  restored: boolean
+  restore_disagreement: number | null
+  pipeline_version: string
+  created_at: number
+  crop_url: string | null
+  ctx_crop_url: string | null
+  landmarks: InspectPoint[] | null
+  embeddings: InspectEmbedding[]
+  cluster: InspectCluster | null
+}
+
+export interface InspectSynoFace {
+  syno_face_id: number
+  person_id: number | null
+  name: string | null
+  box: NormBox
+  person_url: string | null
+  synced_at: number
+}
+
+export interface InspectReviewItem {
+  item_id: number
+  kind: string
+  status: string
+  confidence: number | null
+  created_at: number
+  decided_at: number | null
+  decided_by: string | null
+  face_ids: number[]
+  payload: ReviewPayload
+}
+
+export interface InspectReport {
+  space: string
+  photo_id: number
+  photo: {
+    filename: string | null
+    folder_id: number | null
+    filesize: number | null
+    time: number | null
+    indexed_time: number | null
+    type: string | null
+    cache_key: string | null
+    unit_id: number | null
+    width: number | null
+    height: number | null
+    orientation: number | null
+    synced_at: number
+    deleted: boolean
+    sha256: string | null
+    phash: string | null
+    similar_top_pick: number | null
+  }
+  display: { width: number | null; height: number | null }
+  image_url: string
+  nas_url: string | null
+  linked_photo_id: number
+  extract: {
+    cache_key: string | null
+    pipeline_version: string
+    face_count: number
+    processed_at: number
+    stale: boolean
+  } | null
+  faces: InspectFace[]
+  syno_faces: InspectSynoFace[]
+  review_items: InspectReviewItem[]
+  detection: {
+    scrfd_score: number
+    yolo_score: number
+    nms_iou: number
+    cross_iou: number
+    min_face_px: number
+    max_long_side: number
+    scales: number[]
+  }
+}
+
+export interface InspectMeta {
+  spaces: string[]
+  pipeline_version: string | null
 }

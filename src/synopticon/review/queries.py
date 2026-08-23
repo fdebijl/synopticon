@@ -31,7 +31,12 @@ from ..db import Connection
 
 from ..config import Settings
 from ..db import store
-from ..links import item_url, person_url, syno_web_base  # noqa: F401 - re-exported
+from ..links import (  # noqa: F401 - re-exported
+    inspect_path,
+    item_url,
+    person_url,
+    syno_web_base,
+)
 
 # review_queue.kind values (kept as literals to avoid importing the syno layer;
 # mirrors schema.sql and syno/writeback.py).
@@ -316,6 +321,7 @@ def load_review_items(
                 if payload.get("face_id") is not None
                 else None,
                 "item_url": item_url(web_base, space, linked_photo_id),
+                "inspect_url": inspect_path(space, photo_id),
                 "person_a_url": person_url(
                     web_base, person_a.get("space"), person_a.get("person_id")
                 ),

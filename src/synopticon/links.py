@@ -31,6 +31,18 @@ def person_url(base: str | None, space: str | None, person_id: Any) -> str | Non
     return f"{base}/?launchApp=SYNO.Foto.AppInstance#/person/{space}_space/{person_id}"
 
 
+def inspect_path(space: str | None, photo_id: Any) -> str | None:
+    """Our own Inspect route for a photo — the in-app debug view, not the NAS.
+
+    The photo id here is the *raw* one (the row that owns the faces), not the
+    similar-group top pick :func:`item_url` needs: Inspect reports on the photo
+    we detected against, and links onward to the NAS itself.
+    """
+    if not space or photo_id is None:
+        return None
+    return f"/inspect/{space}/{photo_id}"
+
+
 def item_url(base: str | None, space: str | None, photo_id: Any) -> str | None:
     """Synology Photos link to a single photo (timeline item)."""
     if not base or not space or photo_id is None:

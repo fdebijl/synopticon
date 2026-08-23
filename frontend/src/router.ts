@@ -26,6 +26,18 @@ const routes: RouteRecordRaw[] = [
     meta: { title: 'Review' },
   },
   {
+    path: '/inspect/:space/:photoId',
+    name: 'inspect-photo',
+    component: () => import('./views/InspectView.vue'),
+    meta: { title: 'Inspect' },
+  },
+  {
+    path: '/inspect',
+    name: 'inspect',
+    component: () => import('./views/InspectView.vue'),
+    meta: { title: 'Inspect' },
+  },
+  {
     path: '/apply',
     name: 'apply',
     component: () => import('./views/ApplyView.vue'),

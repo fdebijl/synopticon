@@ -202,10 +202,10 @@ def _check_dist_built(dist_dir: Path) -> None:
 
 
 #: Paths served raw. Compressing them would burn event-loop CPU for no gain:
-#: crops are already-compressed JPEG/PNG, and a database snapshot is mostly
-#: embedding blobs — gigabytes of incompressible float32 through a deflate
-#: stream that runs on the loop, not in a worker thread.
-_NO_GZIP = ("/crops/", "/api/backup/database")
+#: crops and inspect thumbnails are already-compressed JPEG/PNG, and a database
+#: snapshot is mostly embedding blobs — gigabytes of incompressible float32
+#: through a deflate stream that runs on the loop, not in a worker thread.
+_NO_GZIP = ("/crops/", "/api/backup/database", "/api/inspect/image/")
 
 
 def _add_gzip(app) -> None:
@@ -1364,6 +1364,11 @@ def create_app(
     from .quickmerger import register_quickmerger_routes
 
     register_quickmerger_routes(app, settings, conn)
+
+    from .inspect_routes import register_inspect_routes
+
+    # After QuickMerger: Inspect's image proxy reuses the NAS session it owns.
+    register_inspect_routes(app, settings, conn, app.state.nas_session)
 
     from .schedule_routes import register_schedule_routes
 

@@ -171,6 +171,8 @@ def test_item_url_points_at_similar_group_top_pick(conn, settings):
     (item,) = queries.load_review_items(conn, settings, kind="assign")
     assert "personal_space/timeline/item/1" in item["item_url"]
     assert "timeline/item/2" not in item["item_url"]
+    # Inspect reports on the photo we detected against, so it keeps the raw id.
+    assert item["inspect_url"] == "/inspect/personal/2"
 
 
 def test_hidden_person_flag(conn, settings):
