@@ -79,14 +79,13 @@ function onActivate(e: Event): void {
   >
     <!-- Top face crop for every non-reassign kind. -->
     <template v-if="item.crop && item.kind !== 'reassign'">
-      <a
-        v-if="item.item_url"
-        :href="item.item_url"
+      <RouterLink
+        v-if="item.inspect_url"
+        :to="item.inspect_url"
         target="_blank"
-        rel="noopener"
-        title="open photo in Synology Photos"
+        title="inspect this photo"
         ><img :src="item.crop" alt="face crop" loading="lazy" decoding="async"
-      /></a>
+      /></RouterLink>
       <img v-else :src="item.crop" alt="face crop" loading="lazy" decoding="async" />
     </template>
 
@@ -181,14 +180,13 @@ function onActivate(e: Event): void {
             </strong>
           </div>
           <template v-if="item.crop">
-            <a
-              v-if="item.item_url"
-              :href="item.item_url"
+            <RouterLink
+              v-if="item.inspect_url"
+              :to="item.inspect_url"
               target="_blank"
-              rel="noopener"
-              title="open photo in Synology Photos"
+              title="inspect this photo"
               ><img :src="item.crop" alt="face crop" loading="lazy" decoding="async"
-            /></a>
+            /></RouterLink>
             <img
               v-else
               :src="item.crop"

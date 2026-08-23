@@ -155,6 +155,29 @@ def download_person_thumbnail(
     )
 
 
+def download_item_thumbnail(
+    client: SynoClient, space: Space, item_id: int, cache_key: str, size: str = "xl"
+) -> Iterator[bytes]:
+    """Stream one photo's thumbnail (Thumbnail.get, `type="unit"`).
+
+    Param shape is the web UI's own (`har/add_face_to_photo_without_faces.har`):
+    `api`, `method`, `type`, `size` and `cache_key` quoted, `id` bare. Only the
+    captured sizes are safe to send — `sm` and `xl`.
+    """
+    api = client.api_name(space, "Thumbnail")
+    version = client.version_for(api, 2)
+    yield from client.stream(
+        api,
+        "get",
+        version=version,
+        quote_api=True,
+        id=item_id,
+        cache_key=QuotedString(cache_key),
+        type=QuotedString("unit"),
+        size=QuotedString(size),
+    )
+
+
 def download_original(client: SynoClient, space: Space, unit_id: int, cache_key: str) -> Iterator[bytes]:
     """Stream the original (full-resolution) bytes for one item.
 

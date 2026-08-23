@@ -10,6 +10,9 @@ Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of
 **QuickMerger**  
 Quickly work through unnamed faces in Synology Photos through an ergonomic merge interface, perfect for giving the initial set of faces a name to start working with inside Synopticon.
 
+**Inspect**  
+See exactly what Synopticon saw in a single photo: every face it detected, drawn on the photo with its detector, confidence and quality scores, next to the faces Synology found — plus the group each face landed in and the review items it produced. Every face crop in Review links here, and Inspect links onward to the photo in Synology Photos.
+
 **Deduplication**  
 finds duplicate photos (byte-identical, or visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API.
 
@@ -602,6 +605,7 @@ Synopticon should help you clean up your library, not leave it in a worse state 
 - `dedupe` follows the same model: dry-run by default, `--apply` (plus a confirmation prompt) required to delete, a per-id idempotency check before each deletion, and every attempt audit-logged. Duplicate deletion is not reversible from Synopticon — confirm your DSM's recycle-bin behavior first.
 - [Schedules](#schedules) replay a *saved submission*, not a stored command line: every firing goes back through the same allowlist, parameter whitelist and consent validation a human's click does. Nothing gated behind a typed phrase can be scheduled — the server rejects such a schedule when you try to save it, and the scheduler never supplies a phrase when it fires.
 - [QuickMerger](#quickmerger) is the one GUI surface that writes to the NAS outside `apply`. It is interactive by nature (you act on one person at a time), so it confirms once per session rather than per card — but every write needs an explicit consent flag on the API call, a merge re-reads both people from the NAS first and is refused if the merged-away side has a name, and every attempt is audit-logged.
+- [Inspect](#inspect) is read-only in both directions: it reports from the local database and proxies the photo itself from Synology's thumbnail endpoint, which is a plain read. Thumbnails are served to your browser as `private` and never to a shared cache.
 - Recommended first write of any kind: scope narrowly (`--person-id <id>` for a test person, a single known duplicate for `dedupe`) and verify in the Photos UI.
 
 ## Compatibility
