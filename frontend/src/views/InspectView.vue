@@ -10,10 +10,14 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getJSON, ApiError } from '../api/client'
+import { usePanZoom } from '../composables/usePanZoom'
 import type { InspectFace, InspectMeta, InspectReport } from '../api/types'
 
 const route = useRoute()
 const router = useRouter()
+
+const stage = ref<HTMLElement | null>(null)
+const pan = usePanZoom(stage)
 
 const meta = ref<InspectMeta | null>(null)
 const report = ref<InspectReport | null>(null)
@@ -84,6 +88,7 @@ async function load(sp: string, id: number): Promise<void> {
   error.value = ''
   selected.value = null
   skewed.value = false
+  pan.reset()
   try {
     report.value = await getJSON<InspectReport>(`/api/inspect/${sp}/${id}`)
     space.value = sp
@@ -146,7 +151,14 @@ const otherReviewItems = computed(() =>
 function select(faceId: number): void {
   selected.value = selected.value === faceId ? null : faceId
   if (selected.value === null) return
+  const box = report.value?.faces.find((f) => f.face_id === faceId)?.box
+  if (box) pan.focus(box.x + box.w / 2, box.y + box.h / 2)
   document.getElementById(`face-${faceId}`)?.scrollIntoView({ block: 'nearest' })
+}
+
+/** A box click that ended a pan is a pan, not a selection. */
+function clickBox(faceId: number): void {
+  if (!pan.dragged.value) select(faceId)
 }
 
 onMounted(async () => {
@@ -223,58 +235,105 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
           <label class="opt-check"><input type="checkbox" v-model="showLandmarks" /> Landmarks</label>
         </div>
 
-        <div class="ins-stage">
-          <img
-            class="ins-img"
-            :src="report.image_url"
-            :alt="report.photo.filename || 'photo'"
-            @load="onImageLoad"
-          />
-          <template v-if="showOurs">
-            <button
-              v-for="face in report.faces"
-              :key="face.face_id"
-              v-show="face.box"
-              type="button"
-              class="ins-box ours"
-              :class="{ sel: selected === face.face_id }"
-              :style="{
-                left: pct(face.box?.x ?? 0),
-                top: pct(face.box?.y ?? 0),
-                width: pct(face.box?.w ?? 0),
-                height: pct(face.box?.h ?? 0),
-              }"
-              :title="faceLabel(face)"
-              @click="select(face.face_id)"
-            >
-              <span class="ins-tag">{{ faceLabel(face) }}</span>
-            </button>
-          </template>
-          <template v-if="showLandmarks">
-            <template v-for="face in report.faces" :key="'lm-' + face.face_id">
-              <span
-                v-for="(p, i) in face.landmarks || []"
-                :key="i"
-                class="ins-point"
-                :style="{ left: pct(p.x), top: pct(p.y) }"
-              ></span>
+        <div
+          class="ins-stage"
+          ref="stage"
+          :class="{ zoomed: pan.zoomed.value, dragging: pan.dragging.value }"
+          :style="{ '--k': String(pan.scale.value) }"
+          @wheel="pan.onWheel"
+          @pointerdown="pan.onPointerDown"
+          @dblclick="pan.onDoubleClick"
+        >
+          <div class="ins-layer" :style="{ transform: pan.transform.value }">
+            <img
+              class="ins-img"
+              :src="report.image_url"
+              :alt="report.photo.filename || 'photo'"
+              draggable="false"
+              @load="onImageLoad"
+            />
+            <template v-if="showOurs">
+              <button
+                v-for="face in report.faces"
+                :key="face.face_id"
+                v-show="face.box"
+                type="button"
+                class="ins-box ours"
+                :class="{ sel: selected === face.face_id }"
+                :style="{
+                  left: pct(face.box?.x ?? 0),
+                  top: pct(face.box?.y ?? 0),
+                  width: pct(face.box?.w ?? 0),
+                  height: pct(face.box?.h ?? 0),
+                }"
+                :title="faceLabel(face)"
+                @click="clickBox(face.face_id)"
+              >
+                <span class="ins-tag">{{ faceLabel(face) }}</span>
+              </button>
             </template>
-          </template>
-          <template v-if="showTheirs">
-            <span
-              v-for="sf in report.syno_faces"
-              :key="'syno-' + sf.syno_face_id"
-              class="ins-box theirs"
-              :style="{
-                left: pct(sf.box.x),
-                top: pct(sf.box.y),
-                width: pct(sf.box.w),
-                height: pct(sf.box.h),
-              }"
+            <template v-if="showLandmarks">
+              <template v-for="face in report.faces" :key="'lm-' + face.face_id">
+                <span
+                  v-for="(p, i) in face.landmarks || []"
+                  :key="i"
+                  class="ins-point"
+                  :style="{ left: pct(p.x), top: pct(p.y) }"
+                ></span>
+              </template>
+            </template>
+            <template v-if="showTheirs">
+              <span
+                v-for="sf in report.syno_faces"
+                :key="'syno-' + sf.syno_face_id"
+                class="ins-box theirs"
+                :style="{
+                  left: pct(sf.box.x),
+                  top: pct(sf.box.y),
+                  width: pct(sf.box.w),
+                  height: pct(sf.box.h),
+                }"
+              >
+                <span class="ins-tag">{{ sf.name || 'unnamed' }}</span>
+              </span>
+            </template>
+          </div>
+
+          <div class="ins-zoom" role="group" aria-label="Zoom" @pointerdown.stop @dblclick.stop>
+            <span v-if="pan.zoomed.value" class="ins-zoom-level"
+              >{{ Math.round(pan.scale.value * 100) }}%</span
             >
-              <span class="ins-tag">{{ sf.name || 'unnamed' }}</span>
-            </span>
-          </template>
+            <button
+              type="button"
+              class="ins-zoom-btn"
+              :disabled="pan.atMax.value"
+              title="Zoom in — scroll, pinch or double-click the photo"
+              aria-label="Zoom in"
+              @click="pan.zoomIn"
+            >
+              +
+            </button>
+            <button
+              type="button"
+              class="ins-zoom-btn"
+              :disabled="!pan.zoomed.value"
+              title="Zoom out"
+              aria-label="Zoom out"
+              @click="pan.zoomOut"
+            >
+              &minus;
+            </button>
+            <button
+              type="button"
+              class="ins-zoom-btn"
+              :disabled="!pan.zoomed.value"
+              title="Fit the whole photo"
+              aria-label="Fit the whole photo"
+              @click="pan.reset"
+            >
+              &#9633;
+            </button>
+          </div>
         </div>
 
         <p v-if="skewed" class="ins-warn">
@@ -516,17 +575,35 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
   background: var(--bg-sunken);
   border-radius: var(--radius);
   overflow: hidden;
+  /* Vertical swipes stay page scrolls until the reader zooms in. */
+  touch-action: pan-y;
+  --k: 1;
+}
+.ins-stage.zoomed {
+  touch-action: none;
+  cursor: grab;
+}
+.ins-stage.dragging {
+  cursor: grabbing;
+}
+.ins-layer {
+  position: relative;
+  transform-origin: 0 0;
+  will-change: transform;
+  user-select: none;
 }
 .ins-img {
   display: block;
   width: 100%;
   height: auto;
 }
+/* Everything drawn over the photo divides by --k, so borders, labels and dots
+   keep their on-screen size however far the reader zooms in. */
 .ins-box {
   position: absolute;
   padding: 0;
   background: transparent;
-  border: 2px solid var(--action);
+  border: max(0.5px, calc(2px / var(--k))) solid var(--action);
   border-radius: 2px;
   cursor: pointer;
 }
@@ -535,14 +612,19 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
   border-style: dashed;
   cursor: default;
 }
+.ins-stage.zoomed .ins-box.theirs {
+  cursor: inherit;
+}
 .ins-box.sel {
   border-color: var(--ok);
-  box-shadow: 0 0 0 2px rgba(31, 157, 77, 0.35);
+  box-shadow: 0 0 0 max(0.5px, calc(2px / var(--k))) rgba(31, 157, 77, 0.35);
 }
 .ins-tag {
   position: absolute;
   left: 0;
   bottom: 100%;
+  transform: scale(calc(1 / var(--k)));
+  transform-origin: left bottom;
   font-size: var(--fs-sm);
   line-height: 1.4;
   white-space: nowrap;
@@ -561,10 +643,52 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
   position: absolute;
   width: 5px;
   height: 5px;
-  margin: -3px 0 0 -3px;
+  transform: translate(-50%, -50%) scale(calc(1 / var(--k)));
   border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);
+}
+.ins-zoom {
+  position: absolute;
+  right: var(--sp-3);
+  bottom: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--sp-1);
+  line-height: 1;
+  z-index: 2;
+}
+.ins-zoom-level {
+  font-size: var(--fs-sm);
+  text-align: center;
+  padding: 3px 4px;
+  color: var(--text-2);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-menu);
+}
+.ins-zoom-btn {
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-lg);
+  cursor: pointer;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-menu);
+}
+.ins-zoom-btn:hover:not(:disabled) {
+  background: var(--bg-sunken);
+}
+.ins-zoom-btn:disabled {
+  color: var(--text-3);
+  cursor: default;
 }
 .ins-warn {
   color: var(--warn);

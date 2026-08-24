@@ -25,7 +25,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `13_backup-downloads.md` | `web/backup_routes.py`, `db/snapshot.py`, `configio.export_config` |
 | `14_review-retargeting.md` | `review/queries.py` mutations, the `hidden` status, `_existing_identities` |
 | `15_orphaned-review-items.md` | `prune-queue`, `regen_crops`' skip logic, anything reading `face_id` out of `payload_json` |
-| `16_inspect-photo-view.md` | `web/inspect_routes.py`, the Inspect page, photo links in the SPA, box geometry |
+| `16_inspect-photo-view.md` | `web/inspect_routes.py`, the Inspect page, photo links in the SPA, box geometry, the pan/zoom stage |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -147,7 +147,7 @@ A Vue 3 + TS SPA (Vite) served by a FastAPI backend behind the `[review]` extra.
 
 Other things that are easy to regress:
 
-- **Inspect's image route is the web process's only photo fetch** — a NAS thumbnail proxy that reuses QuickMerger's `NasSession`, so it is registered after it. Box geometry is normalized server-side by `inspect_routes.display_size`: our detections are pixels in the EXIF-corrected frame, Synology's are 0..1 of its upright one. (ADR 16)
+- **Inspect's image route is the web process's only photo fetch** — a NAS thumbnail proxy that reuses QuickMerger's `NasSession`, so it is registered after it. Box geometry is normalized server-side by `inspect_routes.display_size`: our detections are pixels in the EXIF-corrected frame, Synology's are 0..1 of its upright one. The stage is a pan/zoom viewport (`usePanZoom`): the transform layer keeps the viewport's own size so boxes stay in percentages, and everything drawn over the photo counter-scales by `--k`, or zooming re-creates the overlap it exists to fix. (ADR 16)
 - **A photo link inside the SPA goes to Inspect (`inspect_url`, the raw photo id); `item_url` is for links that leave the app** — the standalone report, job logs, CLI output — and targets the similar-group top pick. Both are built in `links.py`.
 - **`quickmerger.py`, `schedule_routes.py` and `backup_routes.py` must not carry `from __future__ import annotations`** — FastAPI would degrade their `Request` params to required query fields (422 on every call).
 - Any new per-request map derived from the whole library needs a fingerprint-keyed cache, not a recomputation.
