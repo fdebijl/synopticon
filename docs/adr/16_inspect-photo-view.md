@@ -68,13 +68,16 @@ the swipe, a keyboard-only reader).
 
 Three details are load-bearing:
 
-- **The transform layer is the viewport's own size**, so every box stays positioned in percentages
-  and the server-side normalization above is untouched. Translation is in viewport pixels and
-  clamped to the scaled content, so the photo cannot be flung out of frame.
-- **Overlay chrome counter-scales by `--k`** — border widths as `calc(2px / var(--k))`, labels and
-  landmark dots as `scale(calc(1 / var(--k)))`. Without it, zooming to read a crowded corner
-  thickens every border and inflates every label by the same factor and the overlap comes back;
-  with it, zooming is exactly the act of spreading the boxes apart under fixed-size labels.
+- **The transform layer is the viewport's own size**, so a 0..1 box lands at `x * scale` percent of
+  the viewport plus the pan offset in pixels, and the server-side normalization above is untouched.
+  Translation is clamped to the scaled content, so the photo cannot be flung out of frame.
+- **Only the photo is transformed.** The boxes sit in a sibling overlay that is never scaled, for
+  two reasons. Chrome rasterizes a transformed layer once and scales the texture, so borders and
+  labels drawn inside it return at 4× as a soft bitmap. And an overlay that *is* scaled inflates
+  every border and label by the zoom factor, which recreates the overlap the zoom exists to escape.
+  Unscaled, a 2px border stays 2px and a label stays legible while the boxes spread apart — the
+  scaling is the point, the chrome is not. (`will-change: transform` is deliberately absent for the
+  same reason: it pins the photo's raster at 1× too.)
 - **The gesture never traps the reader.** A wheel-down at scale 1 is left to the page rather than
   swallowed as a no-op zoom-out, `touch-action` is `pan-y` until the reader zooms in, and the
   viewport takes no pointer capture — capture would retarget the click away from the boxes, which

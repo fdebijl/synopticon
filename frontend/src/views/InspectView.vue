@@ -126,6 +126,29 @@ function pct(v: number): string {
   return (v * 100).toFixed(3) + '%'
 }
 
+/**
+ * Place a 0..1 box in the unscaled overlay: percentages of the viewport times
+ * the zoom, shifted by the pan. The overlay is never transformed, so borders
+ * and labels stay crisp and their own size however far the reader zooms in.
+ */
+function boxStyle(box: { x: number; y: number; w: number; h: number }) {
+  const k = pan.scale.value
+  return {
+    left: `calc(${pct(box.x * k)} + ${pan.x.value}px)`,
+    top: `calc(${pct(box.y * k)} + ${pan.y.value}px)`,
+    width: pct(box.w * k),
+    height: pct(box.h * k),
+  }
+}
+
+function pointStyle(p: { x: number; y: number }) {
+  const k = pan.scale.value
+  return {
+    left: `calc(${pct(p.x * k)} + ${pan.x.value}px)`,
+    top: `calc(${pct(p.y * k)} + ${pan.y.value}px)`,
+  }
+}
+
 function faceLabel(face: InspectFace): string {
   const score = face.det_score == null ? '' : ' ' + face.det_score.toFixed(2)
   return `#${face.face_id} ${face.detector}${score}`
@@ -239,7 +262,6 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
           class="ins-stage"
           ref="stage"
           :class="{ zoomed: pan.zoomed.value, dragging: pan.dragging.value }"
-          :style="{ '--k': String(pan.scale.value) }"
           @wheel="pan.onWheel"
           @pointerdown="pan.onPointerDown"
           @dblclick="pan.onDoubleClick"
@@ -252,6 +274,9 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
               draggable="false"
               @load="onImageLoad"
             />
+          </div>
+
+          <div class="ins-overlay">
             <template v-if="showOurs">
               <button
                 v-for="face in report.faces"
@@ -260,12 +285,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
                 type="button"
                 class="ins-box ours"
                 :class="{ sel: selected === face.face_id }"
-                :style="{
-                  left: pct(face.box?.x ?? 0),
-                  top: pct(face.box?.y ?? 0),
-                  width: pct(face.box?.w ?? 0),
-                  height: pct(face.box?.h ?? 0),
-                }"
+                :style="boxStyle(face.box ?? { x: 0, y: 0, w: 0, h: 0 })"
                 :title="faceLabel(face)"
                 @click="clickBox(face.face_id)"
               >
@@ -278,7 +298,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
                   v-for="(p, i) in face.landmarks || []"
                   :key="i"
                   class="ins-point"
-                  :style="{ left: pct(p.x), top: pct(p.y) }"
+                  :style="pointStyle(p)"
                 ></span>
               </template>
             </template>
@@ -287,12 +307,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
                 v-for="sf in report.syno_faces"
                 :key="'syno-' + sf.syno_face_id"
                 class="ins-box theirs"
-                :style="{
-                  left: pct(sf.box.x),
-                  top: pct(sf.box.y),
-                  width: pct(sf.box.w),
-                  height: pct(sf.box.h),
-                }"
+                :style="boxStyle(sf.box)"
               >
                 <span class="ins-tag">{{ sf.name || 'unnamed' }}</span>
               </span>
@@ -577,7 +592,6 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
   overflow: hidden;
   /* Vertical swipes stay page scrolls until the reader zooms in. */
   touch-action: pan-y;
-  --k: 1;
 }
 .ins-stage.zoomed {
   touch-action: none;
@@ -589,42 +603,43 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
 .ins-layer {
   position: relative;
   transform-origin: 0 0;
-  will-change: transform;
   user-select: none;
+}
+/* The photo alone is transformed; the boxes are placed over it in viewport
+   coordinates, so nothing over the photo is a scaled-up bitmap. */
+.ins-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
 }
 .ins-img {
   display: block;
   width: 100%;
   height: auto;
 }
-/* Everything drawn over the photo divides by --k, so borders, labels and dots
-   keep their on-screen size however far the reader zooms in. */
 .ins-box {
   position: absolute;
   padding: 0;
   background: transparent;
-  border: max(0.5px, calc(2px / var(--k))) solid var(--action);
+  border: 2px solid var(--action);
   border-radius: 2px;
   cursor: pointer;
+  pointer-events: auto;
 }
 .ins-box.theirs {
   border-color: var(--warn);
   border-style: dashed;
   cursor: default;
-}
-.ins-stage.zoomed .ins-box.theirs {
-  cursor: inherit;
+  pointer-events: none;
 }
 .ins-box.sel {
   border-color: var(--ok);
-  box-shadow: 0 0 0 max(0.5px, calc(2px / var(--k))) rgba(31, 157, 77, 0.35);
+  box-shadow: 0 0 0 2px rgba(31, 157, 77, 0.35);
 }
 .ins-tag {
   position: absolute;
   left: 0;
   bottom: 100%;
-  transform: scale(calc(1 / var(--k)));
-  transform-origin: left bottom;
   font-size: var(--fs-sm);
   line-height: 1.4;
   white-space: nowrap;
@@ -643,7 +658,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
   position: absolute;
   width: 5px;
   height: 5px;
-  transform: translate(-50%, -50%) scale(calc(1 / var(--k)));
+  margin: -3px 0 0 -3px;
   border-radius: 50%;
   background: var(--ok);
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.8);

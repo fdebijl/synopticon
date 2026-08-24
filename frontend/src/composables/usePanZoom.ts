@@ -1,7 +1,7 @@
-// Pan and zoom for a fixed-size viewport whose content is one transformed
-// layer: wheel and pinch to zoom around the pointer, drag to pan, plus stepped
-// controls. Translation is in viewport pixels and the layer is the viewport's
-// own size, so callers can keep positioning children in percentages.
+// Pan and zoom for a fixed-size viewport: wheel and pinch to zoom around the
+// pointer, drag to pan, plus stepped controls. Translation is in viewport
+// pixels against a layer of the viewport's own size, so an overlay can place
+// children at `x * scale` percent plus the offset and stay unscaled itself.
 import { computed, onBeforeUnmount, ref, type Ref } from 'vue'
 
 const MIN = 1
@@ -173,6 +173,8 @@ export function usePanZoom(el: Ref<HTMLElement | null>) {
 
   return {
     scale,
+    x,
+    y,
     zoomed,
     atMax,
     dragging,
