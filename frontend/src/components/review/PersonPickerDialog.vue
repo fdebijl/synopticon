@@ -1,8 +1,13 @@
 <script setup lang="ts">
-// Pick the person a suggestion should have pointed at: "merge into" for a new
-// person, "reassign" for an assign the pipeline aimed at the wrong face. Both
-// only rewrite the review queue — the NAS write still happens later through
-// Apply, under its own flags.
+// Pick the person some faces belong to: "merge into" for a new person,
+// "reassign" for an assign the pipeline aimed at the wrong face, "assign" for a
+// face in Inspect that nothing proposed at all. All three only rewrite the
+// review queue — the NAS write still happens later through Apply, under its own
+// flags.
+//
+// The dialog knows nothing about review items: callers describe the source side
+// (a label, some thumbnails, the space the target must share) so Inspect can
+// point it at a bare face without inventing a queue row to hold it.
 //
 // A native <dialog> is load-bearing, not cosmetic: useKeyboard's guard ignores
 // page shortcuts while `dialog[open]` matches, so y/n/j/k cannot fire on the
@@ -15,14 +20,28 @@
 import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { getJSON } from '../../api/client'
 import { toast } from '../../stores/toasts'
-import type { ClientReviewItem, ReviewPersonSuggestion } from '../../api/types'
+import type { ReviewPersonSuggestion } from '../../api/types'
 import HiddenBadge from './HiddenBadge.vue'
 
 const SUGGEST_DEBOUNCE = 300
 
+export type PickerMode = 'merge' | 'reassign' | 'assign'
+
 const props = defineProps<{
-  item: ClientReviewItem
-  mode: 'merge' | 'reassign'
+  mode: PickerMode
+  /** The source side's caption: "14 faces", a person's name, a face id. */
+  sourceLabel: string
+  /** Thumbnails for the source side; nulls are dropped. */
+  sourceCrops?: (string | null)[]
+  /**
+   * Space the target must live in. Empty searches both — only right for a
+   * `merge`, whose faces are not yet bound to either namespace.
+   */
+  space?: string
+  /** Changing this reopens the dialog on a new source. */
+  sourceKey?: string | number
+  /** Overrides the mode's standing explanation of what confirming will queue. */
+  note?: string
   busy?: boolean
 }>()
 
@@ -41,30 +60,25 @@ const searching = ref(false)
 let debounceTimer: number | null = null
 let suggestSeq = 0
 
-const p = computed(() => props.item.payload)
 const target = computed<ReviewPersonSuggestion | null>(() =>
   selected.value >= 0 ? (suggestions.value[selected.value] ?? null) : null,
 )
 
-const title = computed(() =>
-  props.mode === 'merge' ? 'Merge these faces into…' : 'Reassign this face to…',
-)
-// A new_person item has no space of its own — the target's space decides which
-// of its faces can be tagged. Everything else is pinned to the face's space.
-const lockedSpace = computed(() =>
-  props.mode === 'merge' ? '' : String(p.value.space || ''),
-)
-const sourceLabel = computed(() => {
-  if (props.mode === 'merge') {
-    const n = Number(p.value.size ?? props.item.new_person_crops.length) || 0
-    return `${n} face${n === 1 ? '' : 's'}`
-  }
-  return String(p.value.person_name || p.value.person_id || 'unnamed')
-})
-const sourceCrops = computed(() =>
-  props.mode === 'merge'
-    ? props.item.new_person_crops.filter((c): c is string => !!c).slice(0, 6)
-    : [props.item.crop].filter((c): c is string => !!c),
+const TITLES: Record<PickerMode, string> = {
+  merge: 'Merge these faces into…',
+  reassign: 'Reassign this face to…',
+  assign: 'Tag this face as…',
+}
+const VERBS: Record<PickerMode, string> = {
+  merge: 'Merge into',
+  reassign: 'Reassign to',
+  assign: 'Tag as',
+}
+
+const title = computed(() => TITLES[props.mode])
+const lockedSpace = computed(() => props.space ?? '')
+const crops = computed(() =>
+  (props.sourceCrops ?? []).filter((c): c is string => !!c).slice(0, 6),
 )
 
 function open(): void {
@@ -80,7 +94,7 @@ function open(): void {
 open()
 
 watch(
-  () => props.item.item_id,
+  () => props.sourceKey,
   () => open(),
 )
 
@@ -164,7 +178,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="thumbs">
             <img
-              v-for="(c, i) in sourceCrops"
+              v-for="(c, i) in crops"
               :key="i"
               :src="c"
               alt=""
@@ -239,9 +253,14 @@ onBeforeUnmount(() => {
       </p>
 
       <p class="muted pick-note">
-        <template v-if="mode === 'merge'"
+        <template v-if="note">{{ note }}</template>
+        <template v-else-if="mode === 'merge'"
           >Queues every face in this group to be tagged as the person you pick. Nothing
           is written to Synology Photos until you run Apply.</template
+        >
+        <template v-else-if="mode === 'assign'"
+          >Queues this face to be tagged as the person you pick. Nothing is written to
+          Synology Photos until you run Apply.</template
         >
         <template v-else
           >Replaces the suggested person for this one face. Nothing is written to
@@ -257,8 +276,7 @@ onBeforeUnmount(() => {
           :disabled="!target || busy"
           @click="submit"
         >
-          {{ mode === 'merge' ? 'Merge into' : 'Reassign to' }}
-          {{ target ? target.name : '…' }}
+          {{ VERBS[mode] }} {{ target ? target.name : '…' }}
         </button>
       </div>
     </div>

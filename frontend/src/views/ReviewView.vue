@@ -269,6 +269,29 @@ function openPicker(item: ClientReviewItem, mode: 'merge' | 'reassign'): void {
   picker.value = { item, mode }
 }
 
+// The picker takes a described source rather than an item, so Inspect can point
+// it at a bare face. A new_person group has no space of its own — the target's
+// decides which of its faces can be tagged — so only a reassign pins one.
+const pickerLabel = computed(() => {
+  const open = picker.value
+  if (!open) return ''
+  if (open.mode === 'merge') {
+    const n = Number(open.item.payload.size ?? open.item.new_person_crops.length) || 0
+    return `${n} face${n === 1 ? '' : 's'}`
+  }
+  return String(open.item.payload.person_name || open.item.payload.person_id || 'unnamed')
+})
+const pickerCrops = computed(() => {
+  const open = picker.value
+  if (!open) return []
+  return open.mode === 'merge' ? open.item.new_person_crops : [open.item.crop]
+})
+const pickerSpace = computed(() =>
+  picker.value && picker.value.mode !== 'merge'
+    ? String(picker.value.item.payload.space || '')
+    : '',
+)
+
 async function onPickerConfirm(target: ReviewPersonSuggestion): Promise<void> {
   const open = picker.value
   if (!open || retargeting.value) return
@@ -563,8 +586,11 @@ onMounted(async () => {
 
   <PersonPickerDialog
     v-if="picker"
-    :item="picker.item"
     :mode="picker.mode"
+    :source-label="pickerLabel"
+    :source-crops="pickerCrops"
+    :space="pickerSpace"
+    :source-key="picker.item.item_id"
     :busy="retargeting"
     @confirm="onPickerConfirm"
     @cancel="picker = null"

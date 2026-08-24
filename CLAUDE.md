@@ -25,7 +25,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `13_backup-downloads.md` | `web/backup_routes.py`, `db/snapshot.py`, `configio.export_config` |
 | `14_review-retargeting.md` | `review/queries.py` mutations, the `hidden` status, `_existing_identities` |
 | `15_orphaned-review-items.md` | `prune-queue`, `regen_crops`' skip logic, anything reading `face_id` out of `payload_json` |
-| `16_inspect-photo-view.md` | `web/inspect_routes.py`, the Inspect page, photo links in the SPA, box geometry, the pan/zoom stage |
+| `16_inspect-photo-view.md` | `web/inspect_routes.py`, the Inspect page, photo links in the SPA, box geometry, the pan/zoom stage, tagging a face from Inspect |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -121,7 +121,7 @@ Everything before `apply` is read-only toward the NAS. `apply` is dry-run by def
 - **`eval`, `reset-password` and `db-migrate` stay CLI-only** — never give them a `JOB_SPECS` entry.
 - Schedules replay a stored submission with `confirm_phrase` always `None`, so every typed-phrase job is unschedulable by construction.
 - QuickMerger is the one GUI surface that writes outside `apply`; it refuses a named↔named merge with 409. (ADR 05)
-- The review UI's Hide / Merge into / Reassign actions rewrite `review_queue` and never call the NAS, which is why they carry no consent gate. Keep it that way. (ADR 14)
+- The review UI's Hide / Merge into / Reassign actions rewrite `review_queue` and never call the NAS, which is why they carry no consent gate. Keep it that way. (ADR 14) Inspect's per-face **Tag as… / Reassign…** is the same trade — but **the server picks the kind, never the client**: `queries.assign_face` writes `reassign` (and its stricter flag) when `photo_syno_match` finds a Synology box already named on that face, and plain `assign` otherwise. Taking a kind from the request body would be a way to write a reassign under `--apply`. (ADR 16)
 
 ### Review queue statuses
 
@@ -147,12 +147,15 @@ A Vue 3 + TS SPA (Vite) served by a FastAPI backend behind the `[review]` extra.
 
 Other things that are easy to regress:
 
-- **Inspect's image route is the web process's only photo fetch** — a NAS thumbnail proxy that reuses QuickMerger's `NasSession`, so it is registered after it. Box geometry is normalized server-side by `inspect_routes.display_size`: our detections are pixels in the EXIF-corrected frame, Synology's are 0..1 of its upright one. The stage is a pan/zoom viewport (`usePanZoom`): **only the photo is transformed** — boxes are placed over it in viewport coordinates (`x * scale` percent plus the pan offset), because a scaled overlay both rasterizes soft and re-creates the label overlap the zoom exists to fix. (ADR 16)
+- **Inspect is the one read-only surface that writes**, and only to `review_queue`: `assign_face` queues an approved row for a face nothing proposed, superseding any queued row that speaks for that face *alone* (to `hidden`, never deleted — `_existing_identities` has to keep counting the overruled pair).
+- **Inspect's image route is the web process's only photo fetch** — a NAS thumbnail proxy that reuses QuickMerger's `NasSession`, so it is registered after it. Box geometry is reconciled server-side by `inspect_routes.resolve_frame`: our detections are pixels in the EXIF-corrected frame, Synology's are 0..1 of its upright one. **`photos.width`/`height` are never swapped on `orientation`** — Synology reports the frame it displays, that swap measured wrong on ~90% of rotated photos, and `crossref`/`_face_targets` have always read them unswapped. `resolve_frame` scores every (frame, quarter-turn) pair against Synology's boxes, requiring a clear margin over the seed so a centred face's half-turn symmetry cannot flip a good frame. The turn is reported as `display.rotation` and applied by the SPA to **our** boxes only, never by turning the photo. The stage is a pan/zoom viewport (`usePanZoom`): **only the photo is transformed** — boxes are placed over it in viewport coordinates (`x * scale` percent plus the pan offset), because a scaled overlay both rasterizes soft and re-creates the label overlap the zoom exists to fix. (ADR 16)
 - **A photo link inside the SPA goes to Inspect (`inspect_url`, the raw photo id); `item_url` is for links that leave the app** — the standalone report, job logs, CLI output — and targets the similar-group top pick. Both are built in `links.py`.
-- **`quickmerger.py`, `schedule_routes.py` and `backup_routes.py` must not carry `from __future__ import annotations`** — FastAPI would degrade their `Request` params to required query fields (422 on every call).
+- **`quickmerger.py`, `schedule_routes.py`, `backup_routes.py` and `inspect_routes.py` must not carry `from __future__ import annotations`** — FastAPI would degrade their `Request` params to required query fields (422 on every call).
 - Any new per-request map derived from the whole library needs a fingerprint-keyed cache, not a recomputation.
 - Any new poller must be `setTimeout`-chained with an in-flight guard, error backoff and `visibilitychange` gating. Subscribe to the existing `stores/jobs.ts` poller rather than adding a timer.
-- Every view that runs a job mounts the shared `JobPanel`. Don't build a second one.
+- Every view that runs a job mounts the shared `JobPanel`. Don't build a second one. Same for
+  picking a person: `PersonPickerDialog` takes a described source (label, thumbnails, space,
+  optional note), not a review item, so any surface can point it at faces.
 
 ### Jobs and progress
 
