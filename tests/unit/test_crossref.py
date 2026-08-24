@@ -299,10 +299,10 @@ def test_hidden_new_person_is_not_reproposed(db_helpers, tmp_settings):
     """Hiding is the sticky counterpart to rejecting: a hidden cluster must not
     come back on the next run, where a rejected one deliberately does."""
     h = db_helpers
-    for i in range(5):  # crossref.new_person_min_faces default
+    for i in range(8):  # crossref.new_person_min_photos default
         h.insert_photo("personal", i)
         h.insert_face("personal", i, 100, 100, 200, 200)
-    for fid in range(1, 6):
+    for fid in range(1, 9):
         h.insert_embedding(fid, "arcface", [1.0, 0.0, 0.0, 0.0])
     h.commit()
 
@@ -335,6 +335,38 @@ def test_hidden_new_person_is_not_reproposed(db_helpers, tmp_settings):
         ).fetchone()["c"]
         == 2
     )
+
+
+def test_new_person_needs_photos_not_just_faces(db_helpers, tmp_settings):
+    """Enough faces, too few photos: a burst of one moment is not a person."""
+    h = db_helpers
+    for photo in range(2):
+        h.insert_photo("personal", photo)
+        for n in range(5):
+            h.insert_face("personal", photo, 100 * n, 100, 80, 80)
+    for fid in range(1, 11):
+        h.insert_embedding(fid, "arcface", [1.0, 0.0, 0.0, 0.0])
+    h.commit()
+
+    crossref.run_clustering(h.conn, tmp_settings)
+    assert (
+        h.conn.execute(
+            "SELECT COUNT(*) AS c FROM review_queue WHERE kind = 'new_person'"
+        ).fetchone()["c"]
+        == 0
+    )
+
+    tmp_settings.crossref.new_person_min_photos = 2
+    crossref.run_clustering(h.conn, tmp_settings)
+    row = h.conn.execute(
+        "SELECT payload_json FROM review_queue WHERE kind = 'new_person'"
+    ).fetchone()
+    assert row is not None
+    import json
+
+    payload = json.loads(row["payload_json"])
+    assert payload["size"] == 10
+    assert payload["photo_count"] == 2
 
 
 def test_retargeted_assign_does_not_resurrect_the_old_suggestion(

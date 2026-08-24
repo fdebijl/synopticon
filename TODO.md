@@ -20,8 +20,6 @@
 
 27. Add object detection?
 
-32. Change default SCRFD and YOLO score to 0.45
-
 34. Grouphug: find all photos that contain selected people
 
 35. Lifetime stats: this is what Synopticon has done
@@ -29,8 +27,6 @@
 36. Update screenshots in README
 
 37. For operation cards in Review screen: the name of the person should link to the people screen on the NAS
-
-38. Only suggest a new_person with minimum 8 photos (configurable). 
 
 39. Preview photos in new_person should link to the photo
 
