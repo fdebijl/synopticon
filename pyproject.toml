@@ -1,6 +1,6 @@
 [project]
 name = "synopticon"
-version = "0.15.0"
+version = "0.16.0"
 description = "A rich toolkit to run alongside Synology Photos: enhance face recognition, remove duplicate photos and much more."
 readme = "README.md"
 license = { text = "AGPL-3.0-or-later" }
