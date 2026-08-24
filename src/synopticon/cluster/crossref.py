@@ -359,18 +359,27 @@ def _crossref_core(
 
         # --- new_person ---
         if info.labeled_total == 0 and len(info.members) >= cfg.new_person_min_faces:
-            exemplars = sorted(int(face_ids[p]) for p in info.members)[:20]
-            new_persons.append(
-                {
-                    "kind": "new_person",
-                    "confidence": None,
-                    "payload": {
-                        "face_ids": exemplars,
-                        "size": len(info.members),
-                        "suggested_name": None,
-                    },
-                }
-            )
+            # Distinct photos, not faces: a burst of near-identical shots is one
+            # moment, and a stranger caught in one is not a person worth creating.
+            photos = {
+                (meta["space"], meta["photo_id"])
+                for meta in (face_meta.get(int(face_ids[p])) for p in info.members)
+                if meta is not None
+            }
+            if len(photos) >= cfg.new_person_min_photos:
+                exemplars = sorted(int(face_ids[p]) for p in info.members)[:20]
+                new_persons.append(
+                    {
+                        "kind": "new_person",
+                        "confidence": None,
+                        "payload": {
+                            "face_ids": exemplars,
+                            "size": len(info.members),
+                            "photo_count": len(photos),
+                            "suggested_name": None,
+                        },
+                    }
+                )
 
         # --- merge: two persons splitting a single cluster ---
         if info.labeled_total:

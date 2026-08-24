@@ -327,12 +327,12 @@ class DetectionConfig(BaseModel):
         },
     )
     scrfd_score: float = Field(
-        default=0.30,
+        default=0.45,
         title="SCRFD Score",
         description=(
             "How sure the main face detector must be before it accepts something as a "
             "face. Lower finds more faces, but also more things that aren't faces.\n\n"
-            "0-1, typical 0.2-0.5; the default 0.30 leans toward finding more. Lower it to "
+            "0-1, typical 0.2-0.5; the default 0.45 favours precision. Lower it to "
             "recover profile, occluded or blurry faces at the cost of false positives "
             "feeding clustering; raise it if textured backgrounds are being detected as "
             "faces."
@@ -346,15 +346,15 @@ class DetectionConfig(BaseModel):
         },
     )
     yolo_score: float = Field(
-        default=0.35,
+        default=0.45,
         title="YOLO Score",
         description=(
             "How sure the secondary face detector must be. It exists to catch faces the "
             "main detector missed.\n\n"
-            "0-1, typical 0.25-0.5; default 0.35, kept slightly above scrfd_score so its "
-            "extra detections stay trustworthy. Lower it to have it contribute more novel "
-            "faces (with more false positives); raise it if it adds spurious boxes. No "
-            "effect if the YOLO model is absent."
+            "0-1, typical 0.25-0.5; default 0.45, matching scrfd_score so its extra "
+            "detections stay as trustworthy as the primary ones. Lower it to have it "
+            "contribute more novel faces (with more false positives); raise it if it adds "
+            "spurious boxes. No effect if the YOLO model is absent."
         ),
         json_schema_extra={
             "details": (
@@ -760,17 +760,37 @@ class CrossrefConfig(BaseModel):
         default=5,
         title="New Person Minimum Faces",
         description=(
-            "How many photos a completely unknown person must appear in before Synopticon "
+            "How many faces a completely unknown person must have before Synopticon "
             "proposes creating them as a new person.\n\n"
             "Default 5; sensible 3-15. Raise it if the new_person queue fills with junk "
             "(blurry or partial faces, one-off strangers); lower it if genuine recurring "
-            "people who appear in few photos are missed."
+            "people who appear in few photos are missed. Paired with "
+            "new_person_min_photos, which counts distinct photos instead."
         ),
         json_schema_extra={
             "details": (
                 "A size floor on fully-unlabeled clusters (zero Synology matches), not a "
                 "similarity — it filters small, likely-spurious clusters. Quality here "
                 "depends on upstream clustering coherence."
+            )
+        },
+    )
+    new_person_min_photos: int = Field(
+        default=8,
+        title="New Person Minimum Photos",
+        description=(
+            "How many different photos a completely unknown person must appear in before "
+            "Synopticon proposes creating them as a new person.\n\n"
+            "Default 8; sensible 2-15. A burst of near-identical shots can push a stranger "
+            "past the face count while still being a single moment, so this asks for "
+            "spread as well as size. Lower it if people who appear in only a handful of "
+            "photos are being missed."
+        ),
+        json_schema_extra={
+            "details": (
+                "Counts distinct (space, photo_id) pairs among the cluster's faces, and "
+                "applies on top of new_person_min_faces — a cluster must clear both. Set "
+                "to 1 to disable."
             )
         },
     )

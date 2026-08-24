@@ -53,16 +53,16 @@ batch_size = 16
 # biggest lever first. Any change to this section bumps the pipeline version, so
 # already-processed photos are automatically re-extracted on the next run.
 [detection]
-scales = [1.0, 2.0]                 # multi-scale detection passes. The 2.0 upscale
+scales = [1.0]                      # multi-scale detection passes. The 2.0 upscale
                                     # pass boosts recall on small/distant faces but
                                     # is a common false-positive source (cubic
                                     # upscaling turns texture into face-like blobs).
                                     # Set to [1.0] to cut false positives.
-scrfd_score = 0.30                  # SCRFD confidence floor. Lower = more recall,
-yolo_score = 0.35                   # more false positives. Raise both toward ~0.50
-                                    # (the usual operating point) to reject textures
-                                    # that only weakly resemble faces — the single
-                                    # most effective knob for precision.
+scrfd_score = 0.45                  # SCRFD confidence floor. Lower = more recall,
+yolo_score = 0.45                   # more false positives. Raise both toward ~0.50
+                                    # to reject textures that only weakly resemble
+                                    # faces — the single most effective knob for
+                                    # precision.
 nms_iou = 0.45
 cross_iou = 0.50                    # cross-detector union dedup
 min_face_px = 20                    # drop faces smaller than this (min side, px).
@@ -85,3 +85,5 @@ seed = 42
 majority = 0.60                     # vote fraction to map a cluster to a person
 min_labeled = 3
 assign_sim = 0.55                   # below this an assign becomes a low-confidence flag
+new_person_min_faces = 5            # a brand-new person needs at least this many faces...
+new_person_min_photos = 8           # ...spread over at least this many distinct photos
