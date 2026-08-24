@@ -898,6 +898,244 @@ def retarget_item(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Assigning a face nothing proposed (Inspect)
+# --------------------------------------------------------------------------- #
+#: IoU at which one of our detections and one of Synology's boxes are taken to
+#: be the same face. Same threshold ``cluster.crossref`` matches ground truth
+#: at, so Inspect never disagrees with clustering about which box is whose.
+_SYNO_MATCH_IOU = 0.3
+
+#: Statuses a manual assign supersedes. ``applied`` and ``failed`` describe a
+#: NAS write that already happened, and ``hidden`` is a decision of its own.
+_SUPERSEDABLE = frozenset({"pending", "approved", "rejected"})
+
+
+class AlreadyTagged(ValueError):
+    """Synology already has this face on that person; there is nothing to write."""
+
+
+class MissingGeometry(ValueError):
+    """The photo has no stored resolution, so there is no box to write."""
+
+
+def box_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    """IoU of two ``(x1, y1, x2, y2)`` boxes in the same coordinate space."""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+    area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def photo_syno_match(conn: Connection, space: str, photo_id: int) -> dict[int, dict]:
+    """Our ``face_id`` -> the ``syno_faces`` row covering the same face.
+
+    Greedy, best pair first, exactly as ``crossref.label_faces_with_ids`` does
+    it library-wide — but scoped to one photo, and keeping Synology's *unnamed*
+    boxes too. That difference is the point: a face Synology has already boxed
+    and named cannot be added again, it has to be moved (``reassign``), while a
+    boxed-but-unnamed one is an ordinary ``assign``.
+
+    Normalization divides by ``photos.width``/``height`` like
+    :func:`_face_targets` does, so the box compared here is the same box a write
+    would send.
+    """
+    photo = conn.execute(
+        "SELECT width, height FROM photos WHERE space = ? AND id = ?",
+        (space, photo_id),
+    ).fetchone()
+    if photo is None or not photo["width"] or not photo["height"]:
+        return {}
+    pw, ph = float(photo["width"]), float(photo["height"])
+
+    ours: list[tuple[int, tuple[float, float, float, float]]] = [
+        (
+            int(row["face_id"]),
+            (
+                float(row["x"]) / pw,
+                float(row["y"]) / ph,
+                (float(row["x"]) + float(row["w"])) / pw,
+                (float(row["y"]) + float(row["h"])) / ph,
+            ),
+        )
+        for row in conn.execute(
+            "SELECT face_id, x, y, w, h FROM faces WHERE space = ? AND photo_id = ?",
+            (space, photo_id),
+        )
+    ]
+    theirs = [
+        {
+            "syno_face_id": int(row["syno_face_id"]),
+            "person_id": row["person_id"] if row["person_id"] is None else int(row["person_id"]),
+            "name": row["name"],
+            "box": (float(row["x1"]), float(row["y1"]), float(row["x2"]), float(row["y2"])),
+        }
+        for row in conn.execute(
+            "SELECT syno_face_id, person_id, name, x1, y1, x2, y2 FROM syno_faces "
+            "WHERE space = ? AND photo_id = ?",
+            (space, photo_id),
+        )
+    ]
+    if not ours or not theirs:
+        return {}
+
+    pairs = [
+        (box_iou(box, sf["box"]), fid, si)
+        for fid, box in ours
+        for si, sf in enumerate(theirs)
+    ]
+    pairs = sorted((p for p in pairs if p[0] >= _SYNO_MATCH_IOU), reverse=True)
+
+    out: dict[int, dict] = {}
+    used_syno: set[int] = set()
+    for iou, fid, si in pairs:
+        if fid in out or si in used_syno:
+            continue
+        used_syno.add(si)
+        out[fid] = {**theirs[si], "iou": iou}
+    return out
+
+
+def _supersede_face_rows(conn: Connection, face_id: int, new_item_id: int) -> list[int]:
+    """Retire the undecided/decided rows that speak for this one face alone.
+
+    A manual assign is the human's answer for that face, so a queued suggestion
+    about the same face would otherwise still be sitting there for ``apply`` to
+    write alongside it — two people tagged onto one photo. They are hidden
+    rather than deleted: ``hidden`` keeps their ``(face_id, person_id)`` pair
+    registered in ``crossref._existing_identities``, which is what stops the
+    next grouping run from proposing the overruled person all over again.
+
+    Rows naming *more* than this face (a ``new_person`` cluster, a merge's
+    exemplars) are left alone — they are a claim about a group, not about this
+    face, and ``apply`` cannot write them into a competing tag anyway.
+
+    A full scan with a JSON parse per row, for the reason ``orphaned_items``
+    has one: the ids live inside ``payload_json`` (ADR 15).
+    """
+    placeholders = ",".join("?" * len(_SUPERSEDABLE))
+    retired: list[int] = []
+    now = store.now()
+    for row in conn.execute(
+        "SELECT item_id, kind, payload_json FROM review_queue "
+        f"WHERE kind IN ({','.join('?' * len(_TARGETED_KINDS))}) "
+        f"AND status IN ({placeholders}) ORDER BY item_id",
+        [*sorted(_TARGETED_KINDS), *sorted(_SUPERSEDABLE)],
+    ).fetchall():
+        if row["item_id"] == new_item_id:
+            continue
+        try:
+            payload = json.loads(row["payload_json"])
+        except (TypeError, ValueError):
+            continue
+        if payload_face_ids(payload) != {face_id}:
+            continue
+        payload["superseded_by"] = new_item_id
+        conn.execute(
+            "UPDATE review_queue SET payload_json = ?, status = 'hidden', "
+            "decided_at = ?, decided_by = ? WHERE item_id = ?",
+            (json.dumps(payload), now, "inspect", row["item_id"]),
+        )
+        retired.append(int(row["item_id"]))
+    return retired
+
+
+def assign_face(
+    conn: Connection, face_id: int, space: str, person_id: int, person_name: str = ""
+) -> dict | None:
+    """Queue "this face is that person" for a face nothing proposed.
+
+    Inspect's counterpart to the review cards' Reassign: the queue is the only
+    thing written, so this needs no consent gate — ``apply`` still holds the
+    tier flags of ADR 05, and the tier is decided here rather than by the
+    caller:
+
+    * no Synology face over this one, or one it never named — ``assign``, the
+      reversible "add this face to P" that ``--apply`` covers.
+    * a Synology face already named as somebody else — ``reassign``, which
+      *moves* their box instead of adding a second one, and which ``apply``
+      writes only under ``--apply-reassigns``.
+
+    The row lands ``approved`` and ``manual_target`` for the same reason a
+    retarget does (ADR 14): picking the person in the dialog *is* the decision.
+    Any queued suggestion about this face alone is superseded, so the two can
+    never both be applied.
+
+    Returns ``None`` (DB untouched) when the face is unknown. Raises
+    :class:`SpaceMismatch` across spaces, :class:`MissingGeometry` when the
+    photo has no resolution to normalize the box against, and
+    :class:`AlreadyTagged` when Synology already holds that exact pairing.
+    """
+    row = conn.execute(
+        "SELECT face_id, space, photo_id FROM faces WHERE face_id = ?", (face_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    if row["space"] != space:
+        raise SpaceMismatch(
+            f"that person is in the {space} space "
+            f"but the face is in {row['space']}"
+        )
+    photo_id = int(row["photo_id"])
+
+    target = _face_targets(conn, [face_id]).get(face_id)
+    if target is None:
+        raise MissingGeometry(
+            "that photo has no stored resolution, so there is no box to write"
+        )
+
+    match = photo_syno_match(conn, space, photo_id).get(face_id)
+    if match is not None and match["person_id"] == person_id:
+        raise AlreadyTagged(
+            f"Synology already has this face on {match['name'] or person_id}"
+        )
+    reassign = match is not None and match["person_id"] is not None
+
+    payload: dict[str, Any] = {
+        "face_id": face_id,
+        "photo_id": photo_id,
+        "space": space,
+        "person_id": person_id,
+        "person_name": person_name or None,
+        "bbox_normalized": target["bbox_normalized"],
+        "confidence": None,
+        "manual_target": True,
+        "source": "inspect",
+    }
+    if reassign:
+        payload["syno_face_id"] = match["syno_face_id"]
+        payload["from_person_id"] = match["person_id"]
+        payload["from_person_name"] = match["name"]
+
+    now = store.now()
+    cur = conn.execute(
+        "INSERT INTO review_queue (kind, payload_json, confidence, status, "
+        "decided_at, decided_by, created_at) VALUES (?,?,?,?,?,?,?)",
+        (
+            "reassign" if reassign else "assign",
+            json.dumps(payload),
+            None,
+            "approved",
+            now,
+            "inspect",
+            now,
+        ),
+    )
+    item_id = int(cur.lastrowid)
+    superseded = _supersede_face_rows(conn, face_id, item_id)
+    conn.commit()
+    return {
+        "item_id": item_id,
+        "kind": "reassign" if reassign else "assign",
+        "status": "approved",
+        "person_id": person_id,
+        "person_name": person_name or None,
+        "superseded": superseded,
+    }
+
 def set_suggested_name(
     conn: Connection, item_id: int, name: str
 ) -> bool:

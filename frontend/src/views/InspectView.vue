@@ -9,9 +9,19 @@
 // NAS link moves inside the report.
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getJSON, ApiError } from '../api/client'
+import { getJSON, postJSON, ApiError } from '../api/client'
 import { usePanZoom } from '../composables/usePanZoom'
-import type { InspectFace, InspectMeta, InspectReport } from '../api/types'
+import { toast } from '../stores/toasts'
+import PersonPickerDialog from '../components/review/PersonPickerDialog.vue'
+import type {
+  InspectAssignResponse,
+  InspectFace,
+  InspectMeta,
+  InspectPoint,
+  InspectReport,
+  NormBox,
+  ReviewPersonSuggestion,
+} from '../api/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -34,6 +44,41 @@ const selected = ref<number | null>(null)
 
 /** Set when the served image is not shaped like the frame the boxes assume. */
 const skewed = ref(false)
+/** Set when that mismatch is a transpose — a swapped pair, not a random one. */
+const transposed = ref(false)
+/**
+ * Set when we re-normalized our boxes against the transposed frame.
+ *
+ * Two different faults look alike from the server: the frame guess is the
+ * transpose of the truth (same pixels, wrong divisors — boxes squash along one
+ * axis and slide toward a corner), or the photo is genuinely a quarter-turn
+ * out. `resolve_frame` tells them apart with Synology's boxes, but only when
+ * the photo has some. When it does not, the browser holds the one measurement
+ * nobody else has: the shape of the photo that actually arrived. A frame whose
+ * aspect is the transpose of that is the wrong divisor, near enough always —
+ * both frames describe the same upright photo, so they cannot legitimately
+ * disagree about which side is longer unless the content really is turned, and
+ * a real turn is what the server would have found evidence for.
+ */
+const reframed = ref(false)
+
+/**
+ * Quarter-turn clockwise applied to our boxes so they land on the served photo,
+ * as `resolve_frame` measured it against Synology's boxes.
+ *
+ * There is deliberately no manual override. A turn is the rarer of the two ways
+ * an overlay goes wrong by a wide margin — over a real library the frame needed
+ * swapping on 0.61% of photos and turning on 0.008%, and that one photo had
+ * Synology faces, so the server settled it unaided. A control for that would be
+ * one a reader reaches for on the far more common frame fault, where it is the
+ * wrong tool and makes the picture worse.
+ *
+ * The photo itself is never rotated: turning it would leave the reader
+ * squinting at a sideways picture to check a box, and the stage's aspect is the
+ * thumbnail's, so the overlay would have to be re-based on a frame the layout
+ * does not have.
+ */
+const rotation = computed(() => report.value?.display.rotation ?? 0)
 
 const spaces = computed(() => meta.value?.spaces ?? ['personal'])
 
@@ -88,6 +133,8 @@ async function load(sp: string, id: number): Promise<void> {
   error.value = ''
   selected.value = null
   skewed.value = false
+  transposed.value = false
+  reframed.value = false
   pan.reset()
   try {
     report.value = await getJSON<InspectReport>(`/api/inspect/${sp}/${id}`)
@@ -112,7 +159,12 @@ function syncFromRoute(): void {
   void load(sp, Number(id))
 }
 
-/** Flags a thumbnail whose aspect ratio disagrees with the frame we measured. */
+/**
+ * Measures the photo that actually arrived against the frame the boxes assume,
+ * and re-frames when the two are transposed and the server had nothing to check
+ * its guess against. A mismatch that is neither — a crop, a stretch — is left
+ * alone and reported, because no re-normalizing or turning fixes that.
+ */
 function onImageLoad(event: Event): void {
   const img = event.target as HTMLImageElement
   const display = report.value?.display
@@ -120,7 +172,102 @@ function onImageLoad(event: Event): void {
   const shown = img.naturalWidth / img.naturalHeight
   const expected = display.width / display.height
   skewed.value = Math.abs(shown - expected) > 0.05 * expected
+  transposed.value = skewed.value && Math.abs(shown - 1 / expected) <= 0.05 / expected
+  // Never overrule a frame Synology's own boxes chose — that is real evidence,
+  // and a legitimately transposed one means the content is turned, which the
+  // same vote would have found.
+  reframed.value =
+    transposed.value && display.rotation === 0 && display.rotation_source === 'none'
 }
+
+/**
+ * Renormalize a fraction of the server's frame into a fraction of its
+ * transpose. The pixels never moved; only the numbers they were divided by did,
+ * so undoing it is a rescale by the ratio of the frames' sides.
+ */
+function reframe(box: NormBox): NormBox {
+  const d = report.value?.display
+  if (!reframed.value || !d?.width || !d?.height) return box
+  const kx = d.width / d.height
+  const ky = d.height / d.width
+  return { x: box.x * kx, y: box.y * ky, w: box.w * kx, h: box.h * ky }
+}
+
+/**
+ * One of our 0..1 boxes as it should sit on the served photo: re-framed if the
+ * divisors were swapped, then turned if the content is. Width and height swap
+ * on a quarter-turn because the frame they are a fraction of does too, which is
+ * what keeps the box the same shape in pixels.
+ */
+function turned(box: NormBox): NormBox {
+  const { x, y, w, h } = reframe(box)
+  if (rotation.value === 90) return { x: 1 - y - h, y: x, w: h, h: w }
+  if (rotation.value === 180) return { x: 1 - x - w, y: 1 - y - h, w, h }
+  if (rotation.value === 270) return { x: y, y: 1 - x - w, w: h, h: w }
+  return { x, y, w, h }
+}
+
+function turnedPoint(p: InspectPoint): InspectPoint {
+  const d = report.value?.display
+  let { x, y } = p
+  if (reframed.value && d?.width && d?.height) {
+    x = x * (d.width / d.height)
+    y = y * (d.height / d.width)
+  }
+  if (rotation.value === 90) return { x: 1 - y, y: x }
+  if (rotation.value === 180) return { x: 1 - x, y: 1 - y }
+  if (rotation.value === 270) return { x: y, y: 1 - x }
+  return { x, y }
+}
+
+/** The frame our boxes are actually drawn against, after any re-framing. */
+const activeFrame = computed(() => {
+  const d = report.value?.display
+  if (!d?.width || !d?.height) return null
+  return reframed.value ? { w: d.height, h: d.width } : { w: d.width, h: d.height }
+})
+
+/**
+ * What the page had to do to line the boxes up, or could not. The warning this
+ * replaced ended at "may be misaligned": a doubt, with nothing said about which
+ * of the two faults it was or whether anything had been done about it.
+ */
+const alignment = computed<{ tone: 'info' | 'warn'; text: string } | null>(() => {
+  const r = report.value
+  if (!r) return null
+  const stored = `${r.photo.width ?? '?'}×${r.photo.height ?? '?'}, orientation ${
+    r.photo.orientation ?? '—'
+  }`
+  const parts: string[] = []
+  let tone: 'info' | 'warn' = 'info'
+
+  if (reframed.value) {
+    parts.push(
+      `The stored resolution (${stored}) is the transpose of the photo the NAS returned, ` +
+        'so our boxes are measured against the frame it actually arrived in.',
+    )
+  } else if (skewed.value && transposed.value && rotation.value === 0) {
+    tone = 'warn'
+    parts.push(
+      `The photo the NAS returned is the transpose of the frame these boxes assume (${stored}), ` +
+        'and Synology has no faces on it to settle which is right, so they may be misaligned.',
+    )
+  } else if (skewed.value && rotation.value === 0) {
+    tone = 'warn'
+    parts.push(
+      `The photo the NAS returned is not shaped like the stored resolution (${stored}), and the ` +
+        'difference is not a rotation, so the boxes may be misaligned.',
+    )
+  }
+
+  if (rotation.value !== 0) {
+    parts.push(
+      `Our boxes are turned ${rotation.value}° to match the photo, matched against ` +
+        "Synology's own faces.",
+    )
+  }
+  return parts.length ? { tone, text: parts.join(' ') } : null
+})
 
 function pct(v: number): string {
   return (v * 100).toFixed(3) + '%'
@@ -146,6 +293,61 @@ function pointStyle(p: { x: number; y: number }) {
   return {
     left: `calc(${pct(p.x * k)} + ${pan.x.value}px)`,
     top: `calc(${pct(p.y * k)} + ${pan.y.value}px)`,
+  }
+}
+
+// -- tagging a face nothing proposed ---------------------------------------- #
+// Inspect's only write, and it writes the review queue rather than the NAS: the
+// row lands approved and Apply still holds the flags that reach Synology. Which
+// flag depends on whether Synology already named this face — the server decides
+// that, and `face.syno` is why the button can say so up front.
+const picker = ref<InspectFace | null>(null)
+const assigning = ref(false)
+
+function isTagged(face: InspectFace): boolean {
+  return face.syno?.person_id != null
+}
+
+/** Re-read the report after a tag: same photo, same view, new Review rows. */
+async function refresh(): Promise<void> {
+  const r = report.value
+  if (!r) return
+  try {
+    report.value = await getJSON<InspectReport>(`/api/inspect/${r.space}/${r.photo_id}`)
+  } catch {
+    // The write already succeeded and said so; a stale report is the lesser evil.
+  }
+}
+
+async function onAssign(target: ReviewPersonSuggestion): Promise<void> {
+  const face = picker.value
+  if (!face || assigning.value) return
+  assigning.value = true
+  try {
+    const res = await postJSON<InspectAssignResponse>(
+      `/api/inspect/face/${face.face_id}/assign`,
+      {
+        space: report.value?.space,
+        person_id: target.person_id,
+        person_name: target.name,
+      },
+    )
+    picker.value = null
+    toast(
+      res.kind === 'reassign'
+        ? `Queued: move face #${face.face_id} to ${target.name}. Apply writes it only ` +
+            'with reassignments enabled.'
+        : `Queued: face #${face.face_id} is ${target.name}. Run Apply to write it.`,
+      'ok',
+    )
+    await refresh()
+  } catch (e) {
+    toast(
+      e instanceof ApiError ? e.message : (e as Error).message || 'Could not queue that tag',
+      'error',
+    )
+  } finally {
+    assigning.value = false
   }
 }
 
@@ -175,7 +377,10 @@ function select(faceId: number): void {
   selected.value = selected.value === faceId ? null : faceId
   if (selected.value === null) return
   const box = report.value?.faces.find((f) => f.face_id === faceId)?.box
-  if (box) pan.focus(box.x + box.w / 2, box.y + box.h / 2)
+  if (box) {
+    const b = turned(box)
+    pan.focus(b.x + b.w / 2, b.y + b.h / 2)
+  }
   document.getElementById(`face-${faceId}`)?.scrollIntoView({ block: 'nearest' })
 }
 
@@ -202,7 +407,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
     <section class="card ins-finder">
       <h3>Inspect a photo</h3>
       <p class="muted">
-        Every face we detected on one photo, with its scores, alongside the faces Synology found.
+        Show every face found in a photo, with its scores, alongside the faces already in Synology Photos.
       </p>
       <form class="ins-form" @submit.prevent="submit">
         <select
@@ -216,7 +421,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
         <input
           class="input"
           v-model="query"
-          placeholder="Photo id, or a link to one"
+          placeholder="ID of a Synology Photos photo, or a link to one"
           aria-label="Photo id"
         />
         <button type="submit" class="btn btn-primary">Inspect</button>
@@ -285,7 +490,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
                 type="button"
                 class="ins-box ours"
                 :class="{ sel: selected === face.face_id }"
-                :style="boxStyle(face.box ?? { x: 0, y: 0, w: 0, h: 0 })"
+                :style="boxStyle(turned(face.box ?? { x: 0, y: 0, w: 0, h: 0 }))"
                 :title="faceLabel(face)"
                 @click="clickBox(face.face_id)"
               >
@@ -298,7 +503,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
                   v-for="(p, i) in face.landmarks || []"
                   :key="i"
                   class="ins-point"
-                  :style="pointStyle(p)"
+                  :style="pointStyle(turnedPoint(p))"
                 ></span>
               </template>
             </template>
@@ -351,10 +556,8 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
           </div>
         </div>
 
-        <p v-if="skewed" class="ins-warn">
-          The photo the NAS returned is not shaped like the stored resolution
-          ({{ report.photo.width }}×{{ report.photo.height }}, orientation
-          {{ report.photo.orientation ?? '—' }}), so the boxes may be misaligned.
+        <p v-if="alignment" class="ins-align" :class="alignment.tone">
+          {{ alignment.text }}
         </p>
       </section>
 
@@ -374,8 +577,28 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
             :class="{ sel: selected === face.face_id }"
             @click="select(face.face_id)"
           >
-            <img v-if="face.crop_url" class="ins-crop" :src="face.crop_url" alt="" loading="lazy" />
-            <div v-else class="ins-crop ins-crop-missing" title="no crop on disk">no crop</div>
+            <div class="ins-face-crop">
+              <img
+                v-if="face.crop_url"
+                class="ins-crop"
+                :src="face.crop_url"
+                alt=""
+                loading="lazy"
+              />
+              <div v-else class="ins-crop ins-crop-missing" title="no crop on disk">no crop</div>
+              <button
+                type="button"
+                class="btn btn-sm ins-tag-btn"
+                :title="
+                  isTagged(face)
+                    ? 'Queue this face to move to someone else'
+                    : 'Queue this face as someone, even if nothing proposed it'
+                "
+                @click.stop="picker = face"
+              >
+                {{ isTagged(face) ? 'Reassign…' : 'Tag as…' }}
+              </button>
+            </div>
             <dl class="ins-facts">
               <dt>Face</dt>
               <dd class="mono">#{{ face.face_id }}</dd>
@@ -429,6 +652,17 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
               <dt v-if="face.restored">Restored</dt>
               <dd v-if="face.restored" class="mono">
                 disagreement {{ fmtScore(face.restore_disagreement) }}
+              </dd>
+              <dt>Synology</dt>
+              <dd>
+                <template v-if="face.syno">
+                  <template v-if="face.syno.person_id != null">{{
+                    face.syno.name || `#${face.syno.person_id}`
+                  }}</template>
+                  <span v-else class="muted">boxed, unnamed</span>
+                  <span class="muted"> · IoU {{ face.syno.iou.toFixed(2) }}</span>
+                </template>
+                <span v-else class="muted">no box here</span>
               </dd>
               <dt>Review</dt>
               <dd>
@@ -503,8 +737,11 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
           <dd class="mono">
             {{ report.photo.width ?? '?' }}×{{ report.photo.height ?? '?' }}
             <span class="muted"
-              >· frame used {{ report.display.width ?? '?' }}×{{ report.display.height ?? '?' }}
-              · orientation {{ report.photo.orientation ?? '—' }}</span
+              >· frame used {{ activeFrame?.w ?? '?' }}×{{ activeFrame?.h ?? '?' }}
+              <template v-if="reframed">(re-framed)</template> · orientation
+              {{ report.photo.orientation ?? '—' }}<template v-if="rotation !== 0">
+                · boxes turned {{ rotation }}°</template
+              ></span
             >
           </dd>
           <dt>Size</dt>
@@ -543,6 +780,25 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
         </dl>
       </section>
     </template>
+
+    <PersonPickerDialog
+      v-if="picker"
+      :mode="isTagged(picker) ? 'reassign' : 'assign'"
+      :source-label="`face #${picker.face_id}`"
+      :source-crops="[picker.crop_url]"
+      :space="report?.space"
+      :source-key="picker.face_id"
+      :note="
+        isTagged(picker)
+          ? `Synology has this face on ${picker.syno?.name || '#' + picker.syno?.person_id}. ` +
+            'Queues a move to the person you pick — Apply writes it only with ' +
+            'reassignments enabled.'
+          : undefined
+      "
+      :busy="assigning"
+      @confirm="onAssign"
+      @cancel="picker = null"
+    />
   </div>
 </template>
 
@@ -705,9 +961,15 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
   color: var(--text-3);
   cursor: default;
 }
-.ins-warn {
-  color: var(--warn);
+.ins-align {
   margin: var(--sp-3) 0 0;
+  font-size: var(--fs-sm);
+}
+.ins-align.warn {
+  color: var(--warn);
+}
+.ins-align.info {
+  color: var(--text-2);
 }
 .ins-faces {
   display: grid;
@@ -726,6 +988,16 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
 .ins-face.sel {
   border-color: var(--ok);
   background: var(--sel-tint);
+}
+.ins-face-crop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  flex: none;
+  width: 96px;
+}
+.ins-tag-btn {
+  width: 100%;
 }
 .ins-crop {
   width: 96px;

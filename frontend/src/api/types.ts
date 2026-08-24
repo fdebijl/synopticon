@@ -433,6 +433,14 @@ export interface InspectEmbedding {
   model_version: string | null
 }
 
+/** The Synology box covering one of our detections, when one does. */
+export interface InspectFaceSyno {
+  syno_face_id: number
+  person_id: number | null
+  name: string | null
+  iou: number
+}
+
 export interface InspectFace {
   face_id: number
   detector: string
@@ -452,6 +460,8 @@ export interface InspectFace {
   landmarks: InspectPoint[] | null
   embeddings: InspectEmbedding[]
   cluster: InspectCluster | null
+  /** Set when Synology has a box over this face — a tag here is a reassign. */
+  syno: InspectFaceSyno | null
 }
 
 export interface InspectSynoFace {
@@ -496,7 +506,14 @@ export interface InspectReport {
     phash: string | null
     similar_top_pick: number | null
   }
-  display: { width: number | null; height: number | null }
+  display: {
+    width: number | null
+    height: number | null
+    /** Quarter-turn clockwise our boxes need to land on the served photo. */
+    rotation: number
+    /** How that was decided: `synology-faces` voted, `none` had no evidence. */
+    rotation_source: 'synology-faces' | 'none'
+  }
   image_url: string
   nas_url: string | null
   linked_photo_id: number
@@ -519,6 +536,19 @@ export interface InspectReport {
     max_long_side: number
     scales: number[]
   }
+}
+
+/** POST /api/inspect/face/{id}/assign — what the queue row became. */
+export interface InspectAssignResponse {
+  face_id: number
+  item_id: number
+  /** `reassign` when Synology already named this face: a stricter Apply flag. */
+  kind: 'assign' | 'reassign'
+  status: string
+  person_id: number
+  person_name: string | null
+  /** Queued suggestions about this same face that were hidden in its favour. */
+  superseded: number[]
 }
 
 export interface InspectMeta {

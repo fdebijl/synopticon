@@ -35,7 +35,3 @@
 39. Preview photos in new_person should link to the photo
 
 40. Merge focus view > make the photos bigger
-
-41. Inspect view: allow assigning faces that weren't selected for review (RMB menu? We don't use this pattern yet, a (re)assign button might be better)
-
-42. Inspect view: add face(s) - might be better to leave this to Synology Photos

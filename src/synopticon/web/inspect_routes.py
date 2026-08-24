@@ -1,6 +1,6 @@
 """Inspect: the per-photo debug surface (every box, every score, one photo).
 
-Registered onto the main app by :func:`register_inspect_routes`. Two routes:
+Registered onto the main app by :func:`register_inspect_routes`. Three routes:
 
 * ``GET /api/inspect/{space}/{photo_id}`` — everything the database knows about
   one photo: our detections (bbox, per-detector scores, quality, landmarks,
@@ -9,11 +9,19 @@ Registered onto the main app by :func:`register_inspect_routes`. Two routes:
   those faces. DB-only.
 * ``GET /api/inspect/image/{space}/{photo_id}`` — the photo itself, proxied from
   the NAS thumbnail endpoint (read-only), falling back to a cached original.
+* ``POST /api/inspect/face/{face_id}/assign`` — queue "this face is that person"
+  for a face nothing proposed. Writes ``review_queue`` and nothing else; the NAS
+  write still happens later through ``apply`` under its own flags (ADR 05).
 
 Box geometry is returned **normalized** to the displayed frame, so the SPA can
 overlay both sources on one image without knowing pixel dimensions: our
 detections are pixel coords in the EXIF-corrected original (see
 ``pipeline.runner.load_image_bgr``), Synology's are already 0..1.
+
+Which of the two candidate frames our pixels are in, and whether it is also a
+quarter-turn off Synology's, is what :func:`resolve_frame` settles — against
+Synology's boxes, the one piece of geometry here that was not derived from the
+metadata already under suspicion.
 """
 
 import json
@@ -33,10 +41,20 @@ _IMAGE_CACHE_CONTROL = "private, max-age=86400"
 #: The only Synology thumbnail sizes the HAR captures cover (ADR 02).
 _SIZES = ("sm", "xl")
 
-#: EXIF orientations that swap width and height. `photos.width`/`height` come
-#: from Synology's own metadata, which reports the *stored* frame, while our
-#: detections live in the EXIF-corrected one.
-_ROTATED_ORIENTATIONS = (5, 6, 7, 8)
+#: Quarter-turns clockwise a frame can be out by. Two frames of the same photo
+#: differ by one of these or by nothing — any other disagreement is a crop or a
+#: stretch, which no rotation fixes.
+_ROTATIONS = (0, 90, 180, 270)
+
+#: Mean IoU, over Synology's boxes, below which nothing is landing on anything
+#: and the vote has no opinion worth having.
+_MIN_FIT = 0.3
+
+#: How much better than the seed a correction must score before it is taken. A
+#: single face near the middle of a photo overlaps itself under a half-turn, so
+#: a bare `>` lets symmetry flip perfectly good frames; the margin is what makes
+#: the vote answer "clearly better" instead of "not worse".
+_MIN_MARGIN = 0.15
 
 
 def _fits(faces: list[Any], width: float, height: float) -> int:
@@ -55,28 +73,155 @@ def _fits(faces: list[Any], width: float, height: float) -> int:
     return inside
 
 
-def display_size(photo, faces: list[Any]) -> tuple[float, float]:
-    """The frame our detections were made against, as ``(width, height)``.
+def frame_candidates(photo, faces: list[Any]) -> tuple[tuple[float, float], ...]:
+    """The frames our detections might live in, metadata's favourite first.
 
-    Derived from Synology's stored resolution, swapped when EXIF orientation
-    says the corrected frame is rotated. That derivation is the arcane part:
-    ``orientation`` is not always populated and not every camera agrees, so the
-    two candidate frames are scored by how many boxes they actually contain and
-    the better one wins. With no resolution at all, fall back to the extent of
-    the boxes themselves so the overlay still lines up.
+    There are only ever two, a resolution and its transpose.
+
+    **``orientation`` deliberately gets no vote here.** It used to lead: EXIF 5-8
+    say the corrected frame is rotated, so the stored resolution was swapped
+    before use. Measured against Synology's own face boxes over a real library,
+    that rule was wrong on roughly nine of every ten rotated photos — Synology
+    reports ``width``/``height`` for the frame it *displays*, and hands over the
+    EXIF tag beside it, so the swap was applied to dimensions that had already
+    been corrected. Every other consumer of these columns
+    (``crossref._load_face_meta``, ``queries._face_targets``) has always read
+    them unswapped, and clustering works; this was the one place that did not.
+
+    So the stored pair leads, the containment count may reorder it — it is
+    proof when it fires, since a box outside a frame cannot have come from it,
+    but it only fires when some face sits past the shorter side — and
+    :func:`resolve_frame` settles the rest against evidence. With no resolution
+    at all there is one candidate: the extent of the boxes themselves.
     """
     width = float(photo["width"] or 0)
     height = float(photo["height"] or 0)
     if width and height:
+        stored = (width, height)
         swapped = (height, width)
-        upright = (width, height)
-        if photo["orientation"] in _ROTATED_ORIENTATIONS:
-            upright, swapped = swapped, upright
-        return upright if _fits(faces, *upright) >= _fits(faces, *swapped) else swapped
+        if _fits(faces, *swapped) > _fits(faces, *stored):
+            return (swapped, stored)
+        return (stored, swapped)
 
     extent_w = max((f["x"] + f["w"] for f in faces), default=0.0)
     extent_h = max((f["y"] + f["h"] for f in faces), default=0.0)
-    return float(extent_w), float(extent_h)
+    return ((float(extent_w), float(extent_h)),)
+
+
+def display_size(photo, faces: list[Any]) -> tuple[float, float]:
+    """Metadata's best guess at the frame our detections were made against.
+
+    The seed :func:`resolve_frame` starts from, and the answer when there is no
+    evidence to check it against.
+    """
+    return frame_candidates(photo, faces)[0]
+
+
+def rotate_box(box: dict, degrees: int) -> dict:
+    """A 0..1 box turned ``degrees`` clockwise into the rotated frame.
+
+    Width and height swap on a quarter-turn because the frame they are a
+    fraction of does too, which is what keeps a rotated box the same shape in
+    pixels.
+    """
+    x, y, w, h = box["x"], box["y"], box["w"], box["h"]
+    if degrees == 90:
+        return {"x": 1.0 - y - h, "y": x, "w": h, "h": w}
+    if degrees == 180:
+        return {"x": 1.0 - x - w, "y": 1.0 - y - h, "w": w, "h": h}
+    if degrees == 270:
+        return {"x": y, "y": 1.0 - x - w, "w": h, "h": w}
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _corners(box: dict) -> tuple[float, float, float, float]:
+    return (box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"])
+
+
+def resolve_frame(
+    photo, faces: list[Any], syno_faces: list[Any]
+) -> tuple[tuple[float, float], int, str]:
+    """The frame our boxes live in, the turn onto Synology's, and what said so.
+
+    Two things can put the overlay wrong, and only one of them is a rotation:
+
+    * **The wrong divisor.** :func:`frame_candidates` guessed the transpose, so
+      the same pixel boxes were divided by a swapped pair. The picture is not
+      turned at all — the boxes are squashed along one axis and slide toward a
+      corner. No rotation fixes this; only re-normalizing does.
+    * **A real quarter-turn**, where our EXIF-corrected frame and Synology's
+      upright one genuinely disagree about which way is up.
+
+    Both are settled by the same evidence and so by one search: score every
+    (frame, turn) pair by how well our boxes land on Synology's, and take the
+    winner. Synology's boxes are the right arbiter because they are the only
+    geometry here that was not derived from the metadata already under
+    suspicion — the only geometry here derived from the pixels rather than
+    from a column.
+
+    The score is a mean IoU **over Synology's boxes**, not over ours: Synology
+    labels a fraction of the faces we find (photo 60251 has one of seven), so
+    averaging over ours would bury a perfect match under the faces it never
+    named. Each of their boxes asks the same question — is one of our faces
+    here? — and every one of them should be able to answer yes.
+
+    A correction has to be *clearly* better than the seed, by :data:`_MIN_MARGIN`,
+    and land at all, by :data:`_MIN_FIT`. Both floors earn their keep: a lone
+    face near the middle of a photo overlaps itself under a half-turn, so a bare
+    "best wins" lets symmetry flip frames that were already right.
+
+    A photo where nothing lands on anything — Synology has no faces on it, which
+    is common — reports the seed with ``source="none"``, and the page says so
+    rather than implying the frame was checked.
+    """
+    from ..review.queries import box_iou
+
+    candidates = frame_candidates(photo, faces)
+    theirs = [
+        (float(sf["x1"]), float(sf["y1"]), float(sf["x2"]), float(sf["y2"]))
+        for sf in syno_faces
+    ]
+    if not theirs or not faces:
+        return candidates[0], 0, "none"
+
+    def fit(frame: tuple[float, float], degrees: int) -> float:
+        width, height = frame
+        if not width or not height:
+            return 0.0
+        ours = [
+            rotate_box(
+                {
+                    "x": float(f["x"]) / width,
+                    "y": float(f["y"]) / height,
+                    "w": float(f["w"]) / width,
+                    "h": float(f["h"]) / height,
+                },
+                degrees,
+            )
+            for f in faces
+        ]
+        return sum(
+            max(box_iou(_corners(box), t) for box in ours) for t in theirs
+        ) / len(theirs)
+
+    seed = candidates[0]
+    seed_score = fit(seed, 0)
+
+    best_frame, best_turn, best_score = seed, 0, seed_score
+    for frame in candidates:
+        for degrees in _ROTATIONS:
+            score = fit(frame, degrees)
+            if score > best_score + 1e-9:
+                best_frame, best_turn, best_score = frame, degrees, score
+
+    if best_score >= _MIN_FIT and best_score - seed_score >= _MIN_MARGIN:
+        return best_frame, best_turn, "synology-faces"
+    # The seed stands. Whether that is a checked answer or an unchecked one is
+    # the difference between "these boxes are on the faces" and "nothing here
+    # disagreed with the metadata", and the page says which.
+    if seed_score >= _MIN_FIT:
+        return seed, 0, "synology-faces"
+    return seed, 0, "none"
 
 
 def _norm(x: float, y: float, w: float, h: float, size: tuple[float, float]):
@@ -220,7 +365,7 @@ def _review_items(
 def photo_report(conn: Connection, settings: Settings, space: str, photo_id: int):
     """Everything the database knows about one photo, or ``None`` if unsynced."""
     from ..links import item_url, person_url, syno_web_base
-    from ..review.queries import crop_url_mapper
+    from ..review.queries import crop_url_mapper, photo_syno_match
 
     photo = conn.execute(
         "SELECT * FROM photos WHERE space = ? AND id = ?", (space, photo_id)
@@ -232,17 +377,23 @@ def photo_report(conn: Connection, settings: Settings, space: str, photo_id: int
         "SELECT * FROM faces WHERE space = ? AND photo_id = ? ORDER BY face_id",
         (space, photo_id),
     ).fetchall()
-    size = display_size(photo, face_rows)
+    syno_rows = conn.execute(
+        "SELECT * FROM syno_faces WHERE space = ? AND photo_id = ? ORDER BY syno_face_id",
+        (space, photo_id),
+    ).fetchall()
+    # Which of the two candidate frames our pixels are in, and whether it is
+    # also a quarter-turn off the photo the NAS serves. Both are metadata
+    # questions that metadata answers badly, so they are put to Synology's boxes.
+    size, rotation, rotation_source = resolve_frame(photo, face_rows, syno_rows)
     face_ids = [int(r["face_id"]) for r in face_rows]
 
     to_crop_url = crop_url_mapper(Path(settings.storage.crops_dir))
     clusters = _clusters(conn, face_ids)
     embeddings = _embeddings(conn, face_ids)
-
-    syno_rows = conn.execute(
-        "SELECT * FROM syno_faces WHERE space = ? AND photo_id = ? ORDER BY syno_face_id",
-        (space, photo_id),
-    ).fetchall()
+    # Which of Synology's boxes is this face, if any — the same pairing the
+    # assign route decides `assign` vs `reassign` from, so the button a reader
+    # sees names the tier the write will actually take.
+    syno_match = photo_syno_match(conn, space, photo_id)
 
     wanted: set[tuple[str, int]] = set()
     for row in syno_rows:
@@ -290,6 +441,21 @@ def photo_report(conn: Connection, settings: Settings, space: str, photo_id: int
                 "landmarks": _landmarks(row["landmarks"], size),
                 "embeddings": embeddings.get(fid, []),
                 "cluster": cluster,
+                "syno": (
+                    {
+                        "syno_face_id": match["syno_face_id"],
+                        "person_id": match["person_id"],
+                        "name": match["name"]
+                        or (
+                            names.get((space, int(match["person_id"])))
+                            if match["person_id"] is not None
+                            else None
+                        ),
+                        "iou": match["iou"],
+                    }
+                    if (match := syno_match.get(fid)) is not None
+                    else None
+                ),
             }
         )
 
@@ -342,7 +508,14 @@ def photo_report(conn: Connection, settings: Settings, space: str, photo_id: int
             "phash": photo["phash"],
             "similar_top_pick": photo["similar_top_pick"],
         },
-        "display": {"width": size[0] or None, "height": size[1] or None},
+        "display": {
+            "width": size[0] or None,
+            "height": size[1] or None,
+            # Clockwise, applied by the SPA to our boxes only — Synology's are
+            # already in the served photo's frame.
+            "rotation": rotation,
+            "rotation_source": rotation_source,
+        },
         "image_url": f"/api/inspect/image/{space}/{photo_id}",
         "nas_url": item_url(web_base, space, linked_photo_id),
         "linked_photo_id": linked_photo_id,
@@ -385,6 +558,7 @@ def register_inspect_routes(
     part of Inspect that talks to the NAS, and it reuses that one logged-in
     client rather than building a second one.
     """
+    from fastapi import Request
     from fastapi.responses import FileResponse, JSONResponse, Response
     from starlette.concurrency import run_in_threadpool
 
@@ -495,3 +669,51 @@ def register_inspect_routes(
                 status_code=404,
             )
         return report
+
+    @app.post("/api/inspect/face/{face_id}/assign")
+    async def api_inspect_assign(request: Request, face_id: int):
+        """Tag a face the pipeline never proposed as the person a human picked.
+
+        Queue-only, like the review cards' Reassign (ADR 14): it writes one
+        approved row and `apply` still holds the flags that reach the NAS. The
+        tier that row lands in is `queries.assign_face`'s call, not the
+        caller's — a face Synology has already named becomes a `reassign`, which
+        `apply` writes only under its own flag.
+        """
+        from ..review import queries
+
+        body = await request.json()
+        space = (body.get("space") or "").strip()
+        person_id = body.get("person_id")
+        person_name = (body.get("person_name") or "").strip()
+        if not space or not isinstance(person_id, int):
+            return JSONResponse(
+                {"error": "space (str) and person_id (int) are required"},
+                status_code=422,
+            )
+        try:
+            resolved = _space(space)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+
+        def work():
+            c = conn()
+            try:
+                return queries.assign_face(
+                    c, face_id, resolved, person_id, person_name
+                )
+            finally:
+                c.close()
+
+        try:
+            result = await run_in_threadpool(work)
+        except queries.AlreadyTagged as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        except (queries.SpaceMismatch, queries.MissingGeometry) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=422)
+        if result is None:
+            return JSONResponse(
+                {"error": f"face {face_id} is not in the local library"},
+                status_code=404,
+            )
+        return {"face_id": face_id, **result}
