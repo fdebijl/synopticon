@@ -1,7 +1,7 @@
 # ADR 16 — Inspect: one photo, every box
 
 **Status:** Accepted
-**Applies to:** `web/inspect_routes.py`, `links.py` (`inspect_path`), `review/queries.py`'s `inspect_url`, `syno/foto.py::download_item_thumbnail`, `InspectView.vue`, the review cards' photo link
+**Applies to:** `web/inspect_routes.py`, `links.py` (`inspect_path`), `review/queries.py`'s `inspect_url`, `syno/foto.py::download_item_thumbnail`, `InspectView.vue`, `composables/usePanZoom.ts`, the review cards' photo link
 
 ## Context
 
@@ -58,6 +58,32 @@ plain absolutely-positioned elements by percentage, so it needs no image dimensi
 boxes and Synology's land in one space. When the served thumbnail's aspect ratio disagrees with the
 frame anyway, the page says so rather than quietly drawing boxes in the wrong places.
 
+### The stage is a pan/zoom viewport, and the overlay divides by the scale
+
+A group photo on a laptop draws twenty boxes into a few hundred pixels, and their labels overlap
+into an unreadable stack. `composables/usePanZoom.ts` turns the stage into a viewport: wheel and
+trackpad pinch zoom around the pointer, two fingers pinch, drag pans, and a Maps-style
+`+` / `−` / fit stack sits in the corner for the cases a gesture cannot reach (a phone that claimed
+the swipe, a keyboard-only reader).
+
+Three details are load-bearing:
+
+- **The transform layer is the viewport's own size**, so every box stays positioned in percentages
+  and the server-side normalization above is untouched. Translation is in viewport pixels and
+  clamped to the scaled content, so the photo cannot be flung out of frame.
+- **Overlay chrome counter-scales by `--k`** — border widths as `calc(2px / var(--k))`, labels and
+  landmark dots as `scale(calc(1 / var(--k)))`. Without it, zooming to read a crowded corner
+  thickens every border and inflates every label by the same factor and the overlap comes back;
+  with it, zooming is exactly the act of spreading the boxes apart under fixed-size labels.
+- **The gesture never traps the reader.** A wheel-down at scale 1 is left to the page rather than
+  swallowed as a no-op zoom-out, `touch-action` is `pan-y` until the reader zooms in, and the
+  viewport takes no pointer capture — capture would retarget the click away from the boxes, which
+  are `<button>`s. A drag past a few pixels sets a flag that suppresses the click that follows, so
+  panning across a face does not select it.
+
+Selecting a face while zoomed in re-centers on its box, which is what makes the face list below a
+usable index into a crowded photo.
+
 ### Review rows are found by scanning, not by `json_extract`
 
 `payload_json`'s face ids have no foreign key (ADR 15) and `json_extract` returns text on PostgreSQL
@@ -84,6 +110,9 @@ future "inspect the next photo in this group" has somewhere to hang.
   read-path NAS call the web process makes on behalf of a page view: a NAS that is down degrades
   Inspect to a cached-original fallback or a 502, and never to a broken report — the JSON half is
   pure database work.
+- The viewport is CSS transforms over one `<img>`; it never re-fetches at a higher resolution, so
+  zooming past the thumbnail's own detail shows a soft photo with crisp boxes. That is the intended
+  trade — the question is where the boxes are, not what the photo looks like.
 - The overlay is only as good as `display_size`'s guess. The containment vote makes the common
   rotated-photo case self-correcting; a genuinely mislabelled thumbnail is surfaced to the reader as
   a warning rather than silently mis-drawn.
