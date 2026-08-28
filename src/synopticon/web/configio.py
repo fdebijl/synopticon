@@ -31,6 +31,7 @@ from typing import Any
 from pydantic import BaseModel, SecretStr, ValidationError
 
 from ..config import Settings, _config_file
+from . import clientip
 
 #: Sentinel a client sends for a secret field it does not want to change.
 _UNCHANGED = "__unchanged__"
@@ -310,6 +311,158 @@ def write_config(settings: Settings, partial: dict) -> list[dict] | None:
     return None
 
 
+def _atomic_write(doc, target: Path, tomlkit) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(tomlkit.dumps(doc), encoding="utf-8")
+    if _has_password(doc):
+        os.chmod(tmp, 0o600)
+    os.replace(tmp, target)
+
+
+def _env_var_name(dotted: str) -> str:
+    """``"security.allow_from"`` -> ``"SYNOPTICON_SECURITY__ALLOW_FROM"``."""
+    section, _, key = dotted.partition(".")
+    prefix = Settings.model_config.get("env_prefix", "SYNOPTICON_")
+    delim = Settings.model_config.get("env_nested_delimiter", "__")
+    return f"{prefix}{section}{delim}{key}".upper()
+
+
+def guarded_write(
+    settings: Settings,
+    partial: dict,
+    *,
+    peer: str,
+    forwarded_for: str,
+    bind_host: str | None,
+    allow_lockout: bool,
+) -> tuple[list[dict] | None, dict | None]:
+    """One worker-thread pass: read, merge, validate, guard, write.
+
+    Returns ``(errors, conflict)``; at most one is non-``None``. ``errors`` ->
+    the caller answers 422 with ``{"errors": errors}``; ``conflict`` -> 409 with
+    that dict as the body; neither -> written.
+
+    Judges the *proposed* trust list against the socket ``peer`` (not the
+    address the currently-running ``ProxyHeaders`` middleware would resolve),
+    because the realistic first-time save adds a proxy to ``trusted_proxies``
+    and an allowlist entry in the same PUT -- judging against the old list
+    would refuse exactly the save that fixes the configuration.
+    """
+    tomlkit = _require_tomlkit()
+    target = config_target(settings)
+
+    if target.is_file():
+        doc = tomlkit.parse(target.read_text(encoding="utf-8"))
+    else:
+        doc = tomlkit.document()
+
+    cleaned = _clean(partial or {})
+    _deep_merge(doc, cleaned, tomlkit)
+
+    merged_plain = doc.unwrap()
+    try:
+        merged = Settings(**merged_plain)
+    except ValidationError as exc:
+        return [
+            {
+                "loc": ".".join(str(p) for p in err.get("loc", ())),
+                "msg": err.get("msg", "invalid value"),
+            }
+            for err in exc.errors()
+        ], None
+
+    sec = merged.security
+
+    # Guard 0 -- environment shadow (F7). Not overridable by allow_lockout: it
+    # means "I accept the lockout risk", not "write a file nobody reads".
+    if "security" in (partial or {}):
+        shadowed_security = [
+            k for k in _env_overrides(settings) if k.startswith("security.")
+        ]
+        if shadowed_security:
+            clauses = "; ".join(
+                f"{key} is set by the environment variable {_env_var_name(key)}, "
+                "which overrides config.toml"
+                for key in shadowed_security
+            )
+            return None, {
+                "error": (
+                    f"{clauses} — saving here would change the file and nothing "
+                    "else. Unset it (docker compose: remove the line from "
+                    "`environment:`) and restart Synopticon."
+                ),
+                "env_shadowed": shadowed_security,
+                "shadowed": True,
+            }
+
+    if allow_lockout:
+        _atomic_write(doc, target, tomlkit)
+        return None, None
+
+    trusted = clientip.parse_networks(sec.trusted_proxies)
+    resolved = clientip.resolve_client(peer, forwarded_for, trusted)
+
+    # Guard 1 -- unenforceable: untrusted proxy. R8: no loopback-peer carve-out
+    # here -- the documented topology (proxy on the same host) IS loopback, so
+    # that clause used to disable the one check built to catch exactly this.
+    if sec.allow_from and not sec.trusted_proxies and forwarded_for:
+        return None, {
+            "error": (
+                "This request reached Synopticon through a proxy that is not in "
+                "trusted_proxies, so every visitor looks like the same address "
+                "and this list would not restrict anyone. Set trusted_proxies "
+                "first."
+            ),
+            "client_ip": resolved.ip,
+            "forwarded_for_present": True,
+            "unenforceable": True,
+        }
+
+    # Guard 2 -- unenforceable: same-host proxy that forwards nothing. The
+    # backstop covers a loopback-bound instance behind an unlisted same-host
+    # proxy that sends no X-Forwarded-For at all.
+    same_host_no_forward = (
+        bool(sec.allow_from)
+        and resolved.peer_trusted
+        and resolved.source == "socket_peer"
+        and clientip.is_loopback(resolved.ip)
+    )
+    backstop = (
+        bool(sec.allow_from)
+        and not sec.trusted_proxies
+        and not forwarded_for
+        and clientip.is_loopback(peer)
+        and bind_host is not None
+        and clientip.is_loopback(bind_host)
+    )
+    if same_host_no_forward or backstop:
+        return None, {
+            "error": (
+                "Your reverse proxy runs on this machine and is not sending "
+                "X-Forwarded-For, so every visitor arrives as 127.0.0.1 and this "
+                "list cannot tell them apart. Configure the proxy to OVERWRITE "
+                "that header (nginx: proxy_set_header X-Forwarded-For "
+                "$remote_addr;) — passing the visitor's own header through "
+                "instead would let anyone claim any address — and try again."
+            ),
+            "client_ip": resolved.ip,
+            "unenforceable": True,
+        }
+
+    # Guard 3 -- self-lockout.
+    allowlist = clientip.IPAllowlist(sec.allow_from, sec.allow_private_networks)
+    if not allowlist.allows(resolved.ip):
+        return None, {
+            "error": "That allowlist would lock this browser out.",
+            "client_ip": resolved.ip,
+            "lockout": True,
+        }
+
+    _atomic_write(doc, target, tomlkit)
+    return None, None
+
+
 # --------------------------------------------------------------------------- #
 # Routes                                                                       #
 # --------------------------------------------------------------------------- #
@@ -325,6 +478,7 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
     from starlette.concurrency import run_in_threadpool
 
     from . import auth
+    from .auth import SESSION_COOKIE
 
     def _job_running() -> bool:
         return any(
@@ -342,6 +496,21 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
         if invalidate is not None:
             invalidate()
 
+    def _human_only(request: Request) -> JSONResponse | None:
+        """``None`` for a signed-in user, else a 403 for an API key.
+
+        An API key is a machine credential and must never be able to widen its
+        own reach: `[security]` owns the allowlist, the proxy trust list and
+        both throttle tiers, and the key routes below mint and revoke keys. A
+        key that could write either would be a stolen key that grants itself
+        everything and outlives its own revocation. Mirrors
+        ``security_routes._require_user``.
+        """
+        ident = getattr(request.state, "ident", None)
+        if not ident or ident[0] != "user":
+            return JSONResponse({"error": "must be signed in"}, status_code=403)
+        return None
+
     # -- config ------------------------------------------------------------- #
     @app.get("/api/config")
     def api_get_config():
@@ -349,6 +518,9 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
 
     @app.put("/api/config")
     async def api_put_config(request: Request):
+        denied = _human_only(request)
+        if denied is not None:
+            return denied
         if _job_running():
             return JSONResponse(
                 {"error": "a job is running; save config once it finishes"},
@@ -360,7 +532,22 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
                 {"error": "body must be a config object"}, status_code=422
             )
         # Rewrites config.toml (tomlkit round-trip + file write) — off the loop.
-        errors = await run_in_threadpool(write_config, settings, body)
+        # `guarded_write` judges the proposed security section against the
+        # SOCKET PEER: the running ProxyHeaders middleware was built from the
+        # OLD trusted_proxies, so client_ip() would answer with the proxy's
+        # address even when this very save is what adds that proxy to the
+        # trust list.
+        errors, conflict = await run_in_threadpool(
+            guarded_write,
+            settings,
+            body,
+            peer=clientip.client_peer(request),
+            forwarded_for=clientip.forwarded_header(request),
+            bind_host=getattr(request.app.state, "bind_host", None),
+            allow_lockout=request.query_params.get("allow_lockout") == "1",
+        )
+        if conflict:
+            return JSONResponse(conflict, status_code=409)
         if errors:
             return JSONResponse({"errors": errors}, status_code=422)
         return {"ok": True}
@@ -382,24 +569,84 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
                 {"error": "new_password is required"}, status_code=422
             )
 
-        def work() -> str:
+        # Computed on the loop (pure/in-memory); passed into the hop so the
+        # limiter call and the log row use exactly what the middleware
+        # resolved for this request (clientip.resolved(request), never a
+        # second, independent re-resolution).
+        resolved = clientip.resolved(request)
+        ua = clientip.user_agent(request)
+        limiter = request.app.state.login_limiter
+        session_cookie = request.cookies.get(SESSION_COOKIE)
+
+        def work() -> tuple[str, int | None]:
             c = conn()
             try:
                 row = c.execute(
                     "SELECT username FROM web_users WHERE id = ?", (uid,)
                 ).fetchone()
                 if row is None:
-                    return "unknown"
-                if auth.verify_password(c, row["username"], current) is None:
-                    return "wrong"
+                    return "unknown", None
+                username = row["username"]
+
+                # Throttle verdict computed inside the hop, after the username
+                # lookup and before verify_password -- this is an authenticated
+                # route, not an anonymous flood surface, so the one connection
+                # a blocked request costs is acceptable and buys the correct
+                # key (scope="change_password").
+                throttle = limiter.verdict(resolved, username, scope="change_password")
+                if not throttle.allowed:
+                    return "blocked", throttle.retry_after
+
+                if auth.verify_password(c, username, current) is None:
+                    limiter.record_failure(resolved, username, scope="change_password")
+                    auth.record_attempt(
+                        c,
+                        event="password_change",
+                        outcome="failure",
+                        reason="wrong_password",
+                        username=username,
+                        user_id=uid,
+                        ip=resolved.ip,
+                        user_agent=ua,
+                    )
+                    return "wrong", None
+
                 auth.change_password(c, uid, new)
-                return "ok"
+                limiter.record_success(resolved, username, scope="change_password")
+                # Changing a password because a device was lost is the single
+                # most likely reason anyone uses this route -- revoke every
+                # other session so the thief's 30-day cookie does not outlive
+                # the credential it was issued against.
+                revoked = auth.delete_user_sessions(c, uid, except_token=session_cookie)
+                auth.record_attempt(
+                    c,
+                    event="password_change",
+                    outcome="success",
+                    username=username,
+                    user_id=uid,
+                    ip=resolved.ip,
+                    user_agent=ua,
+                )
+                return "ok", revoked
             finally:
                 c.close()
 
         # Two scrypt derivations (verify + rehash) — ~200 ms of CPU that must
         # not run on the event loop.
-        outcome = await run_in_threadpool(work)
+        outcome, extra = await run_in_threadpool(work)
+        if outcome == "blocked":
+            return JSONResponse(
+                {
+                    "error": f"Too many attempts — try again in {extra} seconds.",
+                    "retry_after": extra,
+                    "recovery": (
+                        "If this is your own address and you cannot get back in, "
+                        "set [security] max_failures_per_address = 0 in "
+                        "config.toml and restart Synopticon."
+                    ),
+                },
+                status_code=429,
+            )
         if outcome == "unknown":
             return JSONResponse({"error": "unknown user"}, status_code=404)
         if outcome == "wrong":
@@ -407,10 +654,13 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
                 {"error": "current password is incorrect"}, status_code=403
             )
         _drop_cached_auth()
-        return {"ok": True}
+        return {"ok": True, "signed_out_others": extra}
 
     @app.get("/api/auth/keys")
-    def api_list_keys():
+    def api_list_keys(request: Request):
+        denied = _human_only(request)
+        if denied is not None:
+            return denied
         c = conn()
         try:
             return {"keys": auth.list_api_keys(c)}
@@ -419,6 +669,9 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
 
     @app.post("/api/auth/keys")
     async def api_create_key(request: Request):
+        denied = _human_only(request)
+        if denied is not None:
+            return denied
         body = await request.json()
         name = (body.get("name") or "").strip()
         if not name:
@@ -436,7 +689,17 @@ def register_config_routes(app, settings: Settings, conn, job_manager) -> None:
         return JSONResponse({"key": key, "name": name}, status_code=201)
 
     @app.post("/api/auth/keys/{key_id}/revoke")
-    def api_revoke_key(key_id: int):
+    def api_revoke_key(key_id: int, request: Request):
+        # A key may burn itself -- that is strictly de-escalating, and a CI job
+        # retiring its own credential on teardown is a real workflow. It may
+        # not revoke any OTHER key: that is a stolen key locking the owner out
+        # of their own automation.
+        ident = getattr(request.state, "ident", None)
+        self_revoke = bool(ident) and ident[0] == "apikey" and ident[1] == key_id
+        if not self_revoke:
+            denied = _human_only(request)
+            if denied is not None:
+                return denied
         c = conn()
         try:
             auth.revoke_api_key(c, key_id)

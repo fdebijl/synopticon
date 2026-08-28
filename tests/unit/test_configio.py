@@ -258,6 +258,10 @@ def test_change_password_flow(client, settings):
         json={"current_password": "wrong", "new_password": "newpass456"},
     )
     assert r.status_code == 403
+    # The wrong attempt above just armed this (ip, username) pair's exponential
+    # backoff under scope="change_password" (SEC5) -- clear it so the very next
+    # attempt in this test isn't itself throttled into a 429.
+    client.app.state.login_limiter.clear()
     # correct current password -> 200 and the new password verifies
     r = client.post(
         "/api/auth/change-password",

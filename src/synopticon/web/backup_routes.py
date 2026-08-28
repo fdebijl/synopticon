@@ -117,6 +117,15 @@ def register_backup_routes(
 
     @app.get("/api/backup/config")
     def api_backup_config(request: Request, secrets: bool = False):
+        ident = getattr(request.state, "ident", None)
+        if not ident or ident[0] != "user":
+            return JSONResponse(
+                {
+                    "error": "A backup has to be downloaded from a signed-in browser, "
+                    "not with an access key."
+                },
+                status_code=403,
+            )
         try:
             text = configio.export_config(settings, include_secrets=secrets)
         except ImportError as exc:
@@ -133,6 +142,15 @@ def register_backup_routes(
 
     @app.get("/api/backup/database")
     def api_backup_database(request: Request):
+        ident = getattr(request.state, "ident", None)
+        if not ident or ident[0] != "user":
+            return JSONResponse(
+                {
+                    "error": "A backup has to be downloaded from a signed-in browser, "
+                    "not with an access key."
+                },
+                status_code=403,
+            )
         if not building.acquire(blocking=False):
             return JSONResponse(
                 {"error": "a database backup is already being prepared"},
