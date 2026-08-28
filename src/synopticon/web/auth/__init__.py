@@ -1,4 +1,5 @@
-"""Web GUI authentication: users, sessions, API keys, login rate limiting.
+"""Web GUI authentication: users, sessions, API keys, two-step sign-in, login
+rate limiting, session pinning and the sign-in log.
 
 Stdlib-only and framework-free by design: every function operates over a
 Connection (the same one the rest of the app uses) so the FastAPI layer that
@@ -29,11 +30,25 @@ from .authlog import (
 from .hashing import _scrypt, _sha256_hex
 from .keys import create_api_key, list_api_keys, revoke_api_key, validate_api_key
 from .sessions import (
+    PIN_DEVICE,
+    PIN_DEVICE_NETWORK,
+    PIN_MODES,
+    PIN_OFF,
     SESSION_COOKIE,
+    ClientFacts,
+    SessionPinViolation,
+    cache_key,
+    cache_prefix,
+    count_user_sessions,
     create_session,
     delete_session,
     delete_user_sessions,
+    device_key,
+    fingerprint,
+    get_pin_mode,
+    ip_prefix,
     purge_expired,
+    set_pin_mode,
     validate_session,
 )
 from .throttle import LoginRateLimiter, Throttle
@@ -78,13 +93,27 @@ __all__ = [
     "list_users",
     "change_password",
     "username_for",
-    # sessions
+    # sessions + pinning
     "SESSION_COOKIE",
+    "PIN_OFF",
+    "PIN_DEVICE",
+    "PIN_DEVICE_NETWORK",
+    "PIN_MODES",
+    "SessionPinViolation",
+    "ClientFacts",
+    "device_key",
+    "ip_prefix",
+    "fingerprint",
     "create_session",
     "validate_session",
     "delete_session",
     "delete_user_sessions",
+    "count_user_sessions",
     "purge_expired",
+    "get_pin_mode",
+    "set_pin_mode",
+    "cache_key",
+    "cache_prefix",
     # API keys
     "create_api_key",
     "validate_api_key",
