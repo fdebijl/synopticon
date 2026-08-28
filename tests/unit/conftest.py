@@ -79,6 +79,65 @@ def nas_conn(tmp_path):
 
 
 @pytest.fixture
+def web_settings(tmp_path):
+    """Settings for a web-GUI test app: a scratch data_dir plus stub NAS values
+    good enough to pass validation without a real NAS.
+
+    New name (distinct from the local `settings` fixture `test_web_auth.py`
+    already declares) so the eight new security test files can share one
+    harness without an unowned edit to that file mid-flight.
+    """
+    from synopticon.config import load_settings
+
+    return load_settings(
+        storage={"data_dir": tmp_path},
+        nas={"url": "https://nas.test", "account": "svc", "password": "pw"},
+    )
+
+
+@pytest.fixture
+def web_conn(tmp_path):
+    """A bare Connection to a scratch database, independent of any Settings --
+    for tests that only need a schema to write against."""
+    from synopticon.db import store
+
+    c = store.connect(tmp_path / "synopticon.db")
+    yield c
+    c.close()
+
+
+@pytest.fixture
+def web_db(web_settings):
+    """A Connection opened the same way `create_app` opens one -- through
+    `web_settings.storage.db_path` -- so a test can seed data here and then hit
+    `web_app` and know both are the same file."""
+    from synopticon.db import store
+
+    c = store.connect(web_settings.storage.db_path)
+    yield c
+    c.close()
+
+
+def _trivial_web_job_builder(argv):
+    import sys
+
+    return [sys.executable, "-c", "import sys; sys.exit(0)"]
+
+
+@pytest.fixture
+def web_app(web_settings, tmp_path):
+    """A `create_app(web_settings)` wired with a JobManager whose command
+    builder runs a trivial subprocess -- no real NAS, no real job."""
+    from synopticon.web.app import create_app
+    from synopticon.web.jobs import JobManager
+
+    jm = JobManager(tmp_path / "jobs", command_builder=_trivial_web_job_builder)
+    application = create_app(web_settings, job_manager=jm)
+    yield application
+    jm.shutdown()
+
+
+@pytest.fixture
 def db_helpers(tmp_path):
     conn = store.connect(tmp_path / "synopticon.db")
 
