@@ -13,8 +13,10 @@ Wave 1:
 
 Auth model (see the web-GUI plan §7):
 
-* Session cookie (HttpOnly, SameSite=Lax, ``Secure`` when the request scheme is
-  https — honoured behind a reverse proxy via uvicorn ``--proxy-headers``).
+* Session cookie (HttpOnly, SameSite=Lax, ``Secure`` when the effective scheme
+  is https — resolved by Synopticon's own ``clientip.ProxyHeaders``, honoured
+  only from an address listed in ``[security] trusted_proxies``; uvicorn's own
+  proxy-header handling is switched off explicitly).
 * ``Authorization: Bearer syn_...`` API-key path for ``/api`` (immune to CSRF by
   construction — no cookie involved).
 * First boot (no users yet): only ``/setup``, ``/api/setup/*`` and
@@ -34,6 +36,7 @@ requests. ``/crops`` are personal photos and require a session like every page.
 """
 
 import asyncio
+import html
 import itertools
 import json
 import logging
@@ -49,12 +52,13 @@ from urllib.parse import quote
 
 from ..db import Connection
 
+from . import auth, clientip
 from ..config import Settings
 from ..db import store
 
 _DIST_DIR = Path(__file__).parent / "dist"
 
-SESSION_COOKIE = "synopticon_session"
+SESSION_COOKIE = auth.SESSION_COOKIE
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "interrupted"})
 
@@ -84,6 +88,38 @@ _SHELL_CACHE_CONTROL = "no-cache"
 #: dominates an idle GUI — every poll opened its own connection — and only ever
 #: paid off during a crop burst. 30 s covers the pollers as well.
 _AUTH_CACHE_TTL = 30.0
+
+#: The auth cache's memory bound (F4). A stolen cookie replayed with N distinct
+#: User-Agent values, now that the cache key folds in the client facts, mints N
+#: entries; the insert site evicts the entry with the earliest deadline until
+#: the cache is back under this cap. Never a wholesale `clear()` -- that would
+#: convert the same flood into a tool for evicting every signed-in user's
+#: verdict at once.
+_AUTH_CACHE_MAX = 4096
+
+#: Minimum gap between two "refused by network allowlist" log lines for the
+#: same address (dict cleared past 1024 keys) -- a per-denied-request write
+#: would otherwise make the allowlist itself a log-flooding vector for the
+#: exact traffic it exists to reject.
+_DENIED_LOG_INTERVAL = 60.0
+
+#: The HTML denial page for a browser refused by the network allowlist (section
+#: 5.4). A 403 here would otherwise loop back to /login, which is refused too.
+_DENIED_HTML = """<!doctype html>
+<html><head><meta charset="utf-8"><title>Access denied</title></head>
+<body>
+<p>This address is not allowed to reach Synopticon.</p>
+<p>Your address: {ip}</p>
+<pre>
+To fix this from the server:
+
+    synopticon web-access --clear
+
+then restart the web process (docker compose restart synopticon) -- the
+configuration is read once at start-up.
+</pre>
+</body></html>
+"""
 
 log = logging.getLogger("synopticon.web")
 
@@ -250,6 +286,7 @@ def create_app(
     from fastapi import FastAPI, Request
     from fastapi.responses import (
         FileResponse,
+        HTMLResponse,
         JSONResponse,
         RedirectResponse,
         StreamingResponse,
@@ -306,7 +343,55 @@ def create_app(
     dist = Path(dist_dir) if dist_dir is not None else _DIST_DIR
     dist_root = dist.resolve()
     app_version = _package_version()
-    limiter = auth.LoginRateLimiter()
+
+    # Construction only -- _AuthMiddleware and api_login (defined further down
+    # in this function) close over these locals. The app.state publication that
+    # exposes them to routes in other modules happens after `app` is bound,
+    # below.
+    trusted_proxies = clientip.parse_networks(settings.security.trusted_proxies)
+    allowlist = clientip.IPAllowlist(
+        settings.security.allow_from, settings.security.allow_private_networks
+    )
+    limiter = auth.LoginRateLimiter(
+        ip_max_failures=settings.security.max_failures_per_address,
+        ip_window_seconds=settings.security.address_window_minutes * 60,
+        ip_block_seconds=settings.security.address_block_minutes * 60,
+    )
+    auth.authlog.configure(
+        enabled=settings.security.sign_in_log,
+        max_age_days=settings.security.sign_in_log_days,
+        max_rows=settings.security.sign_in_log_max_entries,
+    )
+
+    if settings.security.allow_from and not settings.security.trusted_proxies:
+        log.warning(
+            "[security] allow_from is set but [security] trusted_proxies is empty. If "
+            "Synopticon sits behind a reverse proxy, every visitor arrives as the proxy's "
+            "own address: the address list will restrict nobody, and per-address sign-in "
+            "limits will count all your visitors as one. Set [security] trusted_proxies to "
+            "the proxy's address or subnet, configure that proxy to OVERWRITE "
+            "X-Forwarded-For (nginx: proxy_set_header X-Forwarded-For $remote_addr;), and "
+            "restart. Then check Settings -> Access."
+        )
+    if any(
+        net.version == lb.version and net.overlaps(lb)
+        for net in trusted_proxies
+        for lb in clientip.LOOPBACK
+    ):
+        log.warning(
+            "[security] trusted_proxies lists a loopback address, so Synopticon believes "
+            "the X-Forwarded-For header on any connection from this machine. That proxy "
+            "MUST OVERWRITE the header -- nginx: proxy_set_header X-Forwarded-For "
+            "$remote_addr; Caddy and Traefik do this by default. A proxy that merely "
+            "passes the visitor's own X-Forwarded-For through (which is what a bare "
+            "`proxy_pass` with no proxy_set_header line does, because nginx relays client "
+            "headers by default) lets ANY visitor claim ANY address: the address list "
+            "becomes bypassable with one header and per-address sign-in limits stop "
+            "working. If the proxy forwards no address at all, every visitor instead "
+            "arrives as 127.0.0.1 and shares one budget. Listing loopback without "
+            "overwriting the header is strictly worse than not listing it. Check "
+            "Settings -> Access."
+        )
 
     # -- responsiveness watchdog ------------------------------------------- #
     # `in_flight` and `recently_done` are only ever touched from the event loop
@@ -327,6 +412,11 @@ def create_app(
     #: mint an entry per face crop (and a review page's worth of them all
     #: collapse into one log line, which is what you want to read anyway).
     slow_log_state: dict[str, tuple[float, int]] = {}
+    #: address -> last time a "refused by network allowlist" WARNING was
+    #: logged for it. Only ever touched from the event loop (the allowlist gate
+    #: runs in _AuthMiddleware), so it needs no lock -- same reasoning as
+    #: `in_flight` above.
+    _denied_log_seen: dict[str, float] = {}
 
     def _in_flight_report(now: float, since: float | None = None) -> str:
         """Requests still running, oldest first.
@@ -428,6 +518,13 @@ def create_app(
                 nas_session.reset()
 
     app = FastAPI(title="Synopticon", lifespan=lifespan)
+    # `app` is bound here, 121 lines after `limiter`/`allowlist`/`trusted_proxies`
+    # are constructed above -- this publication cannot be folded back into that
+    # construction (D9a). It is the only handle route 6 (api_change_password)
+    # and routes 19-20 have on the limiter.
+    app.state.login_limiter = limiter
+    app.state.ip_allowlist = allowlist
+    app.state.proxy_trust = trusted_proxies
     _add_gzip(app)
     # /assets public (hashed SPA bundle, no user data); mount only if the built
     # dist exists so create_app works without a build. /crops is guarded by auth.
@@ -471,45 +568,99 @@ def create_app(
     # -- auth helpers ------------------------------------------------------- #
     # Session cookie -> (ident, monotonic deadline). A review grid issues one
     # request per crop, and resolving the cookie from SQLite each time means a
-    # connection + query + occasional last_seen write per image. Only
-    # successfully validated credentials are stored, so a flood of bad cookies
-    # cannot grow this.
+    # connection + query + occasional last_seen write per image. The key now
+    # folds in the client facts (see `_credential`), which is the only thing
+    # standing between a stolen cookie and a 30 s pin-replay window -- so the
+    # cache must evict rather than grow without bound: the insert site below
+    # drops expired entries, then pops the earliest deadline until the cache is
+    # back under `_AUTH_CACHE_MAX`. It is NEVER `clear()`d wholesale except by
+    # the no-argument revocation call -- a wholesale flush under attack would
+    # convert a memory-growth problem into evicting every signed-in user's
+    # verdict at once.
     auth_cache: dict[str, tuple[Any, float]] = {}
     auth_cache_lock = threading.Lock()
 
-    def _invalidate_auth_cache(credential: str | None = None) -> None:
+    def _invalidate_auth_cache(
+        credential: str | None = None, *, prefix: str | None = None
+    ) -> None:
+        """Drop one cached verdict, every verdict for one session token, or all
+        of them.
+
+        ``prefix`` drops every entry whose key starts with it -- a session's
+        `cache_key` is `"s:<sha256(token)>:<sha256(facts)>"`, one row per
+        distinct client that has used the cookie, so a revocation has to sweep
+        by `cache_prefix(token)` rather than pop a single key. With neither
+        argument, every entry is cleared (used by `configio._drop_cached_auth`
+        and `security_routes._drop_cached_auth`, which have no single
+        credential to name).
+        """
         with auth_cache_lock:
+            if prefix is not None:
+                for key in [k for k in auth_cache if k.startswith(prefix)]:
+                    auth_cache.pop(key, None)
+                return
             if credential is None:
                 auth_cache.clear()
             else:
                 auth_cache.pop(credential, None)
 
-    def _authenticate(request: Request, c: Connection):
-        """Return ``("user", id)`` / ``("apikey", id)`` or ``None``."""
+    def _authenticate(request: Request, c: Connection) -> tuple[Any, str | None]:
+        """Return ``(ident, reason)``.
+
+        ``ident`` is ``("user", id)`` / ``("apikey", id)`` or ``None``.
+        ``reason`` is ``None`` except for a pin violation, which returns
+        ``(None, "pin")`` — the unauthenticated branch downstream tells that
+        case apart from an ordinary missing/expired credential so it can answer
+        with the pin-specific message and drop the browser's now-invalid
+        cookie.
+        """
         header = request.headers.get("authorization", "")
         if header.startswith("Bearer "):
             kid = auth.validate_api_key(c, header[len("Bearer ") :].strip())
             if kid is not None:
-                return ("apikey", kid)
+                return ("apikey", kid), None
+            return None, None
         token = request.cookies.get(SESSION_COOKIE)
         if token:
-            uid = auth.validate_session(c, token)
+            client = clientip.client_facts(request)
+            try:
+                uid = auth.validate_session(c, token, client=client)
+            except auth.SessionPinViolation as exc:
+                # Never the stored hash -- only the facts THIS request
+                # presented, which is what the operator needs to recognise
+                # "new phone" versus "someone else". `repr()` neutralises a
+                # newline in the User-Agent before it reaches uvicorn's plain
+                # StreamHandler.
+                log.warning(
+                    "session pin violation: ip=%s ua=%s destroyed=%s",
+                    clientip.client_ip(request),
+                    repr(client.user_agent[: clientip.UA_MAX]),
+                    exc.destroyed,
+                )
+                return None, "pin"
             if uid is not None:
-                return ("user", uid)
-        return None
+                return ("user", uid), None
+        return None, None
 
     def _credential(request: Request) -> str | None:
-        """The session cookie to cache this request's verdict under, if any.
+        """The auth-cache key to cache this request's verdict under, if any.
 
         Session cookies only. The burst this cache exists for is a browser
         fetching a page's worth of crops, and a browser never sends a Bearer
         header — so API keys skip the cache entirely and keep exact revocation
         semantics (revoke it in the DB by any means and the next call is 401).
+
+        The key includes the client facts (``sessions.cache_key``), so a
+        cached verdict can never be replayed by a different client within the
+        TTL — the whole point of session pinning would otherwise be defeated by
+        timing alone.
         """
         if request.headers.get("authorization", "").startswith("Bearer "):
             return None
         token = request.cookies.get(SESSION_COOKIE)
-        return ("s:" + token) if token else None
+        if not token:
+            return None
+        return auth.cache_key(token, clientip.client_facts(request))
 
     def _anonymous(request: Request) -> bool:
         """True when the request presents no credential of any kind.
@@ -526,13 +677,16 @@ def create_app(
     # route), so first boot is a one-way latch: cache it and stop querying.
     have_users = False
 
-    def _auth_lookup(request: Request) -> tuple[Any, bool]:
-        """Blocking auth resolution: ``(ident, first_boot)``.
+    def _auth_lookup(request: Request) -> tuple[Any, bool, str | None]:
+        """Blocking auth resolution: ``(ident, first_boot, reason)``.
 
         Runs in the threadpool — never on the event loop. Opening a SQLite
         connection and reading from it can block for as long as the DB lock is
         held, and doing that on the loop stalls every other in-flight request
         with it (a single slow query becomes a server-wide stall).
+
+        ``reason`` is ``"pin"`` when a live session was presented by a client
+        it was not pinned to (section 6 step 21); ``None`` otherwise.
         """
         nonlocal have_users
         credential = _credential(request)
@@ -541,24 +695,57 @@ def create_app(
             with auth_cache_lock:
                 hit = auth_cache.get(credential)
                 if hit is not None and hit[1] > now:
-                    return hit[0], False
+                    return hit[0], False, None
         # No credential at all, and we already know an account exists: the
         # verdict is "anonymous" without asking the database. This is the whole
         # of the healthcheck path (a loopback poller has no cookie) and of every
         # 401, both of which otherwise opened a connection to learn nothing.
         if have_users and _anonymous(request):
-            return None, False
+            return None, False, None
+        header = request.headers.get("authorization", "")
         c = conn()
         try:
             if not have_users:
                 have_users = auth.has_users(c)
-            ident = _authenticate(request, c)
+            ident, reason = _authenticate(request, c)
+            if ident is None and reason is None and header.startswith("Bearer "):
+                # A rejected access key. Never on a successful key (that would
+                # turn a polling script into thousands of rows a day) and only
+                # when the operator has not turned this switch off; bounded to
+                # one row per address prefix per minute so a looping client
+                # with a stale key cannot flood the log.
+                if settings.security.log_failed_api_keys:
+                    ip = clientip.client_ip(request)
+                    if auth.authlog.blocked_log.allow(f"apikey:{clientip.ip_prefix(ip)}"):
+                        auth.record_attempt(
+                            c,
+                            event="api_key",
+                            outcome="failure",
+                            reason="unknown_or_revoked_key",
+                            ip=ip,
+                            user_agent=clientip.user_agent(request),
+                        )
+            if reason == "pin":
+                token = request.cookies.get(SESSION_COOKIE)
+                if token:
+                    # The legitimate browser must not keep working off the
+                    # cache for up to _AUTH_CACHE_TTL after this session was
+                    # destroyed (or, for an unpinnable client=None violation,
+                    # while its facts keep disagreeing every request).
+                    _invalidate_auth_cache(prefix=auth.cache_prefix(token))
         finally:
             c.close()
         if credential is not None and have_users and ident is not None:
             with auth_cache_lock:
-                auth_cache[credential] = (ident, time.monotonic() + _AUTH_CACHE_TTL)
-        return ident, not have_users
+                now = time.monotonic()
+                deadline = now + _AUTH_CACHE_TTL
+                for key in [k for k, (_, dl) in auth_cache.items() if dl <= now]:
+                    auth_cache.pop(key, None)
+                auth_cache[credential] = (ident, deadline)
+                while len(auth_cache) > _AUTH_CACHE_MAX:
+                    oldest = min(auth_cache, key=lambda k: auth_cache[k][1])
+                    auth_cache.pop(oldest, None)
+        return ident, not have_users, reason
 
     # -- middleware --------------------------------------------------------- #
     # All three layers below are *pure ASGI*, not Starlette's BaseHTTPMiddleware
@@ -602,6 +789,7 @@ def create_app(
             request = Request(scope, receive)
             path = scope["path"]
             method = scope["method"]
+            is_api = path.startswith("/api/")
 
             async def forward(response=None):
                 if response is not None:
@@ -625,6 +813,45 @@ def create_app(
                 await forward()
                 return
 
+            # Network allowlist. Placed here -- after the health short-circuit,
+            # before the /assets/ bypass and everything else -- because both of
+            # those `forward()` ahead of every auth decision, and a gate placed
+            # any later would silently exempt the whole SPA bundle from a
+            # feature whose help text promises it covers "the app bundle" and
+            # refuses an address "before it can even see the sign-in page". No
+            # connection is opened, no worker thread is taken, no scrypt runs,
+            # and nothing is written to web_auth_log -- a per-denied-request DB
+            # write would turn the gate into a write amplifier for exactly the
+            # traffic it exists to reject. Loopback is allowed unconditionally
+            # (clientip RULE 4); the throttle below still throttles it like any
+            # other address -- the two features make opposite trades on the
+            # same address on purpose.
+            if allowlist.active and not allowlist.allows(clientip.client_ip(request)):
+                ip = clientip.client_ip(request)
+                now = time.monotonic()
+                last = _denied_log_seen.get(ip)
+                if last is None or now - last >= _DENIED_LOG_INTERVAL:
+                    if len(_denied_log_seen) > 1024:
+                        _denied_log_seen.clear()
+                    _denied_log_seen[ip] = now
+                    log.warning("refused by network allowlist: %s", ip)
+                if is_api:
+                    denial = JSONResponse(
+                        {
+                            "error": "This address is not allowed to reach Synopticon.",
+                            "client_ip": ip,
+                            "blocked": True,
+                        },
+                        status_code=403,
+                    )
+                else:
+                    denial = HTMLResponse(
+                        _DENIED_HTML.format(ip=html.escape(ip)), status_code=403
+                    )
+                denial.headers["Cache-Control"] = "no-store"
+                await forward(denial)
+                return
+
             # Hashed SPA bundle: public so /login and /setup can load before a
             # session exists (mirrors the old /static bypass).
             if path.startswith("/assets/"):
@@ -636,7 +863,6 @@ def create_app(
             # /setup unauth'd). /api and /crops paths can never name a dist
             # file, so skip the stat() for them — /crops in particular is one
             # request per face crop.
-            is_api = path.startswith("/api/")
             if (
                 not is_api
                 and not path.startswith("/crops/")
@@ -660,14 +886,17 @@ def create_app(
             # and it keeps every 401 independent of a threadpool a running job
             # can saturate.
             if have_users and _anonymous(request):
-                ident, first_boot = None, False
+                ident, first_boot, auth_reason = None, False, None
             else:
-                ident, first_boot = await run_in_threadpool(_auth_lookup, request)
+                ident, first_boot, auth_reason = await run_in_threadpool(
+                    _auth_lookup, request
+                )
             # Written into the shared scope, which is the same dict the route
             # handler's own Request wraps — `request.state.ident` downstream.
             state = scope.setdefault("state", {})
             state["ident"] = ident
             state["first_boot"] = first_boot
+            state["auth_reason"] = auth_reason
 
             # CSRF: mutating API calls must be JSON (cookie is SameSite=Lax; a
             # cross-site form post cannot set application/json).
@@ -711,6 +940,7 @@ def create_app(
                 path == "/login"
                 or path == "/api/auth/me"
                 or (path == "/api/auth/login" and method == "POST")
+                or (path == "/api/auth/login/verify" and method == "POST")
             ):
                 await forward()
                 return
@@ -721,6 +951,26 @@ def create_app(
                 return
 
             if ident is None:
+                if auth_reason == "pin":
+                    # A live session was presented by a client it was not
+                    # pinned to. Different from an ordinary missing/expired
+                    # credential: the browser has to be told to drop the
+                    # cookie it is holding, not just sign in again.
+                    if is_api:
+                        denial = JSONResponse(
+                            {
+                                "error": "signed out — this browser or network changed",
+                                "reason": "pin",
+                            },
+                            status_code=401,
+                        )
+                    else:
+                        denial = RedirectResponse(
+                            f"/login?next={quote(path)}&reason=pin", status_code=302
+                        )
+                    denial.delete_cookie(SESSION_COOKIE, path="/")
+                    await forward(denial)
+                    return
                 if is_api:
                     await forward(
                         JSONResponse(
@@ -827,35 +1077,113 @@ def create_app(
     app.add_middleware(_AuthMiddleware)
     app.add_middleware(_NoStoreAPI)
     app.add_middleware(_RequestTiming)
+    # Outermost. Added last, so it wraps the timing layer and everything under
+    # it: the auth middleware's allowlist gate, its /api/health short-circuit
+    # and every route see scope["synopticon.client"] already attached.
+    app.add_middleware(clientip.ProxyHeaders, trusted=trusted_proxies)
 
     # -- auth helpers ------------------------------------------------------- #
     def _set_session_cookie(resp, token: str, request: Request) -> None:
         """Attach the session cookie (HttpOnly, SameSite=Lax, 30d).
 
-        ``Secure`` follows the effective scheme so a TLS-terminating reverse
-        proxy (uvicorn ``--proxy-headers``) gets a Secure cookie over https.
+        ``Secure`` follows ``clientip.client_scheme``, not
+        ``request.url.scheme``: uvicorn's own proxy-header handling is switched
+        off explicitly (``serve()`` passes ``proxy_headers=False``), so the
+        effective scheme behind a reverse proxy comes from Synopticon's own
+        ``clientip.ProxyHeaders`` and is only trusted from an address listed in
+        ``[security] trusted_proxies``. Out of the box (no listed proxy) the
+        cookie is ``Secure`` only over a direct https connection.
         """
         resp.set_cookie(
             SESSION_COOKIE,
             token,
             httponly=True,
             samesite="lax",
-            secure=request.url.scheme == "https",
+            secure=clientip.client_scheme(request) == "https",
             max_age=30 * 86400,
             path="/",
         )
 
     # -- auth: create-account / JSON login / logout / me (SPA) -------------- #
+    def _rate_limited(t) -> JSONResponse:
+        """The one 429 body used by every throttled route in this file (section
+        5.4). The tier that fired is never named -- that would itself be an
+        oracle -- and the recovery line always names
+        ``max_failures_per_address``, the one config key that can disable the
+        address tier, even when it was the pair tier that actually blocked
+        (which clears on its own well within a user's patience).
+        """
+        return JSONResponse(
+            {
+                "error": f"Too many attempts — try again in {t.retry_after} seconds.",
+                "retry_after": t.retry_after,
+                "recovery": (
+                    "If this is your own address and you cannot get back in, set "
+                    "[security] max_failures_per_address = 0 in config.toml and "
+                    "restart Synopticon."
+                ),
+            },
+            status_code=429,
+            headers={"Retry-After": str(t.retry_after)},
+        )
+
+    def _blocked_log_row(event: str, ip: str, ua: str, username: str | None = None) -> None:
+        """Record at most one row per address prefix per minute for a blocked
+        anonymous attempt. An attacker who ignores 429 keeps sending; without
+        this gate a per-attempt connection + INSERT turns the throttle itself
+        into a write amplifier for exactly the traffic it exists to reject.
+        """
+        if auth.authlog.blocked_log.allow(f"blocked:{clientip.ip_prefix(ip)}"):
+            c = conn()
+            try:
+                auth.record_attempt(
+                    c,
+                    event=event,
+                    outcome="blocked",
+                    reason="rate_limited",
+                    username=username,
+                    ip=ip,
+                    user_agent=ua,
+                )
+            finally:
+                c.close()
+
+    async def _json_object(request: Request) -> dict | None:
+        """The request body as a dict, or None for anything else.
+
+        These three routes sit in the middleware's allowlist, so an anonymous
+        client reaches them before any throttle charge. An unguarded parse
+        turned `[]`, `"x"` or malformed JSON into an unlogged 500 with a
+        traceback per hit -- free noise to bury the sign-in log's warnings in.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return None
+        return body if isinstance(body, dict) else None
+
     @app.post("/api/auth/create-account")
     async def api_create_account(request: Request):
         # Reachable only during first boot (middleware blocks it afterwards).
-        body = await request.json()
+        body = await _json_object(request)
+        if body is None:
+            return JSONResponse(
+                {"error": "body must be a JSON object"}, status_code=422
+            )
         username = (body.get("username") or "").strip()
         password = body.get("password") or ""
         if not username or not password:
+            # A 422 for a missing field must never touch the throttle -- it is
+            # a form slip on the one attempt a first-time user gets, and arming
+            # a growing lockout on it is a self-inflicted setup failure.
             return JSONResponse(
                 {"error": "username and password are required"}, status_code=422
             )
+
+        resolved = clientip.resolved(request)
+        t = limiter.verdict(resolved, username, scope="create_account")
+        if not t.allowed:
+            return _rate_limited(t)
 
         def work():
             c = conn()
@@ -863,7 +1191,17 @@ def create_app(
                 if auth.has_users(c):
                     return None
                 uid = auth.create_user(c, username, password)
-                return uid, auth.create_session(c, uid)
+                token = auth.create_session(c, uid, client=clientip.client_facts(request))
+                auth.record_attempt(
+                    c,
+                    event="create_account",
+                    outcome="success",
+                    username=username,
+                    user_id=uid,
+                    ip=resolved.ip,
+                    user_agent=clientip.user_agent(request),
+                )
+                return uid, token
             finally:
                 c.close()
 
@@ -871,10 +1209,34 @@ def create_app(
         try:
             created = await run_in_threadpool(work)
         except auth.UsernameTakenError:
+            # The pair tier is armed here, and here alone (F13): with no users
+            # yet the middleware already answers 403 for every other post-boot
+            # attempt, so this branch needs an actual race between two
+            # concurrent first-boot posts to fire outside the shared address
+            # window.
+            limiter.record_failure(resolved, username, scope="create_account")
+
+            def log_taken():
+                c = conn()
+                try:
+                    auth.record_attempt(
+                        c,
+                        event="create_account",
+                        outcome="failure",
+                        reason="username_taken",
+                        username=username,
+                        ip=resolved.ip,
+                        user_agent=clientip.user_agent(request),
+                    )
+                finally:
+                    c.close()
+
+            await run_in_threadpool(log_taken)
             return JSONResponse({"error": "username taken"}, status_code=409)
         if created is None:
             return JSONResponse({"error": "account already exists"}, status_code=403)
         uid, token = created
+        limiter.record_success(resolved, username, scope="create_account")
         resp = JSONResponse({"ok": True, "user_id": uid}, status_code=201)
         _set_session_cookie(resp, token, request)
         return resp
@@ -882,36 +1244,233 @@ def create_app(
     # -- auth: JSON login / logout / me (SPA) ------------------------------- #
     @app.post("/api/auth/login")
     async def api_login(request: Request):
-        body = await request.json()
+        body = await _json_object(request)
+        if body is None:
+            return JSONResponse(
+                {"error": "body must be a JSON object"}, status_code=422
+            )
         username = (body.get("username") or "").strip()
         password = body.get("password") or ""
-        ip = request.client.host if request.client else "?"
-        if not limiter.check(ip, username):
-            return JSONResponse(
-                {"error": "Too many attempts — try again shortly."}, status_code=429
+        resolved = clientip.resolved(request)
+        ua = clientip.user_agent(request)
+
+        # Throttle verdict from in-memory state, on the loop, before any
+        # connection or worker thread (D9c) -- both tiers are always armed, on
+        # the one resolved address, with no trust parameter of any kind.
+        t = limiter.verdict(resolved, username)
+        if not t.allowed:
+            await run_in_threadpool(
+                _blocked_log_row, "login", resolved.ip, ua, username
             )
+            return _rate_limited(t)
 
         def work():
             c = conn()
             try:
                 uid = auth.verify_password(c, username, password)
+                needs_code = auth.challenge_required(c, username, uid)
+                if needs_code:
+                    token = auth.start_login_challenge(
+                        c, username, uid,
+                        ttl_seconds=settings.security.login_challenge_ttl,
+                    )
+                    auth.record_attempt(
+                        c,
+                        event="login",
+                        outcome="pending",
+                        reason="password_ok" if uid else "password_bad",
+                        username=username,
+                        user_id=uid,
+                        ip=resolved.ip,
+                        user_agent=ua,
+                    )
+                    return ("challenge", token, settings.security.login_challenge_ttl)
                 if uid is None:
+                    auth.record_attempt(
+                        c,
+                        event="login",
+                        outcome="failure",
+                        reason=(
+                            "bad_credentials"
+                            if (username and password)
+                            else "missing_credentials"
+                        ),
+                        username=username,
+                        ip=resolved.ip,
+                        user_agent=ua,
+                    )
                     return None
-                return auth.create_session(c, uid)
+                token = auth.create_session(c, uid, client=clientip.client_facts(request))
+                auth.record_attempt(
+                    c,
+                    event="login",
+                    outcome="success",
+                    username=username,
+                    user_id=uid,
+                    ip=resolved.ip,
+                    user_agent=ua,
+                )
+                return ("session", token)
             finally:
                 c.close()
 
         # verify_password runs scrypt (n=2**14) on both the hit and the miss
         # path — ~100 ms of pure CPU. On the event loop that stalls every other
         # in-flight request, so a login freezes the whole GUI.
-        token = await run_in_threadpool(work)
-        if token is None:
-            limiter.record_failure(ip, username)
+        result = await run_in_threadpool(work)
+        if result is None:
+            limiter.record_failure(resolved, username)
             return JSONResponse(
                 {"error": "Invalid username or password."}, status_code=401
             )
-        limiter.record_success(ip, username)
+        if result[0] == "challenge":
+            _, challenge, ttl = result
+            # Feeds the pair *attempt* window (never the exponential backoff)
+            # and the address window -- this is what still bounds guessing once
+            # anyone on the instance is enrolled, because challenge_required
+            # sends every wrong password down this branch and record_failure is
+            # never reached here at all.
+            limiter.record_pending(resolved, username)
+            return JSONResponse(
+                {"mfa_required": True, "challenge": challenge, "expires_in": ttl}
+            )
+        _, token = result
+        limiter.record_success(resolved, username)
         resp = JSONResponse({"ok": True, "username": username})
+        _set_session_cookie(resp, token, request)
+        return resp
+
+    @app.post("/api/auth/login/verify")
+    async def api_login_verify(request: Request):
+        body = await _json_object(request)
+        if body is None:
+            return JSONResponse(
+                {"error": "body must be a JSON object"}, status_code=422
+            )
+        challenge = (body.get("challenge") or "").strip()
+        code = (body.get("code") or "").strip()
+        resolved = clientip.resolved(request)
+        ua = clientip.user_agent(request)
+
+        def restart() -> JSONResponse:
+            return JSONResponse(
+                {"error": "Sign in timed out — start again.", "restart": True},
+                status_code=401,
+            )
+
+        # Step 11: the address tier ALONE, before hop A -- this route needs no
+        # session and sits in the users-exist allowlist beside /api/auth/login,
+        # so without this a client posting random challenge strings buys a
+        # connection and a worker thread per request with no charge at all.
+        t0 = limiter.verdict_address(resolved, scope="totp")
+        if not t0.allowed:
+            await run_in_threadpool(_blocked_log_row, "login_code", resolved.ip, ua)
+            return _rate_limited(t0)
+
+        def peek():
+            c = conn()
+            try:
+                taken = auth.peek_login_challenge(
+                    c, challenge, max_attempts=settings.security.login_code_attempts
+                )
+                if taken is None:
+                    auth.record_attempt(
+                        c,
+                        event="login_code",
+                        outcome="failure",
+                        reason="unknown_challenge",
+                        username=None,
+                        ip=resolved.ip,
+                        user_agent=ua,
+                    )
+                return taken
+            finally:
+                c.close()
+
+        # Hop A: non-consuming peek, so a blocked replay of a stolen challenge
+        # cannot burn the real user's remaining code attempts.
+        taken = await run_in_threadpool(peek)
+        if taken is None:
+            limiter.record_address(resolved, scope="totp")
+            return restart()
+        username, _peeked_uid = taken
+
+        # Step 13: the full pair verdict, now that hop A named the account.
+        t1 = limiter.verdict(resolved, username, scope="totp")
+        if not t1.allowed:
+            await run_in_threadpool(
+                _blocked_log_row, "login_code", resolved.ip, ua, username
+            )
+            return _rate_limited(t1)
+
+        def judge():
+            c = conn()
+            try:
+                row = auth.take_login_challenge(
+                    c, challenge, max_attempts=settings.security.login_code_attempts
+                )
+                if row is None:
+                    return ("restart",)
+                row_username, uid = row
+                accepted = False
+                if uid is not None:
+                    if auth.verify_totp(
+                        c, uid, code, skew=settings.security.totp_skew_steps
+                    ):
+                        accepted = True
+                    elif auth.consume_recovery_code(c, uid, code):
+                        accepted = True
+                if not accepted:
+                    limiter.record_failure(resolved, row_username, scope="totp")
+                    # Unconditionally, and never behind `if uid is None`: the
+                    # password scope is what /api/auth/login reads, so arming it
+                    # only for a wrong password makes the next login's 429 a
+                    # read-out of whether the password was right -- a three
+                    # request password oracle against the very accounts a
+                    # second factor is supposed to protect.
+                    limiter.record_failure(resolved, row_username, scope="password")
+                    auth.record_attempt(
+                        c,
+                        event="login_code",
+                        outcome="failure",
+                        reason="bad_code" if uid else "bad_password",
+                        username=row_username,
+                        user_id=uid,
+                        ip=resolved.ip,
+                        user_agent=ua,
+                    )
+                    return ("rejected",)
+                token = auth.create_session(c, uid, client=clientip.client_facts(request))
+                auth.delete_login_challenge(c, challenge)
+                recovery_remaining = auth.count_recovery_codes(c, uid)
+                auth.record_attempt(
+                    c,
+                    event="login_code",
+                    outcome="success",
+                    username=row_username,
+                    user_id=uid,
+                    ip=resolved.ip,
+                    user_agent=ua,
+                )
+                limiter.record_success(resolved, row_username, scope="totp")
+                limiter.record_success(resolved, row_username)
+                return ("accepted", row_username, token, recovery_remaining)
+            finally:
+                c.close()
+
+        outcome = await run_in_threadpool(judge)
+        if outcome[0] == "restart":
+            return restart()
+        if outcome[0] == "rejected":
+            return JSONResponse({"error": "That code was not accepted."}, status_code=401)
+        _, accepted_username, token, recovery_remaining = outcome
+        resp = JSONResponse(
+            {
+                "ok": True,
+                "username": accepted_username,
+                "recovery_remaining": recovery_remaining,
+            }
+        )
         _set_session_cookie(resp, token, request)
         return resp
 
@@ -921,13 +1480,29 @@ def create_app(
         if token:
             c = conn()
             try:
+                client = clientip.client_facts(request)
+                try:
+                    uid = auth.validate_session(c, token, client=client)
+                except auth.SessionPinViolation:
+                    uid = None
+                username = auth.username_for(c, uid) if uid is not None else None
                 auth.delete_session(c, token)
+                auth.record_attempt(
+                    c,
+                    event="logout",
+                    outcome="success",
+                    username=username,
+                    user_id=uid,
+                    ip=clientip.client_ip(request),
+                    user_agent=clientip.user_agent(request),
+                )
             finally:
                 c.close()
-            # The middleware trusts a validated token for _AUTH_CACHE_TTL; a
-            # logout must take effect on the very next request, not when the
-            # entry happens to expire.
-            _invalidate_auth_cache("s:" + token)
+            # The middleware trusts a validated cookie for _AUTH_CACHE_TTL; a
+            # logout must take effect on the very next request. The cache key
+            # now folds in the client facts, so one token can own several
+            # entries -- the sweep is by prefix, not by a single key.
+            _invalidate_auth_cache(prefix=auth.cache_prefix(token))
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(SESSION_COOKIE, path="/")
         return resp
@@ -947,18 +1522,25 @@ def create_app(
     @app.get("/api/auth/me")
     def api_me(request: Request):
         """Auth state for the SPA router guard. Always 200 (even unauthenticated
-        and during first boot) — allowlisted in both middleware branches."""
+        and during first boot) — allowlisted in both middleware branches.
+
+        `totp_enabled` and `session_pinning` describe THE CALLER'S OWN account
+        and are `None` whenever `ident` is `None` or not a user session -- this
+        route answers 200 to anybody, and on a single-admin instance "nobody
+        here has a second factor" would be a direct invitation.
+        """
         first_boot = bool(getattr(request.state, "first_boot", False))
         ident = getattr(request.state, "ident", None)
         username = None
+        totp_enabled = None
+        session_pinning = None
         authenticated = ident is not None
         if ident and ident[0] == "user":
             c = conn()
             try:
-                row = c.execute(
-                    "SELECT username FROM web_users WHERE id = ?", (ident[1],)
-                ).fetchone()
-                username = row["username"] if row else None
+                username = auth.username_for(c, ident[1])
+                totp_enabled = auth.totp_enabled(c, ident[1])
+                session_pinning = auth.get_pin_mode(c, ident[1])
             finally:
                 c.close()
         return {
@@ -966,6 +1548,8 @@ def create_app(
             "username": username,
             "first_boot": first_boot,
             "version": app_version,
+            "totp_enabled": totp_enabled,
+            "session_pinning": session_pinning,
         }
 
     # -- API: stats / audit ------------------------------------------------- #
@@ -1361,6 +1945,10 @@ def create_app(
 
     register_config_routes(app, settings, conn, jm)
 
+    from .security_routes import register_security_routes
+
+    register_security_routes(app, settings, conn, limiter, allowlist, trusted_proxies)
+
     from .quickmerger import register_quickmerger_routes
 
     register_quickmerger_routes(app, settings, conn)
@@ -1422,9 +2010,14 @@ def create_app(
 def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8686) -> None:
     """Run the web GUI. Requires the [review] extra.
 
-    ``proxy_headers`` is enabled so a TLS-terminating reverse proxy can pass
-    ``X-Forwarded-Proto``; the session cookie's ``Secure`` flag then follows the
-    effective scheme.
+    Proxy headers are honoured by Synopticon's own ``ProxyHeaders`` middleware,
+    and only from the addresses in ``[security] trusted_proxies`` — which is
+    empty by default, so out of the box no header is believed and the socket
+    peer is used. uvicorn's own ``--proxy-headers`` handling is switched off
+    explicitly (it defaults to on, trusting loopback, and this deployment
+    terminates TLS on loopback). The session cookie's ``Secure`` flag follows
+    ``clientip.client_scheme``, not ``request.url.scheme``, so it only becomes
+    ``Secure`` once the proxy is listed.
     """
     _require_fastapi()
     import uvicorn
@@ -1446,12 +2039,24 @@ def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8686) -> None
     )
     _t0 = time.monotonic()
     app = create_app(settings)
+    # `create_app` does not know the bind host, so warning 3 below and route
+    # 17's diagnostics read it from here.
+    app.state.bind_host = host
     print(
         f"synopticon web: initialised in {time.monotonic() - _t0:.1f}s, "
         f"binding {host}:{port}",
         file=sys.stderr,
         flush=True,
     )
+    if clientip.is_loopback(host) and not settings.security.trusted_proxies:
+        log.warning(
+            "synopticon web is bound to 127.0.0.1, so it is reachable only from this "
+            "machine or through a proxy running on it, and [security] trusted_proxies is "
+            "empty. If a proxy is in front, every visitor arrives as 127.0.0.1: an address "
+            "list cannot restrict them and they all share one per-address sign-in budget. "
+            "List the proxy in [security] trusted_proxies and configure it to overwrite "
+            "X-Forwarded-For (nginx: proxy_set_header X-Forwarded-For $remote_addr;)."
+        )
     # The watchdog's findings are only useful if they reach the container log, so
     # route ``synopticon.web`` through uvicorn's own stderr handler rather than
     # leaving it to ``logging.lastResort`` (unformatted, and easy to mistake for
@@ -1467,7 +2072,12 @@ def serve(settings: Settings, host: str = "127.0.0.1", port: int = 8686) -> None
         app,
         host=host,
         port=port,
-        proxy_headers=True,
-        forwarded_allow_ips="*",
+        # Explicit, never omitted. uvicorn defaults proxy_headers to True with
+        # forwarded_allow_ips = $FORWARDED_ALLOW_IPS or "127.0.0.1", which would
+        # install a second, env-settable trust list in front of
+        # clientip.ProxyHeaders, rewrite scope["client"] before we ever see it,
+        # and on the documented loopback+nginx topology it would fire on every
+        # request.
+        proxy_headers=False,
         log_config=log_config,
     )
