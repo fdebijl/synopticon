@@ -25,7 +25,7 @@ from .sessions import (
     purge_expired,
     validate_session,
 )
-from .throttle import LoginRateLimiter
+from .throttle import LoginRateLimiter, Throttle
 from .users import UsernameTakenError, change_password, create_user, has_users, list_users, username_for, verify_password
 
 __all__ = [
@@ -55,5 +55,6 @@ __all__ = [
     "revoke_api_key",
     "list_api_keys",
     # login throttling
+    "Throttle",
     "LoginRateLimiter",
 ]

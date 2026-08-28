@@ -250,13 +250,31 @@ def test_rate_limiter_backoff_doubles(conn):
 
 def test_rate_limiter_cap(conn):
     clock = FakeClock()
-    rl = auth.LoginRateLimiter(base_seconds=2.0, cap_seconds=5.0, clock=clock)
+    # pair_max_attempts=0 disables the attempt window, leaving exactly what
+    # this test was written for: the exponential backoff's cap.
+    rl = auth.LoginRateLimiter(base_seconds=2.0, cap_seconds=5.0, pair_max_attempts=0, clock=clock)
     for _ in range(10):
         rl.record_failure("ip", "u")
     # delay capped at 5s regardless of failure count
     assert rl.check("ip", "u") is False
     clock.advance(5.0)
     assert rl.check("ip", "u") is True
+
+
+def test_rate_limiter_pair_attempt_window(conn):
+    # challenge_required sends every wrong password down the challenge branch
+    # once anyone is enrolled, so record_failure is never reached at step one
+    # -- this sliding window over record_pending is what bounds guessing there.
+    clock = FakeClock()
+    rl = auth.LoginRateLimiter(clock=clock)  # pair_max_attempts=10 default
+    ip, user = "ip", "u"
+    for _ in range(9):
+        rl.record_pending(ip, user)
+    assert rl.check(ip, user) is True
+    rl.record_pending(ip, user)  # tenth attempt trips the window
+    assert rl.check(ip, user) is False
+    rl.record_success(ip, user)  # clears the window, not only the backoff
+    assert rl.check(ip, user) is True
 
 
 def test_rate_limiter_success_resets(conn):
