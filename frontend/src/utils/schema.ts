@@ -83,6 +83,7 @@ export const SECTIONS = [
   'restoration',
   'clustering',
   'crossref',
+  'security',
 ] as const
 
 /** Human labels for tabs (config sections + the pseudo Access tab). */
@@ -95,6 +96,7 @@ export const LABELS: Record<string, string> = {
   restoration: 'Restoration',
   clustering: 'Face grouping',
   crossref: 'Crossref',
+  security: 'Security',
   models: 'Models',
   access: 'Access',
 }
