@@ -25,8 +25,16 @@ def test_migration_creates_web_tables(conn):
         r["name"]
         for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
-    assert {"web_users", "web_sessions", "web_api_keys"} <= names
-    assert conn.execute("PRAGMA user_version").fetchone()[0] >= 6
+    assert {
+        "web_users",
+        "web_sessions",
+        "web_api_keys",
+        "web_totp",
+        "web_recovery_codes",
+        "web_login_challenges",
+        "web_auth_log",
+    } <= names
+    assert conn.execute("PRAGMA user_version").fetchone()[0] >= 10
 
 
 def test_migration_idempotent(tmp_path):

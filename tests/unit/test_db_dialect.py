@@ -173,6 +173,8 @@ class TestIdentityDiscovery:
             "audit_log": "id",
             "web_users": "id",
             "web_api_keys": "id",
+            "web_recovery_codes": "id",
+            "web_auth_log": "id",
             "schedules": "id",
             "schedule_runs": "id",
         }
@@ -205,13 +207,18 @@ class TestEveryMigrationTranslates:
 
 
 def _declared_integer_columns() -> dict[str, set[str]]:
-    """`{table: {int columns}}` as migrations 1-8 declare them, identity ids aside."""
+    """`{table: {int columns}}` as the migrations *before* the widening one declare them.
+
+    0009 is a historical repair for PostgreSQL databases created before the DDL
+    translator emitted BIGINT. From version 10 on, every migration goes through
+    `translate_ddl` on fresh and upgrading installs alike, so its INTEGER is
+    already BIGINT everywhere and there is nothing left to widen.
+    """
     import re
 
     tables: dict[str, set[str]] = {}
-    for migration in store._MIGRATIONS:
-        if migration.name.endswith(".pg.sql"):
-            continue
+    pg_only = next(m for m in store._MIGRATIONS if m.name.endswith(".pg.sql"))
+    for migration in store._MIGRATIONS[: store._MIGRATIONS.index(pg_only)]:
         sql = migration.read_text()
         for m in re.finditer(
             r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)\s+INTEGER", sql, re.I
