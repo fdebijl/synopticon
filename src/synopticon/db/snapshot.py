@@ -28,7 +28,22 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = logging.getLogger("synopticon.db")
 
-__all__ = ["snapshot", "source_bytes"]
+__all__ = ["snapshot", "source_bytes", "SNAPSHOT_EXCLUDE"]
+
+#: Never copied into a snapshot. `web_totp.secret` is plaintext base32: a
+#: snapshot carrying it hands the holder a working second factor forever, and
+#: unlike a password hash there is nothing to crack. Recovery codes are the same
+#: credential by another name, and a live login challenge is a session in
+#: waiting. These are NOT removed from `copy.TABLES`: `db-migrate` and the
+#: backend switch must keep them, or moving to PostgreSQL silently un-enrols
+#: everyone. `web_auth_log` is deliberately NOT excluded -- it is evidence, it
+#: contains no credential, and an operator restoring a backup wants it. Nor is
+#: `web_sessions`: its new pin_hash is a sha256 of facts the holder of a backup
+#: can already observe, not a credential, and a restore is expected to bring
+#: sessions back.
+SNAPSHOT_EXCLUDE: frozenset[str] = frozenset(
+    {"web_totp", "web_recovery_codes", "web_login_challenges"}
+)
 
 
 def snapshot(settings: "Settings", dest: Path) -> Path:
@@ -74,6 +89,23 @@ def _snapshot_sqlite(db_path: Path, dest: Path) -> None:
     finally:
         raw.close()
 
+    # `VACUUM INTO` is a whole-file copy, so the excluded tables ride along in
+    # `dest` -- strip them from the copy, not the source. A table can be absent
+    # when `db_path` predates migration 10.
+    out = sqlite3.connect(dest, timeout=60)
+    try:
+        existing = {
+            row[0]
+            for row in out.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        for table in SNAPSHOT_EXCLUDE:
+            if table in existing:
+                out.execute(f"DELETE FROM {table}")
+        out.commit()
+        out.execute("VACUUM")
+    finally:
+        out.close()
+
 
 def _snapshot_postgres(settings: "Settings", dest: Path) -> None:
     from . import copy as db_copy
@@ -85,7 +117,7 @@ def _snapshot_postgres(settings: "Settings", dest: Path) -> None:
         # schema, which is exactly what `copy_database` expects of its target.
         target = store.connect(dest)
         try:
-            db_copy.copy_database(source, target)
+            db_copy.copy_database(source, target, skip=SNAPSHOT_EXCLUDE)
         finally:
             target.close()
     except BaseException:

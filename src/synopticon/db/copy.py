@@ -23,7 +23,9 @@ log = logging.getLogger("synopticon.db")
 #: Every table, ordered so a row's foreign-key targets are always copied first.
 #: `embeddings`/`cluster_members` reference `faces`; `clusters` references
 #: `cluster_runs`; `audit_log` references `review_queue`; `web_sessions`
-#: references `web_users`; `schedule_runs` references `schedules`.
+#: references `web_users`; `schedule_runs` references `schedules`;
+#: `web_totp`/`web_recovery_codes`/`web_login_challenges` reference `web_users`;
+#: `web_auth_log` deliberately references nothing.
 TABLES: tuple[str, ...] = (
     "photos",
     "persons",
@@ -41,6 +43,10 @@ TABLES: tuple[str, ...] = (
     "web_users",
     "web_sessions",
     "web_api_keys",
+    "web_totp",
+    "web_recovery_codes",
+    "web_login_challenges",
+    "web_auth_log",
     "schedules",
     "schedule_runs",
 )
@@ -72,6 +78,8 @@ def copy_database(
     source: Connection,
     target: Connection,
     progress: Progress | None = None,
+    *,
+    skip: frozenset[str] = frozenset(),
 ) -> dict[str, int]:
     """Copy every table from ``source`` into ``target``; returns rows per table.
 
@@ -79,11 +87,20 @@ def copy_database(
     and should be empty — a caller that skips :func:`non_empty_tables` will get
     duplicate-key failures rather than silent merging, which is the safer of the
     two outcomes but still not a supported mode.
+
+    ``skip`` names tables to leave out of *this* copy without touching
+    :data:`TABLES` itself. ``db-migrate`` and the backend switch call this with
+    no ``skip`` — they must carry every enrolment forward — while a database
+    snapshot passes its own exclusion set (``db/snapshot.py``'s
+    ``SNAPSHOT_EXCLUDE``) so a backup download never carries a plaintext second
+    factor. Defaulting to empty keeps every existing caller unchanged.
     """
     from .store import table_exists
 
     copied: dict[str, int] = {}
     for table in TABLES:
+        if table in skip:
+            continue
         if not table_exists(source, table):
             continue
         copied[table] = _copy_table(source, target, table, progress)
