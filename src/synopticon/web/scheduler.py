@@ -37,6 +37,7 @@ from typing import Callable
 from ..db import Connection
 
 from . import schedules
+from .auth import authlog, sessions, twofactor
 from .jobs import ConsentError, JobError, JobParamError, QueueFullError
 
 log = logging.getLogger(__name__)
@@ -46,6 +47,11 @@ _TICK = 20.0
 #: A firing this far in the past still runs on the next tick; older ones are
 #: recorded as missed. Covers a server restart, not a night off.
 _CATCHUP_GRACE = 300.0
+#: How often the housekeeping pass (expired sessions, expired login
+#: challenges, sign-in log retention) runs. Coarser than _TICK on purpose --
+#: none of the three is time-critical, and a bare SELECT + DELETE every 20 s
+#: would be wasted work on an idle instance.
+_HOUSEKEEP_INTERVAL = 3600.0
 
 
 class Scheduler:
@@ -64,6 +70,7 @@ class Scheduler:
         self._wake = threading.Event()
         self._stop = False
         self._thread: threading.Thread | None = None
+        self._last_housekeep = 0.0
 
     # -- lifecycle ---------------------------------------------------------- #
 
@@ -108,6 +115,8 @@ class Scheduler:
         recorded as missed and rolled forward.
         """
         now = time.time()
+        self._housekeeping()
+        self._last_housekeep = now
         try:
             c = self._conn()
         except Exception:  # noqa: BLE001
@@ -141,11 +150,66 @@ class Scheduler:
         finally:
             c.close()
 
+    # -- housekeeping ---------------------------------------------------------- #
+
+    def _housekeeping(self) -> None:
+        """Expired sessions, expired login challenges, sign-in log retention.
+
+        Runs unconditionally at every boot (`_bootstrap`) and at most once per
+        `_HOUSEKEEP_INTERVAL` thereafter (`tick`), on this thread with its own
+        connection -- off the event loop, inside a caller that already
+        swallows every exception. Session and challenge purges always run;
+        the sign-in log prune is the one gated on
+        `authlog.retention_policy()["enabled"]`, because turning the log off
+        promises the rows already there are kept, not aged out on the next
+        pass (R18). Each of the three gets its own try/except with a
+        rollback(), so one failing pass never blocks the other two or the
+        schedule firing that follows it.
+        """
+        try:
+            c = self._conn()
+        except Exception:  # noqa: BLE001
+            log.exception("scheduler could not open the database for housekeeping")
+            return
+        try:
+            try:
+                n = sessions.purge_expired(c)
+                if n:
+                    log.info("housekeeping: purged %d expired session(s)", n)
+            except Exception:  # noqa: BLE001
+                c.rollback()
+                log.exception("housekeeping: session purge failed")
+
+            try:
+                n = twofactor.purge_expired_challenges(c)
+                if n:
+                    log.info("housekeeping: purged %d expired login challenge(s)", n)
+            except Exception:  # noqa: BLE001
+                c.rollback()
+                log.exception("housekeeping: login-challenge purge failed")
+
+            policy = authlog.retention_policy()
+            if policy["enabled"]:
+                try:
+                    n = authlog.prune_auth_log(
+                        c, max_age_days=policy["days"], max_rows=policy["max_rows"]
+                    )
+                    if n:
+                        log.info("housekeeping: pruned %d sign-in log row(s)", n)
+                except Exception:  # noqa: BLE001
+                    c.rollback()
+                    log.exception("housekeeping: sign-in log prune failed")
+        finally:
+            c.close()
+
     # -- firing -------------------------------------------------------------- #
 
     def tick(self, now: float | None = None) -> int:
         """Fire every due schedule once. Returns how many were submitted."""
         moment = time.time() if now is None else now
+        if moment - self._last_housekeep >= _HOUSEKEEP_INTERVAL:
+            self._housekeeping()
+            self._last_housekeep = moment
         c = self._conn()
         try:
             due = schedules.due(c, moment)
