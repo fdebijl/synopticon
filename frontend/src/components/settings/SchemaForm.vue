@@ -23,7 +23,7 @@ import {
   type ConfigError,
   type JsonSchema,
 } from '../../utils/schema'
-import { getJSON, putJSON, ApiError } from '../../api/client'
+import { getJSON, putJSON, ApiError, type ApiErrorBody } from '../../api/client'
 import type { ConfigDoc } from '../../api/types'
 import { toast } from '../../stores/toasts'
 import { confirm } from '../../composables/useConfirm'
@@ -45,6 +45,10 @@ const errors = reactive<Record<string, string>>({})
 const envSet = ref<Set<string>>(new Set())
 const saving = ref(false)
 const saveStatus = reactive<{ text: string; cls: string }>({ text: '', cls: '' })
+// The partial from a save the self-lockout guard refused (409 `lockout`), kept
+// only so "Save anyway" can resubmit it with `?allow_lockout=1` -- a body key
+// would be merged into config.toml and written, so it has to be a query param.
+const lockoutRetry = ref<Record<string, Record<string, unknown>> | null>(null)
 
 const flatFields = computed<FieldDescriptor[]>(() => sections.value.flatMap((s) => s.fields))
 
@@ -138,6 +142,49 @@ function showErrors(errs: ConfigError[]): void {
   if (bad.length) emit('activate', bad[0])
 }
 
+function clientIpSuffix(body: ApiErrorBody): string {
+  return typeof body.client_ip === 'string' ? ` Your address: ${body.client_ip}.` : ''
+}
+
+// PUT /api/config's 409 is one of four shapes (guarded_write, §5.3): three
+// named guard conflicts, or the pre-existing "a job is running" body that
+// carries none of their keys. Only `lockout` is overridable, so only it
+// offers "Save anyway" -- `shadowed` means the write would land in a file the
+// running process does not read, and offering to force it would lie.
+function handleSaveError(err: unknown, partial: Record<string, Record<string, unknown>>): void {
+  lockoutRetry.value = null
+  const body = err instanceof ApiError ? err.body : null
+  if (err instanceof ApiError && err.status === 422 && Array.isArray(body?.errors)) {
+    showErrors(body!.errors as ConfigError[])
+    return
+  }
+  if (err instanceof ApiError && err.status === 409 && body) {
+    if (body.shadowed) {
+      saveStatus.text = String(body.error || 'That setting is set by an environment variable and cannot be saved here.')
+      saveStatus.cls = 'err'
+      return
+    }
+    if (body.unenforceable) {
+      saveStatus.text =
+        String(body.error || 'That allowlist cannot be enforced from here.') + clientIpSuffix(body)
+      saveStatus.cls = 'err'
+      return
+    }
+    if (body.lockout) {
+      saveStatus.text =
+        String(body.error || 'That allowlist would lock this browser out.') + clientIpSuffix(body)
+      saveStatus.cls = 'err'
+      lockoutRetry.value = partial
+      return
+    }
+    saveStatus.text = 'A job is running — try again once it finishes'
+    saveStatus.cls = 'err'
+    return
+  }
+  saveStatus.text = (err as Error).message || 'Save failed'
+  saveStatus.cls = 'err'
+}
+
 async function save(): Promise<void> {
   clearErrors()
   let partial: Record<string, Record<string, unknown>>
@@ -156,27 +203,42 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     await putJSON('/api/config', partial)
+    lockoutRetry.value = null
     saveStatus.text = 'Saved. Some changes take effect on restart.'
     saveStatus.cls = 'ok'
     toast('Configuration saved', 'ok')
     await load()
   } catch (err) {
-    const errsBody = err instanceof ApiError ? err.body : null
-    if (err instanceof ApiError && err.status === 422 && Array.isArray(errsBody?.errors)) {
-      showErrors(errsBody!.errors as ConfigError[])
-    } else if (err instanceof ApiError && err.status === 409) {
-      saveStatus.text = 'A job is running — try again once it finishes'
-      saveStatus.cls = 'err'
-    } else {
-      saveStatus.text = (err as Error).message || 'Save failed'
-      saveStatus.cls = 'err'
-    }
+    handleSaveError(err, partial)
+  } finally {
+    saving.value = false
+  }
+}
+
+// The self-lockout guard's override: a browser that has confirmed the
+// allowlist would exclude it and wants to save anyway (?allow_lockout=1 is a
+// query param, never a body key -- a body key would be merged into
+// config.toml and written).
+async function saveAnyway(): Promise<void> {
+  const partial = lockoutRetry.value
+  if (!partial) return
+  saving.value = true
+  try {
+    await putJSON('/api/config?allow_lockout=1', partial)
+    lockoutRetry.value = null
+    saveStatus.text = 'Saved. Some changes take effect on restart.'
+    saveStatus.cls = 'ok'
+    toast('Configuration saved', 'ok')
+    await load()
+  } catch (err) {
+    handleSaveError(err, partial)
   } finally {
     saving.value = false
   }
 }
 
 function discard(): void {
+  lockoutRetry.value = null
   void load()
 }
 
@@ -232,6 +294,15 @@ onBeforeRouteLeave(async () => {
         Save changes
       </button>
       <button class="btn btn-ghost" type="button" @click="discard">Discard</button>
+      <button
+        v-if="lockoutRetry"
+        class="btn btn-danger"
+        type="button"
+        :disabled="saving"
+        @click="saveAnyway"
+      >
+        Save anyway
+      </button>
       <span class="save-status" :class="statusClass" aria-live="polite">{{ statusText }}</span>
     </div>
   </template>
