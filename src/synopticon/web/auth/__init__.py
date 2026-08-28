@@ -14,7 +14,18 @@ every ``auth.X`` call site keep working with no edit.
 
 from __future__ import annotations
 
-from . import sessions, throttle, twofactor
+from . import authlog, sessions, throttle, twofactor
+from .authlog import (
+    AUTH_EVENTS,
+    AUTH_OUTCOMES,
+    EventThrottle,
+    configure,
+    auth_log,
+    log_summary,
+    prune_auth_log,
+    record_attempt,
+    retention_policy,
+)
 from .hashing import _scrypt, _sha256_hex
 from .keys import create_api_key, list_api_keys, revoke_api_key, validate_api_key
 from .sessions import (
@@ -52,6 +63,7 @@ from .twofactor import (
 from .users import UsernameTakenError, change_password, create_user, has_users, list_users, username_for, verify_password
 
 __all__ = [
+    "authlog",
     "sessions",
     "throttle",
     "twofactor",
@@ -103,4 +115,14 @@ __all__ = [
     # login throttling
     "Throttle",
     "LoginRateLimiter",
+    # sign-in log
+    "AUTH_EVENTS",
+    "AUTH_OUTCOMES",
+    "EventThrottle",
+    "configure",
+    "retention_policy",
+    "record_attempt",
+    "auth_log",
+    "log_summary",
+    "prune_auth_log",
 ]
