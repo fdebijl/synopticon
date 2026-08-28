@@ -23,7 +23,7 @@ import numpy as np
 
 from . import postgres as _pg
 from .connection import Connection, Cursor
-from .dialect import Dialect, PostgresDialect, scan_identity_columns
+from .dialect import Dialect, PostgresDialect, is_pragma, scan_identity_columns, split_script
 from .rows import Row
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -123,12 +123,38 @@ def _connect_sqlite(db_path: Path, check_same_thread: bool) -> Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     raw = sqlite3.connect(db_path, timeout=60, check_same_thread=check_same_thread)
     raw.row_factory = sqlite3.Row
-    raw.execute("PRAGMA journal_mode=WAL")
+    _set_wal_mode(raw)
     raw.execute("PRAGMA foreign_keys=ON")
     raw.execute("PRAGMA synchronous=NORMAL")
     conn = Connection(raw, _SQLITE_DIALECT)
     _migrate_sqlite(conn)
     return conn
+
+
+def _set_wal_mode(raw: sqlite3.Connection) -> None:
+    """Switch a fresh connection to WAL, retrying past a same-instant collision.
+
+    Converting journal mode takes an exclusive lock, and unlike an ordinary
+    write it does not go through the busy handler that ``timeout=`` installs —
+    SQLite reports ``SQLITE_BUSY`` immediately instead of waiting. Several
+    ``store.connect`` calls landing at once (a fresh file's first boot) would
+    otherwise fail here before the migration lock in ``_migrate_sqlite`` is
+    ever reached.
+    """
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            raw.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            # Only contention is worth waiting out. A read-only file or a
+            # missing directory raises here too, and retrying those for a
+            # minute turns an immediate, legible error into a hang.
+            if "locked" not in str(exc) and "busy" not in str(exc).lower():
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def _connect_postgres(conninfo: str, pool_size: int) -> Connection:
@@ -155,10 +181,38 @@ def _migrate_sqlite(conn: Connection) -> None:
         # journal write + lock round-trip on every one of them.
         return
     for i, migration in enumerate(_MIGRATIONS, start=1):
-        if i > version:
-            if _applies_to(migration, "sqlite"):
-                conn.executescript(migration.read_text())
+        if i <= version:
+            continue
+        # The DDL and the version bump are one atomic unit, and the transaction
+        # is IMMEDIATE, not deferred. A crash between two ALTERs (or a bare
+        # executescript, which issues its own implicit COMMIT before running --
+        # verified against Python 3.11's sqlite3, which is why the body is run
+        # statement by statement instead) would otherwise leave a half-applied
+        # migration that replays into "duplicate column name" -- unbootable, and
+        # every recovery command comes back through here. And a *deferred* BEGIN
+        # takes no write lock until the first write, so two connections could
+        # both pass the version check above and the loser would hit the same
+        # error; store.connect runs once per web request, and the first boot
+        # after an upgrade is when several land at once. BEGIN IMMEDIATE takes
+        # the write lock up front, and the re-read below is what makes the
+        # winner's bump visible to the loser. PRAGMA user_version IS
+        # transactional, so it rolls back with the body.
+        body = migration.read_text() if _applies_to(migration, "sqlite") else ""
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            # Re-read inside the transaction: another connection may have
+            # applied this migration between our check above and our lock.
+            if conn.execute("PRAGMA user_version").fetchone()[0] >= i:
+                conn.execute("COMMIT")
+                continue
+            for statement in split_script(body):
+                if not is_pragma(statement):
+                    conn.execute(statement)
             conn.execute(f"PRAGMA user_version = {i}")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.rollback()
+            raise
     conn.commit()
 
 
