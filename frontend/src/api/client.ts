@@ -38,7 +38,11 @@ async function request<T>(url: string, init: RequestInit): Promise<T> {
   if (res.status === 401) {
     const current = router.currentRoute.value
     if (current.name !== 'login') {
-      void router.push({ name: 'login', query: { next: current.fullPath } })
+      // A session-pin violation carries reason: "pin" so the login screen can
+      // explain why the browser was signed out, instead of a bare prompt.
+      const query: Record<string, string> =
+        typeof body?.reason === 'string' ? { next: current.fullPath, reason: body.reason } : { next: current.fullPath }
+      void router.push({ name: 'login', query })
     }
     throw new ApiError(401, body)
   }

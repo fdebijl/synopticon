@@ -7,6 +7,31 @@ export interface Me {
   username: string | null
   first_boot: boolean
   version: string
+  /** The caller's own account only; null unless signed in with a session. */
+  totp_enabled: boolean | null
+  session_pinning: string | null
+}
+
+// POST /api/auth/login (route 2): either a completed sign-in (cookie already
+// set by the time this resolves — see stores/auth.ts::login) or a half-finished
+// one waiting on a second-step code.
+export interface LoginChallengeStep {
+  step: 'challenge'
+  challenge: string
+  expires_in: number
+}
+
+export interface LoginSessionStep {
+  step: 'session'
+  username: string
+}
+
+export type LoginStep = LoginChallengeStep | LoginSessionStep
+
+// POST /api/auth/login/verify (route 3).
+export interface LoginVerifyResult {
+  username: string
+  recovery_remaining: number
 }
 
 export interface PhotoSpaceStats {
