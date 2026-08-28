@@ -790,6 +790,282 @@ def reset_password(
     get_emitter().result(stats={"username": user["username"], "sessions_revoked": revoked})
 
 
+@app.command("web-access")
+def web_access(
+    clear: bool = typer.Option(False, "--clear", help="Empty the allowed-address list."),
+    allow: list[str] = typer.Option(
+        [], "--allow", help="Address or CIDR range to allow (repeatable)."
+    ),
+    allow_private: bool = typer.Option(
+        None,
+        "--allow-private/--no-allow-private",
+        help="Always allow local networks alongside the list above.",
+    ),
+):
+    """Report or repair who may reach the web interface -- from the server.
+
+    With no options, reports what is currently configured and which file it
+    came from. `--clear` is the recovery path an address list locks itself out
+    with: run this over SSH or a console on the box, then restart Synopticon.
+    Deliberately CLI-only -- never a web job, because a job would let an
+    already-open session loosen the very list that is about to lock it out on
+    the next restart.
+    """
+    from synopticon.config import _config_file
+    from synopticon.web import clientip, configio
+
+    settings = _settings()
+    target = configio.config_target(settings)
+    writing = clear or allow or allow_private is not None
+
+    if not writing:
+        sec = settings.security
+        typer.echo(f"config file: {target}")
+        typer.echo(
+            f"allow_from: {sec.allow_from or '(empty -- every address is allowed)'}"
+        )
+        typer.echo(f"allow_private_networks: {sec.allow_private_networks}")
+        typer.echo(f"trusted_proxies: {sec.trusted_proxies or '(empty)'}")
+        return
+
+    # Guard 0's refusal at the CLI surface (F7): a TOML edit to a key the
+    # environment already sets has no effect, and pretending otherwise trains
+    # an operator to keep editing a file nobody reads.
+    shadowed = [k for k in configio._env_overrides(settings) if k.startswith("security.")]
+    if shadowed:
+        clauses = "; ".join(
+            f"{key} is set by the environment variable {configio._env_var_name(key)}, "
+            "which overrides config.toml"
+            for key in shadowed
+        )
+        typer.echo(
+            f"{clauses}. Editing the file will not help. Unset it (docker "
+            "compose: remove the line from `environment:`) and restart Synopticon.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    if _config_file() is None:
+        typer.echo(
+            "Warning: no existing config file was found from this directory. "
+            "Synopticon looks for ./config.toml, ./data/config.toml and "
+            "/data/config.toml, and the first two are relative to where you run "
+            "the command. If the running install reads a different file, this "
+            "write will have no effect on it -- run this from the install "
+            "directory, or set SYNOPTICON_CONFIG to the file's path.",
+            err=True,
+        )
+
+    partial: dict = {"security": {}}
+    if clear:
+        partial["security"]["allow_from"] = []
+    elif allow:
+        partial["security"]["allow_from"] = list(allow)
+    if allow_private is not None:
+        partial["security"]["allow_private_networks"] = allow_private
+
+    try:
+        errors = configio.write_config(settings, partial)
+    except ImportError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1)
+    if errors:
+        for err in errors:
+            typer.echo(f"{err['loc']}: {err['msg']}", err=True)
+        raise typer.Exit(2)
+
+    if allow:
+        trusted = settings.security.trusted_proxies
+        if not trusted:
+            typer.echo(
+                "Warning: [security] trusted_proxies is empty, so every visitor "
+                "behind a reverse proxy arrives as the proxy's own address and "
+                "this list cannot tell them apart. If you run a proxy, list it "
+                "and configure it to overwrite X-Forwarded-For (nginx: "
+                "proxy_set_header X-Forwarded-For $remote_addr;).",
+                err=True,
+            )
+        elif all(
+            clientip.is_loopback(str(net.network_address))
+            for net in clientip.parse_networks(trusted)
+        ):
+            typer.echo(
+                "Warning: [security] trusted_proxies only lists loopback "
+                "addresses, so a same-host proxy that does not overwrite "
+                "X-Forwarded-For lets any visitor claim any address. Configure "
+                "it to overwrite the header (nginx: proxy_set_header "
+                "X-Forwarded-For $remote_addr;).",
+                err=True,
+            )
+
+    typer.echo(f"Wrote {target}.")
+    if clear:
+        typer.echo("Cleared. ", nl=False)
+    typer.echo(
+        "Restart Synopticon for it to take effect (docker compose restart synopticon)."
+    )
+    get_emitter().result(
+        stats={
+            "path": str(target),
+            "allow_from": partial["security"].get("allow_from"),
+            "allow_private_networks": partial["security"].get("allow_private_networks"),
+        }
+    )
+
+
+@app.command("disable-2fa")
+def disable_2fa(
+    username: str = typer.Argument(None, help="Account to change (default: the only account)."),
+):
+    """Turn off two-step sign-in for an account, from the server.
+
+    The recovery path when a device with the authenticator app is lost: it
+    drops the confirmed factor and its backup codes, discards any half-finished
+    sign-in that was waiting on a code, and revokes every session of that
+    account -- turning off a second factor from the server is something you do
+    when you have lost control of a device. Idempotent: run against an account
+    with no factor, it reports that and exits 0. Deliberately CLI-only — never
+    exposed as a web job.
+    """
+    from synopticon.web import auth
+
+    settings = _settings()
+    conn = _conn(settings)
+    users = auth.list_users(conn)
+    if not users:
+        typer.echo(
+            "no web accounts exist yet — start the GUI (`synopticon web`) and create "
+            "one in the setup wizard",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    names = [u["username"] for u in users]
+    if username is None:
+        if len(users) > 1:
+            typer.echo(
+                f"several accounts exist ({', '.join(names)}) — name the one to change",
+                err=True,
+            )
+            raise typer.Exit(1)
+        user = users[0]
+    else:
+        user = next((u for u in users if u["username"] == username), None)
+        if user is None:
+            typer.echo(
+                f"no such account: {username!r} (known: {', '.join(names)})", err=True
+            )
+            raise typer.Exit(1)
+
+    was_enrolled = auth.totp_enabled(conn, user["id"])
+    auth.disable_totp(conn, user["id"])
+    challenges_dropped = auth.purge_user_challenges(conn, user["id"])
+    sessions_revoked = auth.delete_user_sessions(conn, user["id"])
+    auth.record_attempt(
+        conn,
+        event="security_change",
+        outcome="success",
+        reason="totp_disabled",
+        username=user["username"],
+        user_id=user["id"],
+        ip=None,
+        user_agent=None,
+    )
+    if was_enrolled:
+        typer.echo(f"two-step sign-in turned off for {user['username']}")
+    else:
+        typer.echo(f"{user['username']} did not have two-step sign-in on")
+    if sessions_revoked:
+        typer.echo(f"revoked {sessions_revoked} active session(s) — log in again")
+    typer.echo("This takes effect immediately; no restart needed.")
+    get_emitter().result(
+        stats={
+            "user": user["username"],
+            "was_enrolled": bool(was_enrolled),
+            "sessions_revoked": int(sessions_revoked),
+            "challenges_dropped": int(challenges_dropped),
+        }
+    )
+
+
+@app.command("session-pin")
+def session_pin(
+    mode: str = typer.Argument(
+        "off", help="One of off, device, device+network."
+    ),
+    username: str = typer.Argument(None, help="Account to change (default: the only account)."),
+):
+    """Change an account's session-pinning setting from the shell.
+
+    Only `off` can be set from here: `device` and `device+network` pin a session
+    to the browser that requests them, and the server has no way to know which
+    one to pin to. `off` clears the setting AND unpins every existing session in
+    place (it does not sign anyone out) -- the recovery path out of a pin loop
+    that keeps signing a legitimate browser out. Deliberately CLI-only.
+    """
+    from synopticon.web import auth
+
+    if mode not in auth.PIN_MODES:
+        typer.echo(f"unknown mode {mode!r} (known: {', '.join(auth.PIN_MODES)})", err=True)
+        raise typer.Exit(2)
+    if mode != auth.PIN_OFF:
+        typer.echo(
+            "Turn this on from Settings -> Access in the browser you want to keep "
+            "signed in -- the server has no way to know which device to pin to.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    settings = _settings()
+    conn = _conn(settings)
+    users = auth.list_users(conn)
+    if not users:
+        typer.echo(
+            "no web accounts exist yet — start the GUI (`synopticon web`) and create "
+            "one in the setup wizard",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    names = [u["username"] for u in users]
+    if username is None:
+        if len(users) > 1:
+            typer.echo(
+                f"several accounts exist ({', '.join(names)}) — name the one to change",
+                err=True,
+            )
+            raise typer.Exit(1)
+        user = users[0]
+    else:
+        user = next((u for u in users if u["username"] == username), None)
+        if user is None:
+            typer.echo(
+                f"no such account: {username!r} (known: {', '.join(names)})", err=True
+            )
+            raise typer.Exit(1)
+
+    pinned_before = conn.execute(
+        "SELECT COUNT(*) AS n FROM web_sessions WHERE user_id = ? AND pin_mode IS NOT NULL",
+        (user["id"],),
+    ).fetchone()["n"]
+    auth.set_pin_mode(conn, user["id"], auth.PIN_OFF, keep_token=None, client=None)
+    auth.record_attempt(
+        conn,
+        event="security_change",
+        outcome="success",
+        reason="session_pin_changed",
+        username=user["username"],
+        user_id=user["id"],
+        ip=None,
+        user_agent=None,
+    )
+    typer.echo(f"session pinning turned off for {user['username']}")
+    typer.echo("This takes effect immediately; no restart needed.")
+    get_emitter().result(
+        stats={"user": user["username"], "mode": "off", "sessions_unpinned": int(pinned_before)}
+    )
+
+
 @app.command("db-migrate")
 def db_migrate(
     source: str = typer.Option(
