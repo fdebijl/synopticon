@@ -14,7 +14,7 @@ every ``auth.X`` call site keep working with no edit.
 
 from __future__ import annotations
 
-from . import sessions, throttle
+from . import sessions, throttle, twofactor
 from .hashing import _scrypt, _sha256_hex
 from .keys import create_api_key, list_api_keys, revoke_api_key, validate_api_key
 from .sessions import (
@@ -26,11 +26,35 @@ from .sessions import (
     validate_session,
 )
 from .throttle import LoginRateLimiter, Throttle
+from .twofactor import (
+    ENROLMENT_TTL,
+    NoPendingEnrolmentError,
+    PendingEnrolment,
+    TotpAlreadyEnrolledError,
+    any_totp_enrolled,
+    challenge_required,
+    confirm_totp_enrolment,
+    consume_recovery_code,
+    count_recovery_codes,
+    delete_login_challenge,
+    disable_totp,
+    generate_recovery_codes,
+    peek_login_challenge,
+    purge_expired_challenges,
+    purge_user_challenges,
+    start_login_challenge,
+    start_totp_enrolment,
+    totp_enabled,
+    totp_status,
+    verify_totp,
+    take_login_challenge,
+)
 from .users import UsernameTakenError, change_password, create_user, has_users, list_users, username_for, verify_password
 
 __all__ = [
     "sessions",
     "throttle",
+    "twofactor",
     # hashing (private, but tests forge a token_hash with these directly)
     "_scrypt",
     "_sha256_hex",
@@ -54,6 +78,28 @@ __all__ = [
     "validate_api_key",
     "revoke_api_key",
     "list_api_keys",
+    # two-step sign-in
+    "TotpAlreadyEnrolledError",
+    "NoPendingEnrolmentError",
+    "ENROLMENT_TTL",
+    "PendingEnrolment",
+    "totp_status",
+    "totp_enabled",
+    "any_totp_enrolled",
+    "challenge_required",
+    "start_totp_enrolment",
+    "confirm_totp_enrolment",
+    "disable_totp",
+    "verify_totp",
+    "generate_recovery_codes",
+    "consume_recovery_code",
+    "count_recovery_codes",
+    "start_login_challenge",
+    "peek_login_challenge",
+    "take_login_challenge",
+    "delete_login_challenge",
+    "purge_expired_challenges",
+    "purge_user_challenges",
     # login throttling
     "Throttle",
     "LoginRateLimiter",
