@@ -20,12 +20,13 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `08_vue-spa-frontend.md` | `frontend/`, the SPA build, polling, review or job UI |
 | `09_dual-database-backend.md` | `db/`, a migration, or any SQL |
 | `10_docker-image-variants.md` | `docker/`, the publish workflow, deployment docs |
-| `11_web-authentication.md` | `web/auth.py`, sessions, API keys, the middleware's auth branch |
+| `11_web-authentication.md` | `web/auth/`, sessions, API keys, the middleware's auth branch |
 | `12_in-process-cron-scheduling.md` | `cron.py`, `web/schedule*` |
-| `13_backup-downloads.md` | `web/backup_routes.py`, `db/snapshot.py`, `configio.export_config` |
+| `13_backup-downloads.md` | `web/backup_routes.py`, `db/snapshot.py`'s `SNAPSHOT_EXCLUDE`, `configio.export_config` |
 | `14_review-retargeting.md` | `review/queries.py` mutations, the `hidden` status, `_existing_identities` |
 | `15_orphaned-review-items.md` | `prune-queue`, `regen_crops`' skip logic, anything reading `face_id` out of `payload_json` |
 | `16_inspect-photo-view.md` | `web/inspect_routes.py`, the Inspect page, photo links in the SPA, box geometry, the pan/zoom stage, tagging a face from Inspect |
+| `17_web-security-hardening.md` | `web/clientip.py`, `web/auth/throttle.py`, `web/auth/authlog.py`, `web/auth/twofactor.py`, `web/auth/sessions.py`, `web/totp.py`, `web/security_routes.py`, the `[security]` config section, anything keying a decision on a client address |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -71,6 +72,7 @@ SQLite (`data/synopticon.db`) is the default and needs no configuration; Postgre
 - **A row iterates values, not keys** — it is deliberately not a `Mapping`, because `lookups.fingerprint` depends on `tuple(row)`.
 - **Every caller must `close()`** — under PostgreSQL that is what returns the connection to the pool.
 - `store.connect(settings)` is the normal call; `store.describe(settings)` names the database for a human without leaking credentials.
+- **`web_totp`, `web_recovery_codes`, `web_login_challenges` and `web_auth_log`** (migration `0010_web_security.sql`) hold two-step sign-in, its backup codes, an in-progress second sign-in step, and the sign-in log, respectively. `web_totp.secret` is the one plaintext bearer credential in the schema — see `db/snapshot.py::SNAPSHOT_EXCLUDE` before adding anything else that shouldn't leave the box in a backup. `web_users.session_pin_mode` and `web_sessions.pin_mode`/`pin_hash` (same migration) are session pinning's setting and its per-session enforcement datum — the two are denormalised on purpose, and `synopticon session-pin` has to clear both. (ADR 17)
 
 ### Synology API layer (`syno/`)
 
@@ -101,8 +103,19 @@ SQLite (`data/synopticon.db`) is the default and needs no configuration; Postgre
 Precedence: init kwargs > env vars (`SYNOPTICON_<SECTION>__<KEY>`) > `.env` > TOML. Search order: `$SYNOPTICON_CONFIG`, `./config.toml`, `./data/config.toml`, `/data/config.toml`.
 
 - **Credential fields must be `SecretStr`**, or `configio`'s masking does not cover them.
-- Adding a config section means adding it to `frontend/src/utils/schema.ts`'s `SECTIONS`/`LABELS`, or the Settings UI silently omits the tab.
+- Adding a config section means adding it to `frontend/src/utils/schema.ts`'s `SECTIONS`/`LABELS`, or the Settings UI silently omits the tab. `[security]` (below) is the reference example: it was added to both when it landed.
 - Field help is two-tier: `description=` is the plain-language half, `json_schema_extra={"details": ...}` the technical half.
+
+`[security]` (`SecurityConfig`, ADR 17) governs who can reach the GUI and how hard it is to guess a
+password into it: `trusted_proxies` and `allow_from`/`allow_private_networks` (the network side —
+see `web/clientip.py`); `max_failures_per_address`/`address_window_minutes`/`address_block_minutes`
+(login throttling); `sign_in_log`/`sign_in_log_days`/`sign_in_log_max_entries`/`log_failed_api_keys`
+(the sign-in log); and `totp_issuer`/`totp_skew_steps`/`login_challenge_ttl`/`login_code_attempts`/
+`recovery_code_count` (two-step sign-in). Every field in it is read once at start-up — a save always
+tells the operator to restart — except the two-step and pin CLI recoveries, which act on the
+database directly and need no restart (see ADR 11's lockout-recovery table). `trusted_proxies` and
+`allow_from` share one validator (`_valid_networks`, `ipaddress.ip_network(strict=False)`), so an
+invalid entry in either fails the same way.
 
 ### Safety model (do not weaken)
 
@@ -118,7 +131,7 @@ Everything before `apply` is read-only toward the NAS. `apply` is dry-run by def
 `--apply-merges` never covers `merge_named`. Only `status='approved'` rows are eligible, every attempt lands in `audit_log`, and an idempotency pre-check re-fetches NAS state before each write.
 
 - **The GUI must never pass `-Y` or use `apply-all`** — `_FORBIDDEN_TOKENS` enforces it. Commands are never raw argv: `JOB_SPECS` whitelists params, and `validate_consent` is the sole place apply flags are appended.
-- **`eval`, `reset-password` and `db-migrate` stay CLI-only** — never give them a `JOB_SPECS` entry.
+- **`eval`, `reset-password`, `db-migrate`, `disable-2fa`, `web-access` and `session-pin` stay CLI-only** — never give any of them a `JOB_SPECS` entry. Only `web-access` needs a restart to take effect; the others act on the database directly. (ADR 11, ADR 17)
 - Schedules replay a stored submission with `confirm_phrase` always `None`, so every typed-phrase job is unschedulable by construction.
 - QuickMerger is the one GUI surface that writes outside `apply`; it refuses a named↔named merge with 409. (ADR 05)
 - The review UI's Hide / Merge into / Reassign actions rewrite `review_queue` and never call the NAS, which is why they carry no consent gate. Keep it that way. (ADR 14) Inspect's per-face **Tag as… / Reassign…** is the same trade — but **the server picks the kind, never the client**: `queries.assign_face` writes `reassign` (and its stricter flag) when `photo_syno_match` finds a Synology box already named on that face, and plain `assign` otherwise. Taking a kind from the request body would be a way to write a reassign under `--apply`. (ADR 16)
@@ -156,6 +169,13 @@ Other things that are easy to regress:
 - Every view that runs a job mounts the shared `JobPanel`. Don't build a second one. Same for
   picking a person: `PersonPickerDialog` takes a described source (label, thumbnails, space,
   optional note), not a review item, so any surface can point it at faces.
+- "The client address is only trustworthy behind `[security] trusted_proxies`, and only when that proxy *overwrites* `X-Forwarded-For`. `clientip.ProxyHeaders` is the sole place `X-Forwarded-*` is honoured, it is the outermost middleware, and it *adds* `scope['synopticon.client']` rather than overwriting `scope['client']`; uvicorn's own `proxy_headers` is passed `False` explicitly, because its default is `True` trusting loopback. Everything that keys on an address goes through `clientip.client_ip`, everything that *punishes* an address goes through `clientip.ip_prefix`, and anything that needs the connection itself goes through `clientip.client_peer`."
+- "No defence is conditional. Every throttle tier is armed on every request, keyed on the one resolved address; `clientip` exposes no `local_request`, no `stands_in_for` and no `address_tiers_armed`, and `LoginRateLimiter.verdict` reads exactly one field of its client argument. Three separate drafts added an exemption for 'the server itself' and all three switched login throttling off for the entire internet on the deployment this README recommends. Do not add a fourth."
+- "Loopback is allowed by the allowlist unconditionally and throttled unconditionally. That asymmetry is deliberate: the allowlist is a door whose recovery path arrives on loopback, and the throttle is a speed bump whose worst case is a five-minute wait."
+- "In-process state shared between the event loop and the AnyIO pool takes a lock — `LoginRateLimiter._lock`, `EventThrottle._lock`, `authlog._state_lock`, `auth_cache_lock` — and no lock is ever held across a database call or a scrypt derivation."
+- "A database snapshot must never carry a bearer credential. `db/snapshot.py::SNAPSHOT_EXCLUDE` is why the two-step-sign-in tables are missing from a backup, and it is deliberately not `db/copy.py::TABLES`, which `db-migrate` shares."
+
+(ADR 17.)
 
 ### Jobs and progress
 

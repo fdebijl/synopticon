@@ -1,7 +1,12 @@
 # ADR 07 — Web process responsiveness
 
 **Status:** Accepted — do not regress
-**Applies to:** `web/app.py`, `web/stats.py`, `web/ops_routes.py`, `review/lookups.py`, `review/queries.py`
+**Applies to:** `web/app.py`, `web/stats.py`, `web/ops_routes.py`, `review/lookups.py`, `review/queries.py`, `web/clientip.py`, `web/auth/throttle.py`, `web/auth/authlog.py`, `web/security_routes.py`, `web/configio.py`
+
+**Amended by ADR 17.** The network allowlist and login throttling both had to be judged against
+this document's invariants as they landed, because both sit on the request path of *every* API call
+(the allowlist) or of an unauthenticated, high-frequency one (login) — exactly the paths this ADR
+already treats as load-bearing for the whole process's responsiveness.
 
 ## Context
 
@@ -90,6 +95,70 @@ the same dict the handler's `request.state` wraps.
 `test_middleware_stack_is_pure_asgi` locks it in.
 
 ---
+
+## The allowlist gate and both throttle verdicts are CPU-only and run on the loop, by design (ADR 17)
+
+This looks, at first glance, like a violation of invariant (1) — a decision made directly inside
+`_AuthMiddleware.__call__`, an `async` function, with no `run_in_threadpool` in sight. It is not,
+because neither decision touches the database, the filesystem, or the network. `IPAllowlist.allows`
+is a dict memo lookup plus, on a miss, pure `ipaddress` arithmetic under a `threading.Lock`;
+`LoginRateLimiter.verdict`/`verdict_address` are the same shape over in-memory dicts of deques. Both
+are exactly the kind of pure-CPU, sub-microsecond work invariant (1) was never meant to push off the
+loop — threadpooling them would spend an AnyIO worker thread on a lookup, which is strictly worse
+for the very load (a login flood, or a scan of refused addresses) they exist to survive.
+
+`GET /api/health` remains the first branch, ahead of the allowlist — an orchestrator's healthcheck
+must not be exposed to a misconfigured or overly-strict allowlist locking a container out of its own
+liveness probe (cross-ref this document's own Liveness probe section, below). A *blocked* request —
+refused by the allowlist, or throttled by either tier — never takes a worker thread for the decision
+itself, and it takes at most one short threadpool hop, at most once per address prefix per minute,
+for the one write it does: `_blocked_log_row`/the allowlist's own denial path check an in-memory
+`EventThrottle` before opening a connection to record the row (ADR 17 D4/D9), so an attacker who
+ignores every 429 or 403 and keeps sending cannot turn the rejection itself into per-request database
+load.
+
+**`POST /api/auth/login/verify` reaches an address-tier verdict before its very first hop**, because
+its username only exists after a database read (`challenge_required`/the login-challenge peek) that
+this route deliberately has not done yet. `LoginRateLimiter.verdict_address` answers the address-only
+tier from in-memory state alone, on the loop, so an unauthenticated caller posting garbage challenge
+tokens cannot buy a connection and a worker-thread hop for free before any throttle has had a chance
+to say no. Step two of the login flow (`/login` then `/login/verify`) is therefore exactly two
+threadpool hops, each with its own loop-side throttle verdict computed immediately before it: address
+tier before hop A (the non-consuming challenge peek), full pair tier before hop B (the code check) —
+see ADR 17 D3a for why the peek must not consume the challenge itself.
+
+**The `PUT /api/config` lockout guards run inside the existing write hop, not on the loop**, which is
+the one place in this feature set where CPU-only work is deliberately *not* kept on the loop. The
+guards parse operator-supplied CIDR lists (`ipaddress.ip_network` over `trusted_proxies` and
+`allow_from`, unbounded in count) and that parse already has to happen inside `guarded_write`'s
+single threadpooled pass alongside the tomlkit read/merge/write and the `Settings(**merged)`
+validation (ADR 17 D7) — splitting the guards back out onto the loop would mean parsing the same
+lists twice, once to judge them and once to persist them, for no responsiveness benefit since the
+whole write is already off the loop.
+
+Finally, the auth cache's key change (below) and the locking this feature set introduced both bear
+directly on this document's invariants, so they are recorded here rather than only in ADR 17:
+
+- **The auth-cache key is now `"s:" + sha256(token) + ":" + sha256(client facts)"`**, not just the
+  session token. A cached verdict can only ever be replayed by the same (or an indistinguishable)
+  client within the 30 s TTL — see ADR 17 D5 for why this closes a pin-replay window that the cache
+  existed to create otherwise. The consequence for this document's cache-design guidance: **a
+  roaming client re-misses by design** — a phone that changes from Wi-Fi to cellular mid-session
+  mints a second cache entry rather than reusing its old one, which is intentional cost, not a bug to
+  chase.
+- **The cache evicts, oldest-deadline-first, and never flushes wholesale** except via the explicit
+  no-argument revocation call. Revocation now sweeps *by prefix* (`cache_prefix(token)`), because one
+  token can own several entries once the key includes client facts. See ADR 17 D5 for the full
+  reasoning; the point for this document is that a cache with a security-relevant key must bound
+  itself by eviction, not by an occasional `clear()`, because `clear()` under load is itself
+  something an attacker can trigger and ride.
+- **In-memory state shared between the event loop and the AnyIO pool now carries an explicit lock**
+  — `LoginRateLimiter._lock`, `EventThrottle._lock`, `authlog._state_lock`, and `app.py`'s
+  `auth_cache_lock` — held only for pure dict/arithmetic work, never across a database call or a
+  scrypt derivation (ADR 17 D8). This is the first feature set to touch the same in-memory structure
+  from both execution contexts in a single request, and any future shared structure needs the same
+  answer to "which thread touches this, and does it need a lock" that this document already asks of
+  every blocking call.
 
 ## Liveness probe — `GET /api/health`
 
@@ -183,7 +252,9 @@ one query per space.
 The middleware caches validated **session cookies** for `_AUTH_CACHE_TTL` (30 s), so one page
 load's burst of crop requests does not open a SQLite connection per image. 30 s is deliberately
 longer than every SPA polling interval (5 s jobs, 15 s counts); at an earlier 2 s it never once hit
-for the steady-state traffic it was meant to collapse.
+for the steady-state traffic it was meant to collapse. **Since ADR 17, the cache key and its
+eviction policy changed** — see this document's own ADR 17 amendment section, above, for the
+session-pinning reason and the resulting "roams re-miss, evict don't flush" shape.
 
 API keys are deliberately *not* cached — `_credential` returns `None` for a Bearer header. A
 browser never sends one, so there is nothing to collapse, and key revocation stays exact.

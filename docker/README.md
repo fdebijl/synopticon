@@ -140,7 +140,35 @@ Only face detection benefits; everything else is unaffected. A GPU run and a CPU
     start_period: 60s
   ```
   Long jobs can make a strict healthcheck kill the container — loosen it if that happens.
-- **TLS is not terminated in the container.** Publish to loopback and put nginx, Caddy or Traefik in front. uvicorn honours `X-Forwarded-Proto`, so the session cookie's `Secure` flag follows automatically.
+- **TLS is not terminated in the container.** Publish to loopback and put nginx, Caddy or Traefik in front. Synopticon honours `X-Forwarded-Proto` itself, and only from an address listed in `[security] trusted_proxies` — uvicorn's own proxy-header handling is switched off. Until the proxy is listed, the session cookie's `Secure` flag follows only a direct https connection, not the proxy's.
+
+  A same-host nginx container on the compose network sees Synopticon at its **container address**, not `127.0.0.1` — list that address, and make nginx overwrite the visitor's address header rather than pass it through:
+
+  ```toml
+  [security]
+  trusted_proxies = ["172.20.0.0/16"]   # the compose network's subnet, not 127.0.0.1
+  ```
+
+  ```nginx
+  location / {
+      proxy_pass http://synopticon:8686;
+      proxy_set_header X-Forwarded-For $remote_addr;   # overwrite, never pass through
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header Host $host;
+  }
+  ```
+
+  `$remote_addr` overwrites whatever the visitor sent; nginx forwards client headers by default, so without that line a visitor's own `X-Forwarded-For` reaches Synopticon and they can claim to be any address — switching off `[security] allow_from` and the per-address sign-in limits for whoever asks. Full explanation and the Caddy/Traefik comparison: [Behind a reverse proxy in the README](https://github.com/fdebijl/synopticon#behind-a-reverse-proxy). **`FORWARDED_ALLOW_IPS` is ignored under `synopticon web`** — uvicorn's own proxy trust is switched off explicitly, so only `[security] trusted_proxies` governs this.
+- **Locked yourself out from a container?** The recovery commands run against the same volume, from the shell, with no login needed:
+  ```bash
+  docker exec -it synopticon synopticon web-access --clear    # locked out by the address list
+  docker exec -it synopticon synopticon disable-2fa            # lost the authenticator device
+  docker exec -it synopticon synopticon session-pin off        # stuck in a pin loop
+  docker compose restart synopticon                            # only web-access needs this
+  ```
+  `GET /api/health` stays reachable throughout — the network allowlist and every auth check sit
+  behind it, never in front, so a healthcheck pointed at it (see above) keeps passing while you fix
+  the rest.
 - **Model weights are not bundled** (mixed upstream licenses). `models download` fetches the two auto-downloadable detectors and ArcFace; two optional embedders need a manual export, described in the repo.
 
 ## Compatibility

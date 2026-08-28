@@ -203,15 +203,48 @@ The snapshot is built on the fly, so a large library takes a while before the do
 curl -H "Authorization: Bearer syn_xxxxxxxxxxxxxxxx" http://127.0.0.1:8686/api/stats
 ```
 
+**Two-step sign-in** is optional, turned on per-account from Settings → Access. The setup screen shows both a QR code and the typed key underneath it, so it works whether or not your phone's camera can see the screen. Turning it on issues a set of backup codes shown exactly once — save them somewhere other than this computer, since any of them can be typed anywhere a code is asked for, including when you turn two-step sign-in back off. Backup codes and the authenticator secret are left out of database backups (Settings → Utilities), on purpose — a backup you might hand to someone else should never carry a working credential. API keys are unaffected either way: a key is a machine credential and never goes through the two-step prompt.
+
 ### Reverse proxy / TLS
 
-Synopticon does not terminate TLS itself. Bind it to loopback (the default `127.0.0.1`) and put nginx, Caddy, or Traefik in front for HTTPS. uvicorn runs with proxy headers enabled, so it honours `X-Forwarded-Proto` from the proxy — the session cookie's `Secure` flag then follows the effective scheme automatically. A minimal Caddy example:
+Synopticon does not terminate TLS itself. Bind it to loopback (the default `127.0.0.1`) and put nginx, Caddy, or Traefik in front for HTTPS. Synopticon honours `X-Forwarded-Proto` itself, and only from an address listed in `[security] trusted_proxies` — uvicorn's own proxy-header handling is switched off. Until you list your proxy there, the session cookie's `Secure` flag follows only a direct https connection, not the proxy's.
+
+#### Behind a reverse proxy
+
+```toml
+[security]
+trusted_proxies = ["127.0.0.1"]
+```
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8686;
+    proxy_set_header X-Forwarded-For $remote_addr;   # overwrite, never pass through
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Host $host;
+}
+```
+
+`$remote_addr` overwrites whatever the visitor sent; nginx forwards client headers by default, so without this line a visitor's own `X-Forwarded-For` reaches Synopticon and they can claim to be any address — which switches off the address list and the per-address sign-in limits. Caddy and Traefik set this correctly by default, so the plain example below needs no equivalent line:
 
 ```
 photos.example.com {
     reverse_proxy 127.0.0.1:8686
 }
 ```
+
+Leaving `trusted_proxies` unset is safe — the socket peer is used and no header is ever believed — but it makes every visitor behind that proxy share one address for the sign-in limits, and makes an address allowlist unenforceable (every visitor looks like the proxy). And listing `127.0.0.1` without the `proxy_set_header X-Forwarded-For` line above is strictly worse than leaving `trusted_proxies` unset: it starts believing a header nothing is overwriting, so any visitor can claim to be any address.
+
+#### Restricting who can reach the GUI
+
+`[security] allow_from` (Settings → Access, or `config.toml` directly) refuses every address not on the list, checked on every request — not only at sign-in. Your own machine is always allowed regardless of what's listed, so a terminal on the server or an SSH tunnel can never be locked out. If you do lock out the browser you're using — a typo in the list, or a proxy you haven't listed yet — the way back in is from the server itself:
+
+```bash
+synopticon web-access --clear
+docker compose restart synopticon
+```
+
+`config.toml` is read once at start-up, so the restart is what makes the cleared list take effect.
 
 ## CLI reference
 
@@ -316,6 +349,39 @@ docker compose run --rm synopticon reset-password admin
 | `[USERNAME]` | the only account | Account to reset; required if several exist. |
 | `--password TEXT` | *(prompt)* | New password non-interactively. Prefer the prompt — this lands in your shell history. |
 | `--keep-sessions` | off | Leave that account's existing logins valid. |
+
+#### `web-access`
+Report or repair who may reach the web interface, from the server. With no options, prints the current `[security]` allowlist settings and which config file they came from. `--clear` is the recovery path an address list locks itself out with — see [Restricting who can reach the GUI](#restricting-who-can-reach-the-gui). Deliberately CLI-only: a web job would let an already-open session loosen the very list that is about to lock it out on the next restart.
+
+```bash
+synopticon web-access                          # report only
+synopticon web-access --clear                  # empty the list, then restart
+synopticon web-access --allow 192.168.1.0/24   # set the list to one entry
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `--clear` | off | Empty the allowed-address list. |
+| `--allow TEXT` | *(none)* | Address or CIDR range to allow (repeatable). |
+| `--allow-private / --no-allow-private` | unchanged | Always allow local networks alongside the list above. |
+
+Takes effect on restart, like every `[security]` field this command touches.
+
+#### `disable-2fa`
+Turn off two-step sign-in for an account, from the server — the recovery path when the device with the authenticator app is lost. Drops the confirmed factor and its backup codes, discards any half-finished sign-in waiting on a code, and revokes every session of that account. Safe to run against an account with no factor enrolled; it reports that and exits cleanly. With a single account the username can be omitted. CLI-only; takes effect immediately, no restart needed.
+
+```bash
+uv run synopticon disable-2fa
+docker compose run --rm synopticon disable-2fa admin
+```
+
+#### `session-pin`
+Turn off session pinning for an account, from the server — the recovery path out of a pin loop that keeps signing a legitimate browser out. Only `off` can be set from here: pinning to a specific device only makes sense from the browser you want pinned, which the server has no way to identify from a shell prompt. Unpins every existing session in place, without signing anyone out. CLI-only; takes effect immediately, no restart needed.
+
+```bash
+uv run synopticon session-pin off
+docker compose run --rm synopticon session-pin off admin
+```
 
 #### `apply`
 Apply approved review items to the NAS. Dry-run unless `--apply` is given.
