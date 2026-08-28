@@ -1,7 +1,11 @@
 # ADR 13 — Backup downloads
 
 **Status:** Accepted
-**Applies to:** `web/backup_routes.py`, `db/snapshot.py`, `configio.export_config`, the Utilities page
+**Applies to:** `web/backup_routes.py`, `db/snapshot.py`, `db/copy.py`, `configio.export_config`, the Utilities page
+
+**Amended by ADR 17.** Migration `0010_web_security.sql` put a plaintext bearer credential into the
+schema for the first time (`web_totp.secret`), which this document's snapshot design had not needed
+to consider before.
 
 ## Context
 
@@ -72,6 +76,38 @@ audit trail can answer. The audit row carries the flag, never the value.
 An install configured purely through `SYNOPTICON_*` environment variables has no file to copy; it
 gets the effective settings rendered as TOML instead, so the backup is still a usable starting
 point.
+
+### A database snapshot must never carry a bearer credential (ADR 17)
+
+`db/snapshot.py::SNAPSHOT_EXCLUDE` (`web_totp`, `web_recovery_codes`, `web_login_challenges`) is
+never copied into a downloaded snapshot. `web_totp.secret` is stored plaintext base32 — an
+authenticator app needs it in that form, so no amount of hashing on the way in could avoid this —
+which makes it the one directly usable bearer credential in the whole schema: unlike a password
+hash, there is no cracking step between possessing the row and possessing a working second factor.
+Recovery codes are the same credential by another name, and a live login challenge is a session in
+waiting. `_snapshot_sqlite` deletes the excluded tables from the `VACUUM INTO` copy (never the
+source) and vacuums again so the rows do not merely go invisible in a compacted file;
+`_snapshot_postgres` passes the same set to `copy_database`'s new `skip=` parameter.
+
+**This exclusion set is deliberately not `db/copy.py::TABLES`**, which `db-migrate` and the
+PostgreSQL backend switch share and which keeps all three tables. A snapshot is a one-way export an
+operator might hand to anyone as "my settings, for reference"; a backend migration is the same
+database continuing to exist under a different engine, and dropping a live enrolment there would
+silently un-enrol every account's two-step sign-in the moment someone switched to PostgreSQL.
+
+`web_auth_log` is deliberately **not** excluded — it is evidence (ADR 17 D4), it contains no
+credential in any form, and an operator restoring a backup wants their sign-in history intact. Nor
+is `web_sessions`: its `pin_hash` column (ADR 17) is a sha256 digest of client facts a backup
+holder could already observe by other means, not a secret, and restoring a database is expected to
+bring live sessions back rather than silently sign everyone out.
+
+### Both download routes became user-session-only (ADR 17)
+
+`GET /api/backup/config` and `GET /api/backup/database` now refuse an API-key credential with a 403
+explaining that a backup has to come from a signed-in browser. This narrows a surface that was
+previously reachable by any identity — a backup is exactly the kind of bulk, sensitive export an
+automation script's leaked key should not be able to trigger unattended, and neither route needs the
+API-key path for any legitimate use it currently has.
 
 ## Consequences
 
