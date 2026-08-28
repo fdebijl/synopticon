@@ -592,6 +592,19 @@ def test_danger_levels():
     assert JOB_SPECS["reset"].danger is DangerLevel.TYPED_PHRASE
 
 
+def test_credential_commands_are_never_web_jobs():
+    """ADR 05: a command that rewrites a credential or lifts a protection must
+    not be reachable from the GUI -- an already-authenticated session could
+    otherwise strip the protection it was supposed to be behind."""
+    from synopticon.web.jobs import JOB_SPECS
+    from synopticon.web import schedules
+
+    forbidden = {"reset-password", "db-migrate", "eval",
+                 "disable-2fa", "web-access", "session-pin"}
+    assert not (forbidden & set(JOB_SPECS))
+    assert not (forbidden & set(schedules.SCHEDULABLE))
+
+
 # --------------------------------------------------------------------------- #
 # Child resource limits                                                        #
 # --------------------------------------------------------------------------- #
