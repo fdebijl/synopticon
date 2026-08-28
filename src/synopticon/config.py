@@ -13,11 +13,12 @@ de-emphasized block under the description.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -836,6 +837,313 @@ class CrossrefConfig(BaseModel):
     )
 
 
+class SecurityConfig(BaseModel):
+    """Sign-in protection for the web interface: who can reach it, how hard it
+    is to guess a password, and what is recorded about attempts."""
+
+    # -- who the client is -------------------------------------------------- #
+    trusted_proxies: list[str] = Field(
+        default_factory=list,
+        title="Trusted reverse proxies",
+        description=(
+            "Addresses of reverse proxies in front of Synopticon, as addresses or "
+            "ranges ('192.168.1.2', '172.18.0.0/16'). Leave this empty unless you "
+            "actually run one — empty is the safe setting.\n\n"
+            "Synopticon judges every visitor by the address their connection came "
+            "from. Behind a proxy that address is the proxy, so it has to be told "
+            "which addresses may say who the real visitor is. Listing your proxy "
+            "here also lets it report that the connection is HTTPS, which is what "
+            "marks the sign-in cookie as a secure one.\n\n"
+            "Before you list a proxy, make it OVERWRITE the visitor's address "
+            "header rather than pass one through. For nginx that is one line — "
+            "proxy_set_header X-Forwarded-For $remote_addr; — and without it any "
+            "visitor can claim to be any address, which switches off the address "
+            "list and the per-address sign-in limits for whoever asks. Caddy and "
+            "Traefik do the right thing by default.\n\n"
+            "Only list proxies you control: anything listed here can claim to be "
+            "any visitor."
+        ),
+        json_schema_extra={"details": (
+            "Parsed with ipaddress.ip_network(strict=False); a bare address is a "
+            "/32 or /128. Honoured by the clientip.ProxyHeaders ASGI middleware, "
+            "which resolves one client address per request from X-Forwarded-For / "
+            "X-Forwarded-Proto -- only when the immediate peer matches, walking "
+            "the comma-joined header right to left past trusted hops -- and "
+            "attaches it at scope['synopticon.client'] without touching "
+            "scope['client']. uvicorn's own proxy_headers is passed False "
+            "explicitly: it defaults to on, trusting loopback, and it previously "
+            "ran here with forwarded_allow_ips='*', which believed the header "
+            "from any peer. "
+            "THE HAZARD, precisely: once a peer is listed, the rightmost entry "
+            "of the header it sends is believed. nginx relays client request "
+            "headers to the upstream by default, so a `location { proxy_pass "
+            "... }` block with no proxy_set_header line forwards the visitor's "
+            "own X-Forwarded-For unchanged and the address Synopticon believes "
+            "is entirely attacker-chosen -- and so are the network allowlist's "
+            "verdict, both throttle tiers' keys and the network half of a "
+            "session pin. Configure the proxy to OVERWRITE the header "
+            "(proxy_set_header X-Forwarded-For $remote_addr) -- never to pass "
+            "the visitor's own value ($http_x_forwarded_for). Appending "
+            "($proxy_add_x_forwarded_for) is safe against this walk, because a "
+            "prepended forgery is never the rightmost untrusted entry. "
+            "Synopticon cannot detect the difference and does not try: a "
+            "single-entry header is what a correct overwrite produces and what a "
+            "forgery looks like. If the proxy forwards no address at all, every "
+            "visitor instead resolves to the proxy's own address and shares one "
+            "budget; that is warned about at start-up and reported by "
+            "Settings -> Access. "
+            "List only the proxy itself: any address in this list is skipped "
+            "during the walk, so a range wide enough to contain real visitors "
+            "lets one of them forge the entry to its left. Listing a loopback "
+            "address without also overwriting the header is strictly worse than "
+            "listing nothing. This list does NOT exempt anything from the "
+            "sign-in limits -- there are no exemptions. "
+            "Read at start-up; restart after changing it."
+        )},
+    )
+
+    # -- network allowlist -------------------------------------------------- #
+    allow_from: list[str] = Field(
+        default_factory=list,
+        title="Allowed addresses",
+        description=(
+            "Which addresses may reach the web interface. Leave this empty (the "
+            "default) and every address is allowed.\n\n"
+            "Add addresses or ranges — '192.168.1.50', '192.168.1.0/24', "
+            "'2001:db8::/32' — and everything else is refused before it can even "
+            "see the sign-in page.\n\n"
+            "Your own machine (localhost) is always allowed whatever is listed "
+            "here, so you can never lock yourself out of a terminal on the server "
+            "or an SSH tunnel."
+        ),
+        json_schema_extra={"details": (
+            "Checked on every request — pages, API calls, crops and the app "
+            "bundle — not only at sign-in, so a stolen session cookie or access "
+            "key is useless from a refused address. GET /api/health is the one "
+            "exception, so container healthchecks keep working. Behind a reverse "
+            "proxy this is only as good as 'trusted_proxies': an untrusted proxy, "
+            "or a proxy on this machine that forwards no address, makes every "
+            "request look like it came from the proxy, and a listed proxy that "
+            "does not overwrite X-Forwarded-For lets a visitor name whatever "
+            "address they like. Synopticon refuses to save an allowlist in the "
+            "first two states rather than pretend to restrict anyone, and warns "
+            "about the third at start-up. Check Settings → Access, 'This "
+            "browser', before switching it on. Read at start-up; takes effect on "
+            "restart, and `synopticon web-access --clear` plus a restart is the "
+            "way back in."
+        )},
+    )
+    allow_private_networks: bool = Field(
+        default=True,
+        title="Always allow local networks",
+        description=(
+            "Keep home and office networks reachable even when the list above is "
+            "set — 10.x, 172.16–31.x, 192.168.x and their IPv6 equivalents.\n\n"
+            "On by default, so that turning the restriction on to shut out the "
+            "public internet cannot accidentally shut out your own network. Turn "
+            "it off only if you want to restrict access within your network too, "
+            "and list the exact addresses above first."
+        ),
+        json_schema_extra={"details": (
+            "Covers 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10 "
+            "(carrier NAT), 169.254.0.0/16, fc00::/7 and fe80::/10. Loopback is "
+            "allowed unconditionally and is not governed by this switch. While "
+            "this is on and every entry above is already a local address, the "
+            "list restricts nobody; Settings → Access says so in words. It "
+            "governs the address list and nothing else -- it has no effect on "
+            "the sign-in limits, which exempt no address."
+        )},
+    )
+
+    # -- login throttling --------------------------------------------------- #
+    max_failures_per_address: int = Field(
+        default=20, ge=0, le=1000,
+        title="Failed sign-ins per address",
+        description=(
+            "How many sign-ins may fail from one address inside the window below "
+            "before that address is turned away for a while. This is what stops "
+            "someone working through a list of usernames: guessing twenty names "
+            "costs as much as guessing twenty passwords.\n\n"
+            "An address here means the whole home connection: a /24 on IPv4, a "
+            "/64 on IPv6, since a single visitor is handed thousands of IPv6 "
+            "addresses to rotate through. A completed sign-in gives back exactly "
+            "what it spent, so signing in often never counts against you.\n\n"
+            "This limit applies to every address, including this machine and any "
+            "reverse proxy in front of it. There are no exemptions: on the usual "
+            "setup — Synopticon on localhost with a proxy in front of it — an "
+            "exemption for 'the server itself' would be an exemption for every "
+            "visitor on the internet.\n\n"
+            "If several people share one address — an office, or a reverse proxy "
+            "you have not listed — they share one budget, so raise it or list the "
+            "proxy. 0 turns this off and leaves only the slowdown that applies to "
+            "one address guessing at one username."
+        ),
+        json_schema_extra={"details": (
+            "Sliding window over attempt timestamps held in a deque(maxlen=N), so "
+            "the per-address cost is N (float, key) pairs, keyed on "
+            "clientip.ip_prefix. The tier blocks when the count reaches N; 0 "
+            "disables it. Counts failures and outcome-unknown attempts across "
+            "every username and every step (password, code, account creation, "
+            "re-authentication). A successful sign-in refunds exactly the entries "
+            "that (address, username) pair charged since its last success -- the "
+            "window entries carry the charging pair's key so a refund can never "
+            "give back somebody else's charge. Never skipped, for any address, "
+            "for any reason, and there is no code path that could skip it: "
+            "throttle.verdict takes no trust parameter and reads no field of "
+            "ResolvedClient except `ip`."
+        )},
+    )
+    address_window_minutes: int = Field(
+        default=5, ge=1, le=1440, title="Address window",
+        description="The period the count above is measured over.",
+    )
+    address_block_minutes: int = Field(
+        default=5, ge=1, le=1440, title="Address block time",
+        description="How long an address is turned away once it trips the limit.",
+        json_schema_extra={"details": (
+            "The limiter forgets an idle address after the longer of its own "
+            "decay interval and (this block + the window above), so a long block "
+            "cannot be shortened by the attacker simply going quiet. That "
+            "derivation is why this field's ceiling does not have to be clamped "
+            "to the decay interval."
+        )},
+    )
+
+    # -- sign-in log -------------------------------------------------------- #
+    sign_in_log: bool = Field(
+        default=True,
+        title="Keep a sign-in log",
+        description=(
+            "Record every attempt to sign in — when it happened, which username "
+            "was typed, the address it came from and whether it worked. Shown "
+            "under Settings → Access. Turning this off stops new entries; it does "
+            "not delete the ones already there."
+        ),
+        json_schema_extra={"details": (
+            "Rows land in web_auth_log. Read once at start-up into "
+            "authlog.configure(), which is what record_attempt consults before "
+            "every insert, so switching it off takes effect on restart. It also "
+            "switches off the hourly retention pass, so the entries already "
+            "recorded are kept rather than aged out behind your back. "
+            "Passwords, session cookies and access keys are never written to it "
+            "in any form, and nothing reads it to make a decision. Writing is "
+            "best-effort: a database error is swallowed rather than failing the "
+            "request, so under heavy write contention an entry can be missing."
+        )},
+    )
+    sign_in_log_days: int = Field(
+        default=90, ge=0, le=3650, title="Keep entries for (days)",
+        description=(
+            "How long an entry is kept. 0 keeps entries until the limit below "
+            "pushes them out."
+        ),
+    )
+    sign_in_log_max_entries: int = Field(
+        default=5000, ge=0, le=1000000, title="Maximum entries",
+        description=(
+            "An upper bound on the log's size, enforced periodically, so it "
+            "cannot grow without limit on a server left running for years. Once "
+            "reached, the oldest entries are dropped as new ones arrive. 0 "
+            "removes the bound."
+        ),
+        json_schema_extra={"details": (
+            "Both bounds reach authlog through authlog.configure() at start-up "
+            "and are enforced together by an hourly pass in the web process's "
+            "scheduler thread, once at start-up, and as a backstop every 1000 "
+            "inserts: age first, then the row cap. Because the pass is periodic, "
+            "the table can briefly exceed the cap between passes — it is an upper "
+            "bound, not a hard ceiling. 5000 entries is roughly 1 MB."
+        )},
+    )
+    log_failed_api_keys: bool = Field(
+        default=True,
+        title="Log rejected access keys",
+        description=(
+            "Also record requests that arrived with an access key that is unknown "
+            "or has been revoked. Successful key use is not recorded — the list of "
+            "keys already shows each one's last-used time — because a script "
+            "polling every few seconds would swamp everything else."
+        ),
+        json_schema_extra={"details": (
+            "Consulted in app.py's Bearer-failure branch before the write, so "
+            "switching it off writes nothing at all. Rejections are recorded at "
+            "most once a minute per source address prefix, so a looping client "
+            "with a stale key cannot flood the log. The same gate covers "
+            "rate-limited sign-in attempts."
+        )},
+    )
+
+    # -- two-step sign-in --------------------------------------------------- #
+    totp_issuer: str = Field(
+        default="Synopticon", title="Authenticator name",
+        description="The name shown next to the code in your authenticator app.",
+        json_schema_extra={"details": (
+            "Passed to totp.provisioning_uri by POST /api/auth/totp/start (route "
+            "11) and written into the otpauth:// URI as the issuer and the label "
+            "prefix. Changing it later invalidates nothing, but entries already "
+            "added keep the old name."
+        )},
+    )
+    totp_skew_steps: int = Field(
+        default=1, ge=0, le=3, title="Clock tolerance",
+        description=(
+            "How many 30-second slots either side of now a code is still accepted."
+        ),
+        json_schema_extra={"details": (
+            "1 means a code is valid for roughly 90 seconds around its slot, which "
+            "absorbs the usual phone-versus-server drift. Raising it widens the "
+            "window an intercepted code stays usable in; 0 requires the two clocks "
+            "to agree to the second, which is usually a mistake on a NAS without "
+            "NTP. A code is additionally refused if its slot is one already used "
+            "— except when the server's own clock has jumped more than two hours "
+            "backwards, which is a correction, not a replay."
+        )},
+    )
+    login_challenge_ttl: int = Field(
+        default=300, ge=60, le=900, title="Second-step time limit (seconds)",
+        description="How long you have to enter the code after the password step.",
+    )
+    login_code_attempts: int = Field(
+        default=5, ge=1, le=20, title="Code attempts per sign-in",
+        description=(
+            "Wrong codes allowed before the sign-in has to start over from the "
+            "password."
+        ),
+        json_schema_extra={"details": (
+            "Counted on the pending sign-in row, independently of the per-address "
+            "limits, and it is an exact count: 5 means five submissions are "
+            "accepted for judging and the sixth restarts the sign-in. This is the "
+            "hard bound on guessing a six-digit code: without it, a one-second "
+            "slowdown still allows enough guesses per window to matter. "
+            "Exhausting it discards the row."
+        )},
+    )
+    recovery_code_count: int = Field(
+        default=10, ge=5, le=20, title="Backup codes",
+        description=(
+            "How many single-use backup codes are issued when you turn two-step "
+            "sign-in on."
+        ),
+        json_schema_extra={"details": (
+            "Passed by route 12 to twofactor.confirm_totp_enrolment, which passes "
+            "it to generate_recovery_codes. Generated once at enrolment as 64-bit "
+            "random strings and stored hashed — shown exactly once, and "
+            "replaceable but not recoverable. Any of them can be typed wherever a "
+            "code is asked for, including when turning two-step sign-in back off."
+        )},
+    )
+
+    @field_validator("allow_from", "trusted_proxies")
+    @classmethod
+    def _valid_networks(cls, v: list[str]) -> list[str]:
+        for entry in v:
+            try:
+                ipaddress.ip_network(entry.strip(), strict=False)
+            except ValueError as exc:
+                raise ValueError(f"{entry!r} is not an IP address or CIDR range") from exc
+        return [e.strip() for e in v]
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SYNOPTICON_",
@@ -852,6 +1160,7 @@ class Settings(BaseSettings):
     restoration: RestorationConfig = Field(default_factory=RestorationConfig)
     clustering: ClusteringConfig = Field(default_factory=ClusteringConfig)
     crossref: CrossrefConfig = Field(default_factory=CrossrefConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
 
     @classmethod
     def settings_customise_sources(
