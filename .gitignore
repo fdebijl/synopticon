@@ -1,6 +1,7 @@
 __pycache__/
 .venv/
 .pytest_cache/
+.scratch/
 docker/data/
 docker/models/
 data/
