@@ -1,17 +1,23 @@
 ![Synopticon logo](assets/Synopticon%20Hero.png)
 
-Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of standalone utilities that run over your library and take on the jobs DSM currently does poorly or not at all. The current toolkit includes enhanced face recognition, robust face grouping, automatic face reassignment, duplicate photo deletion and much more.
+Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of utilities that run over your library and take on the jobs DSM currently does poorly or not at all. It includes enhanced face recognition, robust face grouping, automatic face reassignment, duplicate photo deletion and much more.
 
 **Enhanced face recognition**  
- Synology's built-in face detection misses faces and sometimes links photos to the wrong person. Synopticon runs a cutting-edge face detection pipeline over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' Person API. Writebacks only occur after your explicit review.
+Synology's built-in face detection frequently misses faces, or links photos to the wrong person. Synopticon runs a cutting-edge face detection pipeline over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' API. Writebacks only occur after your explicit review.
 
 ![](./assets/pretty_screenshots/review.png)
+
+The result is a drastically better hit rate than Synology Photos' baseline face recognition. While Synology Photos often recalls 20% of the faces in a photo, Synopticon hits a ~95% average recall rate.
+
+![](./assets/other/comparison.png)
 
 **QuickMerger**  
 Quickly work through unnamed faces in Synology Photos through an ergonomic merge interface, perfect for giving the initial set of faces a name to start working with inside Synopticon.
 
 **Inspect**  
-See exactly what Synopticon saw in a single photo: every face it detected, drawn on the photo with its detector, confidence and quality scores, next to the faces Synology found — plus the group each face landed in and the review items it produced. Every face crop in Review links here, and Inspect links onward to the photo in Synology Photos.
+See exactly what Synopticon saw in a single photo: every face it detected, confidence and quality scores, next to the faces Synology found, plus the group each face landed. Clicking faces in the review screen will, conveniently, also take you here.
+
+![](./assets/pretty_screenshots/inspect.png)
 
 **Deduplication**  
 finds duplicate photos (byte-identical, or visually near-identical) from content hashes computed over your originals, keeps the highest-quality copy of each group, and deletes the rest through Synology's background-task API.
@@ -299,7 +305,7 @@ The faces pass is checkpointed per-photo, so it resumes cleanly after an interru
 
 ### Face recognition
 
-#### `extract` — *Detect faces*
+#### `extract` (*Detect faces*)
 Scan synced photos, record every face found, and compute ensemble embeddings (resumable; interrupt any time). Evicts cached originals afterward unless `storage.keep_originals` is set.
 
 | Option | Default | Description |
@@ -308,10 +314,10 @@ Scan synced photos, record every face found, and compute ensemble embeddings (re
 | `--photo-id INTEGER` | none | Process a single photo id. |
 | `--space TEXT` | all configured | Limit to one space. |
 
-#### `cluster` — *Group faces*
+#### `cluster` (*Group faces*)
 Group all detected faces by person and cross-reference them against Synology persons. Writes a new grouping run. No options.
 
-#### `recluster` — *Re-group faces*
+#### `recluster` (*Re-group faces*)
 Group the faces again from the cached embeddings with parameter overrides. Never hits the NAS.
 
 | Option | Default | Description |
@@ -326,7 +332,7 @@ Generate the static HTML review report.
 | `--run-id INTEGER` | latest | Grouping run to report on. |
 
 #### `web`
-Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports` and `--host 0.0.0.0` — the default bind is unreachable from outside the container. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
+Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, settings) with a first-run setup wizard. Under Docker, add `--service-ports` and `--host 0.0.0.0`, since the default bind is unreachable from outside the container. See [Web GUI](#web-gui) for the wizard, auth, and reverse-proxy guidance.
 
 | Option | Default | Description |
 |---|---|---|
@@ -337,7 +343,7 @@ Serve the full web GUI (dashboard, pipeline, review, apply, maintenance, setting
 Deprecated alias of `web`, kept for one release. Serves the same app and prints the `/review` URL; new usage should call `synopticon web`. Same `--host`/`--port` options.
 
 #### `reset-password`
-Reset a web GUI account's password from the shell — the recovery path when the admin password is lost. It rewrites the scrypt hash in the configured database directly, so it needs access to that database but no login, and it never touches the NAS. All of that account's sessions are revoked (so a stolen cookie can't outlive the credential) unless `--keep-sessions`. With a single account the username can be omitted. This is CLI-only by design and is not exposed as a web job.
+Reset a web GUI account's password from the shell. This the recovery path when the admin password is lost. It rewrites the scrypt hash in the configured database directly, so it needs access to that database but no login, and it never touches the NAS. All of that account's sessions are revoked (so a stolen cookie can't outlive the credential) unless `--keep-sessions`. With a single account the username can be omitted. This is CLI-only by design and is not exposed as a web job.
 
 ```bash
 uv run synopticon reset-password              # prompts twice, hidden
@@ -347,11 +353,11 @@ docker compose run --rm synopticon reset-password admin
 | Option | Default | Description |
 |---|---|---|
 | `[USERNAME]` | the only account | Account to reset; required if several exist. |
-| `--password TEXT` | *(prompt)* | New password non-interactively. Prefer the prompt — this lands in your shell history. |
+| `--password TEXT` | *(prompt)* | New password non-interactively. Prefer the prompt, since this lands in your shell history. |
 | `--keep-sessions` | off | Leave that account's existing logins valid. |
 
 #### `web-access`
-Report or repair who may reach the web interface, from the server. With no options, prints the current `[security]` allowlist settings and which config file they came from. `--clear` is the recovery path an address list locks itself out with — see [Restricting who can reach the GUI](#restricting-who-can-reach-the-gui). Deliberately CLI-only: a web job would let an already-open session loosen the very list that is about to lock it out on the next restart.
+Report or repair who may reach the web interface, from the server. With no options, prints the current `[security]` allowlist settings and which config file they came from. `--clear` is the recovery path an address list locks itself out with - see [Restricting who can reach the GUI](#restricting-who-can-reach-the-gui). Deliberately CLI-only: a web job would let an already-open session loosen the very list that is about to lock it out on the next restart.
 
 ```bash
 synopticon web-access                          # report only
@@ -368,7 +374,7 @@ synopticon web-access --allow 192.168.1.0/24   # set the list to one entry
 Takes effect on restart, like every `[security]` field this command touches.
 
 #### `disable-2fa`
-Turn off two-step sign-in for an account, from the server — the recovery path when the device with the authenticator app is lost. Drops the confirmed factor and its backup codes, discards any half-finished sign-in waiting on a code, and revokes every session of that account. Safe to run against an account with no factor enrolled; it reports that and exits cleanly. With a single account the username can be omitted. CLI-only; takes effect immediately, no restart needed.
+Turn off two-step sign-in for an account, from the server - the recovery path when the device with the authenticator app is lost. Drops the confirmed factor and its backup codes, discards any half-finished sign-in waiting on a code, and revokes every session of that account. Safe to run against an account with no factor enrolled; it reports that and exits cleanly. With a single account the username can be omitted. CLI-only; takes effect immediately, no restart needed.
 
 ```bash
 uv run synopticon disable-2fa
@@ -683,4 +689,5 @@ Parts of this codebase were created by a large language model, in particular mod
 
 ## Acknowledgments
 - [ScreenPastel](https://screenpastel.vercel.app/) is an amazing tool for prettifying screenshots that I used for the screenshots at the top
+  - Adding additional screenshots for a new feature? Use #9650C9 to #662D91 at a 135 degree direction as the gradient with a 40px padding
 - [FeedbackFruits](https://feedbackfruits.com/) for generously donating many megatokens to this project.
