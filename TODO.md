@@ -31,13 +31,3 @@
 39. Preview photos in new_person should link to the photo
 
 40. Merge focus view > make the photos bigger
-
-41. SEC1: Add 2fa
-
-42. SEC2: Limit login to certain IP ranges
-
-43. SEC3: Show login attempts in a log
-
-44. SEC4: Add a session pinning toggle to the user settings
-
-45. SEC5: Limit login attempts to prevent brute forcing
