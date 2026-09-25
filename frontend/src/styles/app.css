@@ -46,7 +46,7 @@
   --sp-5: 24px;
   --sp-6: 32px;
   --toolbar-h: 40px;
-  --nav-item-h: 32px;
+  --nav-item-h: 38px;
   --sidebar-w: 216px;
   --shadow-card: 0 4px 10px rgba(15, 25, 35, 0.04);
   --shadow-menu: 0 1px 4px rgba(15, 25, 35, 0.18);
@@ -246,51 +246,6 @@ kbd {
 .brand-lg .brand-mark {
   width: 36px;
   height: 36px;
-}
-.nav {
-  list-style: none;
-  margin: var(--sp-3) 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  height: var(--nav-item-h);
-  padding: 0 var(--sp-3);
-  border-radius: var(--radius);
-  color: var(--text);
-  text-decoration: none;
-}
-.nav-item:hover {
-  background: var(--bg-sunken);
-  text-decoration: none;
-}
-.nav-item.active {
-  background: var(--accent-tint);
-  color: var(--accent);
-  font-weight: 600;
-}
-.nav-label {
-  flex: 1;
-}
-.nav-badge {
-  background: var(--accent);
-  color: #fff;
-  border-radius: 999px;
-  font-size: var(--fs-sm);
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-.nav-scrim {
-  display: none;
 }
 .content {
   flex: 1;

@@ -10,16 +10,17 @@ interface NavItem {
   id: string
   to: string
   label: string
+  separator?: boolean
 }
 
 const NAV: NavItem[] = [
   { id: 'dashboard', to: '/', label: 'Dashboard' },
   { id: 'pipeline', to: '/pipeline', label: 'Pipeline' },
   { id: 'review', to: '/review', label: 'Review' },
-  { id: 'apply', to: '/apply', label: 'Apply' },
+  { id: 'apply', to: '/apply', label: 'Apply', separator: true },
   { id: 'inspect', to: '/inspect', label: 'Inspect' },
   { id: 'utilities', to: '/utilities', label: 'Utilities' },
-  { id: 'schedules', to: '/schedules', label: 'Schedules' },
+  { id: 'schedules', to: '/schedules', label: 'Schedules', separator: true },
   { id: 'maintenance', to: '/maintenance', label: 'Maintenance' },
   { id: 'settings', to: '/settings', label: 'Settings' },
 ]
@@ -78,23 +79,27 @@ onUnmounted(() => {
       <span class="brand-name">Synopticon</span>
     </RouterLink>
     <ul class="nav">
-      <li v-for="item in NAV" :key="item.id">
-        <RouterLink
-          :to="item.to"
-          class="nav-item"
-          :class="{ active: isActive(item.to) }"
-          :aria-current="isActive(item.to) ? 'page' : undefined"
-          @click="closeNav"
-        >
-          <span class="nav-label">{{ item.label }}</span>
-          <span
-            v-if="item.id === 'review' && pending"
-            class="nav-badge"
-            :aria-label="`${pending} pending`"
-            >{{ pending }}</span
+      <template v-for="item in NAV" :key="item.id">
+        <li>
+          <RouterLink
+            :to="item.to"
+            class="nav-item"
+            :class="{ active: isActive(item.to) }"
+            :aria-current="isActive(item.to) ? 'page' : undefined"
+            @click="closeNav"
           >
-        </RouterLink>
-      </li>
+            <span class="nav-label">{{ item.label }}</span>
+            <span
+              v-if="item.id === 'review' && pending"
+              class="nav-badge"
+              :aria-label="`${pending} pending`"
+            >
+              {{ pending }}
+            </span>
+          </RouterLink>
+        </li>
+        <li v-if="item.separator" class="nav-separator" aria-hidden="true"></li>
+      </template>
     </ul>
     <div class="sidebar-footer">
       <RouterLink
@@ -118,7 +123,56 @@ onUnmounted(() => {
   padding-top: var(--sp-2);
   border-top: 1px solid var(--border-soft);
 }
+.nav {
+  list-style: none;
+  margin: var(--sp-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  height: var(--nav-item-h);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+}
+.nav-item:hover {
+  background: var(--bg-sunken);
+  text-decoration: none;
+}
+.nav-item.active {
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-weight: 600;
+}
+.nav-label {
+  flex: 1;
+}
+.nav-badge {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 999px;
+  font-size: var(--fs-sm);
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.nav-scrim {
+  display: none;
+}
 .nav-version {
   font-size: var(--fs-sm);
+}
+.nav-separator {
+  height: 1px;
+  margin: var(--sp-2) 0;
+  background-color: var(--border-soft);
 }
 </style>
