@@ -596,7 +596,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
                 "
                 @click.stop="picker = face"
               >
-                {{ isTagged(face) ? 'Reassign…' : 'Tag as…' }}
+                {{ isTagged(face) ? 'Reassign' : 'Tag as person' }}
               </button>
             </div>
             <dl class="ins-facts">
@@ -998,6 +998,7 @@ watch(() => [route.params.space, route.params.photoId], syncFromRoute)
 }
 .ins-tag-btn {
   width: 100%;
+  background: var(--action);
 }
 .ins-crop {
   width: 96px;
