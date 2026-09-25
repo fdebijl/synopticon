@@ -90,7 +90,7 @@ def _fetch_bench_photos(
     return conn.execute(
         "SELECT p.* FROM photos p "
         "LEFT JOIN extract_log e ON e.space = p.space AND e.photo_id = p.id "
-        "WHERE p.deleted = 0 AND p.type = 'photo' AND p.space = ? "
+        "WHERE p.deleted = 0 AND p.type IN ('photo', 'live') AND p.space = ? "
         "ORDER BY COALESCE(e.face_count, 0) DESC, p.id "
         "LIMIT ?",
         (space, limit),

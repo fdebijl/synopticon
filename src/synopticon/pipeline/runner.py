@@ -147,7 +147,7 @@ def _fetch_work(
     sql = (
         "SELECT p.* FROM photos p "
         "LEFT JOIN extract_log e ON e.space = p.space AND e.photo_id = p.id "
-        "WHERE p.deleted = 0 AND p.type = 'photo' AND p.space = ? "
+        "WHERE p.deleted = 0 AND p.type IN ('photo', 'live') AND p.space = ? "
         "AND (e.pipeline_version IS NULL OR e.pipeline_version != ? "
         "     OR e.cache_key IS NOT p.cache_key) "
         "ORDER BY p.id"

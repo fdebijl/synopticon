@@ -167,6 +167,21 @@ def test_detection_config_change_bumps_pipeline_version_and_reextracts(env):
     assert conn.execute("SELECT pipeline_version FROM extract_log").fetchone()[0] == v2
 
 
+def test_live_photos_are_extracted_and_videos_are_not(env):
+    conn, _, _ = env
+    conn.execute(
+        "INSERT INTO photos (id, space, type, cache_key, width, height, synced_at, deleted) "
+        "VALUES (?,?,?,?,?,?,?,0), (?,?,?,?,?,?,?,0)",
+        (2, "personal", "live", "ck2", 200, 200, store.now(),
+         3, "personal", "video", "ck3", 200, 200, store.now()),
+    )
+    conn.commit()
+    stats = _run(env)
+    assert stats.photos_processed == 2
+    logged = {r[0] for r in conn.execute("SELECT photo_id FROM extract_log").fetchall()}
+    assert logged == {1, 2}
+
+
 def test_photo_id_bypasses_skip_filter(env):
     conn, _, _ = env
     _run(env)
