@@ -93,7 +93,16 @@ function onActivate(e: Event): void {
     <template v-if="item.kind === 'new_person'">
       <div class="thumbs">
         <template v-for="(c, i) in item.new_person_crops" :key="i">
-          <img v-if="c" :src="c" alt="" loading="lazy" decoding="async" />
+          <template v-if="c">
+            <RouterLink
+              v-if="item.new_person_inspect_urls[i]"
+              :to="item.new_person_inspect_urls[i]!"
+              target="_blank"
+              title="inspect this photo"
+              ><img :src="c" alt="" loading="lazy" decoding="async"
+            /></RouterLink>
+            <img v-else :src="c" alt="" loading="lazy" decoding="async" />
+          </template>
         </template>
       </div>
       <input
@@ -237,7 +246,15 @@ function onActivate(e: Event): void {
     <!-- assign / low_confidence: a single target person + confidence. -->
     <template v-else>
       <div class="merge-name">
-        <strong>{{ p.person_name || p.person_id }}</strong
+        <strong>
+          <a
+            v-if="item.person_url"
+            :href="item.person_url"
+            target="_blank"
+            rel="noopener"
+            >{{ p.person_name || p.person_id }}</a
+          >
+          <template v-else>{{ p.person_name || p.person_id }}</template></strong
         ><HiddenBadge v-if="item.target_hidden" cls="name-hidden" />
       </div>
       <div v-if="p.manual_target" class="thumbs">
@@ -330,6 +347,9 @@ function onActivate(e: Event): void {
 .thumbs {
   display: flex;
   flex-wrap: wrap;
+}
+.thumbs a {
+  display: flex;
 }
 .thumbs img {
   width: 48px;

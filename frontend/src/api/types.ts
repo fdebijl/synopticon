@@ -145,6 +145,8 @@ export interface ReviewItem {
   person_url: string | null
   from_person_url: string | null
   new_person_crops: (string | null)[]
+  /** Inspect route per `new_person_crops` entry (null when the face is gone). */
+  new_person_inspect_urls: (string | null)[]
   merge_crops_a: string[]
   merge_crops_b: string[]
   unnamed_target: boolean

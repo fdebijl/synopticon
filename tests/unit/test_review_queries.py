@@ -175,6 +175,26 @@ def test_item_url_points_at_similar_group_top_pick(conn, settings):
     assert item["inspect_url"] == "/inspect/personal/2"
 
 
+def test_new_person_thumbs_link_to_inspect(conn, settings):
+    """Each exemplar links to the photo that owns it; a face a re-extract
+    renumbered away gets no link rather than a wrong one."""
+    for face_id, photo_id in ((3, 11), (4, 12)):
+        conn.execute(
+            "INSERT INTO faces (face_id, space, photo_id, detector, x, y, w, h, "
+            "pipeline_version, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (face_id, "shared", photo_id, "scrfd", 0, 0, 10, 10, "v1", store.now()),
+        )
+    conn.commit()
+    _add_item(conn, "new_person", {"face_ids": [3, 99, 4]})
+
+    (item,) = queries.load_review_items(conn, settings, kind="new_person")
+    assert item["new_person_inspect_urls"] == [
+        "/inspect/shared/11",
+        None,
+        "/inspect/shared/12",
+    ]
+
+
 def test_hidden_person_flag(conn, settings):
     conn.execute(
         "INSERT INTO persons (id, space, name, show, synced_at) VALUES (?,?,?,?,?)",

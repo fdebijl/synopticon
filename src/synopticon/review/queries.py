@@ -147,6 +147,28 @@ def _link_map(
     return out
 
 
+def _face_photo_map(
+    conn: Connection, payloads: list[dict]
+) -> dict[int, tuple[str, int]]:
+    """``face_id -> (space, photo_id)`` for every ``face_ids`` entry on a page.
+
+    A ``new_person`` payload names faces, not a photo, so linking each exemplar
+    to Inspect needs the photo that owns it. Ids a re-extract renumbered away
+    are simply absent.
+    """
+    ids = sorted({int(f) for p in payloads for f in p.get("face_ids") or []})
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    return {
+        int(r["face_id"]): (r["space"], int(r["photo_id"]))
+        for r in conn.execute(
+            f"SELECT face_id, space, photo_id FROM faces WHERE face_id IN ({placeholders})",
+            ids,
+        )
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Ground-truth lookups (static during a review session; caller may cache)
 # --------------------------------------------------------------------------- #
@@ -298,6 +320,7 @@ def load_review_items(
 
     payloads = [json.loads(r["payload_json"]) for r in rows]
     links = _link_map(conn, payloads)
+    face_photos = _face_photo_map(conn, payloads)
 
     items = []
     for r, payload in zip(rows, payloads):
@@ -336,6 +359,10 @@ def load_review_items(
                 ),
                 "new_person_crops": [
                     crops.get(int(f)) for f in payload.get("face_ids", [])
+                ],
+                "new_person_inspect_urls": [
+                    inspect_path(*face_photos.get(int(f), (None, None)))
+                    for f in payload.get("face_ids", [])
                 ],
                 "merge_crops_a": _merge_side_crops(
                     payload.get("person_a"), exemplars, crops
