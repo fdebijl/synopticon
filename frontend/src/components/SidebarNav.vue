@@ -1,9 +1,5 @@
 <script setup lang="ts">
-// Primary navigation sidebar. Ports templates/partials/sidebar.html.j2:
-// nav items, active highlight (server used `active == id`; mirrored here off the
-// route path), the Review pending-count badge (from /api/review/counts), plus a
-// bottom-pinned About item carrying the version from the cached /api/auth/me.
-// The topbar (job chip, theme/user menus) lives in App.vue as the shell.
+
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { getJSON } from '../api/client'

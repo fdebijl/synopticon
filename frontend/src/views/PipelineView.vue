@@ -10,6 +10,7 @@ import JobPanel from '../components/JobPanel.vue'
 import { toast } from '../stores/toasts'
 import { useJobs } from '../stores/jobs'
 import { jobLabel } from '../utils/jobs'
+import { ago } from '../utils/time'
 import type { Job } from '../api/types'
 
 const SPACES: [string, string][] = [
@@ -203,6 +204,13 @@ const { state: jobs, refreshJobs } = useJobs()
 const history = computed<Job[]>(() => jobs.history)
 const running = computed(() => jobs.running !== null)
 
+function lastRunText(m: Job): string {
+  if (m.state === 'queued') return 'Queued'
+  if (m.state === 'running') return 'Running now'
+  const text = 'Last ran ' + ago(m.started_at ?? m.created_at)
+  return m.state === 'succeeded' ? text : `${text} · ${m.state}`
+}
+
 function run(card: CardDef): void {
   panel.value
     ?.start(card.cmd, buildParams(card))
@@ -324,6 +332,15 @@ function fmtDuration(m: Job): string {
             >
               Run
             </button>
+            <RouterLink
+              v-if="jobs.lastRuns[card.cmd]"
+              class="last-run"
+              :class="`last-run-${jobs.lastRuns[card.cmd].state}`"
+              :to="`/jobs/${jobs.lastRuns[card.cmd].id}`"
+              :title="fmtTime(jobs.lastRuns[card.cmd].started_at ?? jobs.lastRuns[card.cmd].created_at)"
+            >
+              {{ lastRunText(jobs.lastRuns[card.cmd]) }}
+            </RouterLink>
           </div>
         </section>
       </div>
@@ -481,6 +498,25 @@ function fmtDuration(m: Job): string {
   gap: var(--sp-2);
   align-items: center;
   margin-top: auto;
+}
+.last-run {
+  margin-left: auto;
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+  text-decoration: none;
+}
+.last-run:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+.last-run-failed,
+.last-run-interrupted {
+  /* Could be --danger as well, but the pipeline view is already pretty overwhelming */
+  color: var(--text-3);
+}
+.last-run-running,
+.last-run-queued {
+  color: var(--action);
 }
 .disclosure {
   background: transparent;

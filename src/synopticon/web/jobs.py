@@ -845,6 +845,23 @@ class JobManager:
         snapshot, so a listing (the topbar chip, the dashboard) can show how far
         along it is without opening a stream per job.
         """
+        return self._disk_history()[:limit]
+
+    def listing(self, limit: int = 50) -> dict:
+        """``history(limit)`` plus the newest job per name, from one disk scan.
+
+        ``last_runs`` looks past ``limit``, so a rarely-run command keeps its
+        "last ran" after fifty routine syncs have pushed it out of the history.
+        """
+        metas = self._disk_history()
+        last_runs: dict[str, dict] = {}
+        for meta in metas:
+            name = meta.get("name")
+            if isinstance(name, str):
+                last_runs.setdefault(name, meta)
+        return {"items": metas[:limit], "last_runs": last_runs}
+
+    def _disk_history(self) -> list[dict]:
         metas: list[dict] = []
         for d in self.jobs_dir.iterdir() if self.jobs_dir.is_dir() else []:
             meta = self._load_meta(d)
@@ -856,7 +873,7 @@ class JobManager:
                     meta["progress"] = _progress_snapshot(job)
             metas.append(meta)
         metas.sort(key=lambda m: m.get("created_at") or 0, reverse=True)
-        return metas[:limit]
+        return metas
 
     def _with_progress(self, job: Job) -> dict:
         """``job.meta()`` plus the live progress snapshot. Caller holds the lock."""

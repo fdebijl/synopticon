@@ -8,6 +8,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { getJSON } from '../api/client'
 import { useJobs } from '../stores/jobs'
+import { ago } from '../utils/time'
 import type { Stats, AuditEntry } from '../api/types'
 
 const stats = ref<Stats | null>(null)
@@ -17,18 +18,6 @@ const { state: jobs } = useJobs()
 
 function num(n: unknown): string {
   return (Number(n) || 0).toLocaleString()
-}
-
-function ago(ts: unknown): string {
-  const t = Number(ts)
-  if (!t) return '—'
-  const s = Math.max(0, Math.floor(Date.now() / 1000 - t))
-  if (s < 60) return s + 's ago'
-  const m = Math.floor(s / 60)
-  if (m < 60) return m + 'm ago'
-  const h = Math.floor(m / 60)
-  if (h < 24) return h + 'h ago'
-  return Math.floor(h / 24) + 'd ago'
 }
 
 function sumKinds(byKind: Record<string, number> | undefined): number {

@@ -1692,7 +1692,7 @@ def create_app(
 
     @app.get("/api/jobs")
     def api_list_jobs():
-        return {"items": jm.history(limit=50)}
+        return jm.listing(limit=50)
 
     @app.get("/api/jobs/{job_id}")
     def api_get_job(job_id: str):

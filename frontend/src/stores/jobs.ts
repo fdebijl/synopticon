@@ -24,9 +24,15 @@ const POLL_ACTIVE_MS = 5000
 const POLL_IDLE_MS = 15000
 const BACKOFF_MAX_MS = 60000
 
-const state = reactive<{ running: Job | null; history: Job[]; loaded: boolean }>({
+const state = reactive<{
+  running: Job | null
+  history: Job[]
+  lastRuns: Record<string, Job>
+  loaded: boolean
+}>({
   running: null,
   history: [],
+  lastRuns: {},
   loaded: false,
 })
 
@@ -63,10 +69,11 @@ function tick(): void {
  *  issuing a second one. */
 export function poll(): Promise<void> {
   if (inFlight) return inFlight
-  inFlight = getJSON<{ items: Job[] }>('/api/jobs')
+  inFlight = getJSON<{ items: Job[]; last_runs?: Record<string, Job> }>('/api/jobs')
     .then((data) => {
       const items = data.items || []
       state.history = items
+      state.lastRuns = data.last_runs || {}
       state.running = items.find((j) => RUNNING.has(j.state)) ?? null
       state.loaded = true
       failures = 0

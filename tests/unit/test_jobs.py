@@ -316,6 +316,22 @@ def test_running_job_listing_carries_a_progress_snapshot(manager_factory):
     assert "progress" not in on_disk
 
 
+def test_listing_last_runs_look_past_the_history_limit(manager_factory, tmp_path):
+    """A rarely-run command keeps its "last ran" once routine jobs crowd it out."""
+    jobs_dir = tmp_path / "jobs"
+    for jid, name, created in [("1", "benchmark", 100), ("2", "sync", 200), ("3", "sync", 300)]:
+        (jobs_dir / jid).mkdir(parents=True)
+        (jobs_dir / jid / "job.json").write_text(
+            json.dumps({"id": jid, "name": name, "state": "succeeded", "created_at": created})
+        )
+    jm = manager_factory()
+
+    listing = jm.listing(limit=1)
+
+    assert [m["id"] for m in listing["items"]] == ["3"]
+    assert {k: m["id"] for k, m in listing["last_runs"].items()} == {"sync": "3", "benchmark": "1"}
+
+
 def test_replay_of_unknown_job_is_empty(manager_factory):
     jm = manager_factory()
     assert jm.events("does-not-exist") == []

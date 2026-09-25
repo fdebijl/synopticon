@@ -6,8 +6,6 @@
 
 8. Align password fields to full length, add left margin
 
-10. Add 'Last ran at ...' to pipeline operations in the web UI
-
 15. UI should have a quick redirect to /login if not logged in, instead of waiting for the server
 
 19. Ensure the health endpoint always responds when the container is live, still gets bogged down by jobs.
@@ -28,6 +26,6 @@
 
 37. For operation cards in Review screen: the name of the person should link to the people screen on the NAS
 
-39. Preview photos in new_person should link to the photo
+39. Preview photos in a new_person card on the review screen should link to the photo (let's send it to the inspect route in synopticon)
 
 40. Merge focus view > make the photos bigger
