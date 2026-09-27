@@ -27,6 +27,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `15_orphaned-review-items.md` | `prune-queue`, `regen_crops`' skip logic, anything reading `face_id` out of `payload_json` |
 | `16_inspect-photo-view.md` | `web/inspect_routes.py`, the Inspect page, photo links in the SPA, box geometry, the pan/zoom stage, tagging a face from Inspect |
 | `17_web-security-hardening.md` | `web/clientip.py`, `web/auth/throttle.py`, `web/auth/authlog.py`, `web/auth/twofactor.py`, `web/auth/sessions.py`, `web/totp.py`, `web/security_routes.py`, the `[security]` config section, anything keying a decision on a client address |
+| `18_deleted-photo-review-items.md` | `voided_items`, `VoidedCache`, anything that lists or counts `review_queue`, `load_fused`'s face filter, `apply_reviewed`'s skip of deleted photos |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -144,6 +145,8 @@ Everything before `apply` is read-only toward the NAS. `apply` is dry-run by def
 - **`approved` does not imply the pipeline proposed it.** A retarget writes an approved row from a human's pick; `payload.manual_target` marks those, and their `confidence` is NULL because the stored score belonged to the person that got overruled (`payload.original_person_id`).
 
 **`payload_json`'s face ids have no foreign key, and a re-extract renumbers them** (`faces.face_id` is AUTOINCREMENT; `_process_photo` deletes and re-inserts a photo's faces). Rows proposed before a `pipeline_version` bump therefore point at ids that are gone, render with no crop, and cannot be repaired by `regen-crops` — the bbox they would be rebuilt from went with the old rows. `queries.orphaned_items` finds them and `prune-queue` deletes them; **deleting is the point, never `hidden`**, which `_existing_identities` counts as seen and would suppress the correct re-proposal forever. An orphan is only an orphan when *every* face it names is unrecoverable. (ADR 15)
+
+**A row about a photo sync has marked deleted is *voided*: filtered out, never written.** `queries.voided_items` names them (a photo-scoped row whose photo is deleted, a face-only row whose faces all are; merges never). Every list, count and `bulk_approve` excludes them, `apply` skips them and leaves them `approved`, and `load_fused` keeps their faces out of clustering. Don't prune or hide them instead: `deleted` flips back when a photo reappears, and the row, human decision included, has to come back with it. In the web process, go through the shared `VoidedCache`. (ADR 18)
 
 ### Web GUI (`web/`)
 

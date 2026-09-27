@@ -465,6 +465,35 @@ def test_apply_reviewed_dry_run_does_not_consume_approvals(respx_mock, nas_conn)
     assert row["status"] == "approved"
 
 
+def test_apply_reviewed_skips_rows_on_deleted_photos(respx_mock, client, nas_conn):
+    _bootstrap(respx_mock)
+    entry = respx_mock.post(f"{NAS_BASE_URL}/webapi/entry.cgi").mock(
+        side_effect=AssertionError("a deleted photo must not be written to")
+    )
+    nas_conn.execute(
+        "INSERT INTO photos (id, space, synced_at, deleted) VALUES (?, ?, ?, 1)",
+        (103153, "personal", store.now()),
+    )
+    _insert_review_row(
+        nas_conn,
+        "assign",
+        {
+            "face_id": 1, "photo_id": 103153, "space": "personal", "person_id": 2660,
+            "person_name": None, "bbox_normalized": [0.1, 0.1, 0.2, 0.2], "confidence": 0.9,
+        },
+    )
+    _insert_review_row(nas_conn, "reassign", {**REASSIGN_PAYLOAD, "photo_id": 103153})
+
+    writer = writeback.SynoWriter(client, nas_conn, "personal")
+    stats = writeback.apply_reviewed(
+        nas_conn, writer, kinds=["assign", "reassign"], apply_reassigns=True
+    )
+
+    assert (stats.considered, stats.skipped, stats.applied, stats.failed) == (2, 2, 0, 0)
+    assert not entry.called
+    statuses = {r["status"] for r in nas_conn.execute("SELECT status FROM review_queue")}
+    assert statuses == {"approved"}
+
 def test_apply_reviewed_applies_low_confidence_as_assign(respx_mock, client, nas_conn):
     # low_confidence rows carry the same photo_id/person_id/bbox payload as
     # assigns and must be written via writer.assign — otherwise reviewer-approved

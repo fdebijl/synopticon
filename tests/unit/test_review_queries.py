@@ -752,3 +752,84 @@ def test_delete_items_is_a_noop_for_an_empty_list(conn):
     assert queries.delete_items(conn, []) == 0
     assert queries.delete_items(conn, [999999]) == 0
     assert conn.execute("SELECT COUNT(*) AS n FROM review_queue").fetchone()["n"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Rows about deleted photos
+# --------------------------------------------------------------------------- #
+def _delete_photo(conn, space, photo_id):
+    conn.execute(
+        "UPDATE photos SET deleted = 1 WHERE space = ? AND id = ?", (space, photo_id)
+    )
+    conn.commit()
+
+
+@pytest.fixture
+def deleted_photo_queue(conn):
+    """A live photo and two deleted ones, with a row of every shape across them."""
+    _add_face(conn, 1, "personal", photo_id=1, crop_path="/crops/1.jpg")
+    _add_face(conn, 2, "personal", photo_id=2, crop_path="/crops/2.jpg")
+    _add_face(conn, 3, "personal", photo_id=3, crop_path="/crops/3.jpg")
+    _delete_photo(conn, "personal", 2)
+    _delete_photo(conn, "personal", 3)
+    on_live = {"face_id": 1, "space": "personal", "photo_id": 1, "person_id": 7}
+    on_gone = {"face_id": 2, "space": "personal", "photo_id": 2, "person_id": 7}
+    return {
+        "live_assign": _add_item(conn, "assign", on_live, confidence=0.9),
+        "gone_assign": _add_item(conn, "assign", on_gone, confidence=0.9),
+        "gone_reassign": _add_item(conn, "reassign", on_gone, status="approved"),
+        "gone_new_person": _add_item(conn, "new_person", {"face_ids": [2, 3]}),
+        "mixed_new_person": _add_item(conn, "new_person", {"face_ids": [1, 2]}),
+        "gone_restore": _add_item(
+            conn, "restore_disagreement", {"face_id": 3, "space": "personal"}
+        ),
+        "gone_merge": _add_item(
+            conn,
+            "merge",
+            {
+                "person_a": {"space": "personal", "person_id": 7},
+                "person_b": {"space": "personal", "person_id": 8},
+                "evidence": {"exemplars": {"personal:7": [2], "personal:8": [3]}},
+            },
+        ),
+    }
+
+
+def test_voided_items_names_rows_about_deleted_photos_only(conn, deleted_photo_queue):
+    q = deleted_photo_queue
+    assert queries.voided_items(conn) == {
+        q["gone_assign"], q["gone_reassign"], q["gone_new_person"], q["gone_restore"]
+    }
+
+
+def test_voided_items_is_empty_without_deleted_photos(conn):
+    _add_face(conn, 1, "personal", photo_id=1)
+    _add_item(conn, "assign", {"face_id": 1, "space": "personal", "photo_id": 1})
+    assert queries.voided_items(conn) == frozenset()
+
+
+def test_voided_rows_leave_the_list_and_every_count(conn, settings, deleted_photo_queue):
+    q = deleted_photo_queue
+    shown = {it["item_id"] for it in queries.load_review_items(conn, settings, status="")}
+    assert shown == {q["live_assign"], q["mixed_new_person"], q["gone_merge"]}
+    assert queries.count_review_items(conn, status="") == 3
+    assert queries.count_review_items(conn, kind="assign") == 1
+    assert queries.queue_counts(conn) == {
+        "pending": {"assign": 1, "new_person": 1, "merge": 1}
+    }
+
+
+def test_voided_rows_come_back_when_the_photo_does(conn, settings, deleted_photo_queue):
+    conn.execute("UPDATE photos SET deleted = 0")
+    conn.commit()
+    assert queries.voided_items(conn) == frozenset()
+    assert queries.count_review_items(conn, status="") == len(deleted_photo_queue)
+
+
+def test_bulk_approve_leaves_voided_rows_pending(conn, deleted_photo_queue):
+    q = deleted_photo_queue
+    assert queries.bulk_approve(conn, "assign", min_confidence=0.5) == 1
+    status = conn.execute(
+        "SELECT status FROM review_queue WHERE item_id = ?", (q["gone_assign"],)
+    ).fetchone()["status"]
+    assert status == "pending"

@@ -296,7 +296,7 @@ def create_app(
 
     from . import auth
     from ..review import queries
-    from ..review.lookups import LookupCache
+    from ..review.lookups import LookupCache, VoidedCache
     from .jobs import (
         ConsentError,
         JobManager,
@@ -549,6 +549,7 @@ def create_app(
     # Whole-library review lookups (crops / hidden persons / person->faces),
     # cached on a DB fingerprint. See review/lookups.py for why this is not a TTL.
     lookups = LookupCache()
+    voided = VoidedCache()
 
     def _resolve_dist_file(path: str) -> Path | None:
         """Resolve ``path`` to a real file inside the dist root, or ``None``.
@@ -1557,7 +1558,7 @@ def create_app(
     def api_stats():
         c = conn()
         try:
-            data = gather_stats(c, settings)
+            data = gather_stats(c, settings, voided=voided.get(c))
         finally:
             c.close()
         running = [j for j in jm.list_jobs() if j["state"] in ("queued", "running")]
@@ -1785,6 +1786,7 @@ def create_app(
             # whole library on every scroll page — O(all faces) work for an
             # O(page) response.
             lk = lookups.get(c, settings)
+            gone = voided.get(c)
             items = queries.load_review_items(
                 c,
                 settings,
@@ -1795,8 +1797,11 @@ def create_app(
                 crops=lk.crops,
                 hidden=lk.hidden,
                 person_face_map=lk.person_face_map,
+                voided=gone,
             )
-            total = queries.count_review_items(c, kind=kind, status=status)
+            total = queries.count_review_items(
+                c, kind=kind, status=status, voided=gone
+            )
         finally:
             c.close()
         return {"items": items, "total": total, "limit": limit, "offset": offset}
@@ -1805,7 +1810,7 @@ def create_app(
     def api_review_counts():
         c = conn()
         try:
-            return {"counts": queries.queue_counts(c)}
+            return {"counts": queries.queue_counts(c, voided=voided.get(c))}
         finally:
             c.close()
 
@@ -1935,7 +1940,7 @@ def create_app(
 
     from .ops_routes import register_ops_routes
 
-    register_ops_routes(app, settings, conn)
+    register_ops_routes(app, settings, conn, voided=voided)
 
     from .setup_routes import register_setup_routes
 

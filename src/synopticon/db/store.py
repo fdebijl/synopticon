@@ -56,6 +56,7 @@ _MIGRATIONS = [
     _SCHEMA_DIR / "migrations" / "0008_schedules.sql",  # version 8
     _SCHEMA_DIR / "migrations" / "0009_widen_integers.pg.sql",  # version 9
     _SCHEMA_DIR / "migrations" / "0010_web_security.sql",  # version 10
+    _SCHEMA_DIR / "migrations" / "0011_deleted_photos_index.sql",  # version 11
     # Future migrations: append db/migrations/000N_*.sql paths here.
 ]
 

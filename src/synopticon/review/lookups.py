@@ -108,3 +108,42 @@ class LookupCache:
             hidden=queries.hidden_persons(conn),
             person_face_map=queries.person_faces(conn, settings),
         )
+
+
+#: What :func:`~synopticon.review.queries.voided_items` reads. Unlike
+#: :data:`_FINGERPRINT_SQL` this one has to move when the queue grows, since a
+#: new row may be void; a decision only flips a status and leaves it alone.
+#: The deleted-id sum catches one photo coming back as another goes.
+_VOIDED_FINGERPRINT_SQL = """
+SELECT
+  (SELECT COUNT(*) FROM photos WHERE deleted = 1),
+  (SELECT COALESCE(SUM(id), 0) FROM photos WHERE deleted = 1),
+  (SELECT COUNT(*) FROM faces),
+  (SELECT MAX(face_id) FROM faces),
+  (SELECT COUNT(*) FROM review_queue),
+  (SELECT MAX(item_id) FROM review_queue)
+"""
+
+
+class VoidedCache:
+    """Fingerprint-keyed cache of the voided queue rows, safe across threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._key: Any = None
+        self._value: frozenset[int] | None = None
+
+    def get(self, conn: Connection) -> frozenset[int]:
+        from . import queries
+
+        try:
+            key = tuple(conn.execute(_VOIDED_FINGERPRINT_SQL).fetchone())
+        except db_errors.DatabaseError:
+            conn.rollback()
+            key = (None,)
+        with self._lock:
+            if self._value is not None and key == self._key and key != (None,):
+                return self._value
+            value = queries.voided_items(conn)
+            self._key, self._value = key, value
+            return value

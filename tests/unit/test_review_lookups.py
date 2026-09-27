@@ -11,7 +11,7 @@ from __future__ import annotations
 from synopticon.config import load_settings
 from synopticon.db import store
 from synopticon.review import queries
-from synopticon.review.lookups import LookupCache, fingerprint
+from synopticon.review.lookups import LookupCache, VoidedCache, fingerprint
 
 
 def _settings(tmp_path):
@@ -140,4 +140,33 @@ def test_load_review_items_is_identical_with_and_without_the_cache(tmp_path):
         person_face_map=lk.person_face_map,
     )
     assert cached == uncached
+    conn.close()
+
+
+def test_voided_cache_follows_deletion_and_queue_growth_but_not_decisions(tmp_path):
+    settings = _settings(tmp_path)
+    conn = store.connect(settings.storage.db_path)
+    _seed(conn, tmp_path / "crops")
+    cache = VoidedCache()
+
+    assert cache.get(conn) == frozenset()
+
+    conn.execute("UPDATE photos SET deleted = 1 WHERE id = 1")
+    conn.commit()
+    voided = cache.get(conn)
+    assert voided == {1}
+
+    queries.decide_item(conn, 1, "approve")
+    assert cache.get(conn) is voided
+
+    conn.execute(
+        "INSERT INTO review_queue (kind, payload_json, status, created_at) "
+        "VALUES ('assign', '{\"space\": \"personal\", \"photo_id\": 1}', 'pending', 0)"
+    )
+    conn.commit()
+    assert cache.get(conn) == {1, 2}
+
+    conn.execute("UPDATE photos SET deleted = 0 WHERE id = 1")
+    conn.commit()
+    assert cache.get(conn) == frozenset()
     conn.close()

@@ -475,7 +475,8 @@ def apply_reviewed(
     idempotency check; a client-less writer (e.g. DryRunWriter) always
     proceeds straight to the write call. A reassign whose Synology face has
     vanished from the NAS since the last sync is skipped (logged as drift),
-    not written or marked applied.
+    not written or marked applied. So is an assign or reassign on a photo sync
+    has marked deleted: the row stays approved, in case the photo comes back.
     """
     kinds = list(kinds)
     stats = ApplyStats()
@@ -489,6 +490,10 @@ def apply_reviewed(
         kinds,
     ).fetchall()
 
+    gone_photos = {
+        (str(r["space"]), int(r["id"]))
+        for r in conn.execute("SELECT space, id FROM photos WHERE deleted = 1")
+    }
     client = getattr(writer, "client", None)
     writer_space = getattr(writer, "space", None)
     dry_run = getattr(writer, "dry_run", False)
@@ -542,6 +547,16 @@ def apply_reviewed(
         if kind == REASSIGN_KIND and not apply_reassigns:
             stats.skipped += 1
             continue
+
+        if kind in ASSIGN_KINDS or kind == REASSIGN_KIND:
+            photo_key = (str(payload.get("space", writer_space)), payload.get("photo_id"))
+            if photo_key in gone_photos:
+                log.warning(
+                    "item=%s kind=%s photo %s is deleted on the NAS -> skip",
+                    row["item_id"], kind, payload.get("photo_id"),
+                )
+                stats.skipped += 1
+                continue
 
         applied_already = False
         reassign_face_gone = False

@@ -1,7 +1,8 @@
 """Fused-embedding loading and exact cosine kNN graph construction.
 
 Module-boundary rule: cluster/ never touches the network. This module reads
-only the ``embeddings`` table (variant='orig' always — restored is advisory).
+the ``embeddings`` table (variant='orig' always — restored is advisory), minus
+faces on photos sync has marked deleted.
 """
 
 from __future__ import annotations
@@ -25,12 +26,22 @@ def _l2_normalize(mat: np.ndarray, axis: int = -1) -> np.ndarray:
     return mat / norms
 
 
+#: A face on a photo the NAS no longer has would only be proposed for a write
+#: that cannot land. A face whose photo row is absent altogether is kept: that
+#: is not evidence of deletion.
+_LIVE_EMBEDDING = (
+    "e.variant = 'orig' AND NOT EXISTS ("
+    "SELECT 1 FROM faces f JOIN photos p ON p.space = f.space AND p.id = f.photo_id "
+    "WHERE f.face_id = e.face_id AND p.deleted = 1)"
+)
+
+
 def load_fused(
     conn: Connection, settings: Settings
 ) -> tuple[np.ndarray, np.ndarray]:
     """Load per-model embeddings, fuse them, return ``(face_ids, X)``.
 
-    - Reads ``variant='orig'`` only.
+    - Reads ``variant='orig'`` only, skipping faces on photos marked deleted.
     - Keeps face_ids that have rows for *all* models present in the DB.
     - Per-model defensive L2-normalize, scale by ``fusion_weights`` (default
       1.0/model), concatenate in sorted-model-name order, then L2-normalize
@@ -46,10 +57,10 @@ def load_fused(
     # instant after an unexplained multi-second freeze. The extra COUNT is an
     # index scan, cheap next to reading the vectors.
     total = conn.execute(
-        "SELECT COUNT(*) FROM embeddings WHERE variant = 'orig'"
+        f"SELECT COUNT(*) FROM embeddings e WHERE {_LIVE_EMBEDDING}"
     ).fetchone()[0]
     cursor = conn.execute(
-        "SELECT face_id, model, dim, vec FROM embeddings WHERE variant = 'orig'"
+        f"SELECT e.face_id, e.model, e.dim, e.vec FROM embeddings e WHERE {_LIVE_EMBEDDING}"
     )
 
     # face_id -> {model: vector}

@@ -61,6 +61,21 @@ def test_load_fused(db_helpers, tmp_settings):
     assert np.allclose(np.linalg.norm(X, axis=1), 1.0, atol=1e-5)
 
 
+def test_load_fused_skips_faces_on_deleted_photos(db_helpers, tmp_settings):
+    h = db_helpers
+    h.insert_photo("personal", 1)
+    h.insert_photo("personal", 2)
+    live = h.insert_face("personal", 1, 10, 10, 20, 20)
+    gone = h.insert_face("personal", 2, 10, 10, 20, 20)
+    unsynced = h.insert_face("personal", 3, 10, 10, 20, 20)  # no photos row at all
+    for fid in (live, gone, unsynced):
+        h.insert_embedding(fid, "arcface", [1.0, 0.0, 0.0])
+    h.conn.execute("UPDATE photos SET deleted = 1 WHERE space = 'personal' AND id = 2")
+    h.commit()
+
+    face_ids, _ = graph.load_fused(h.conn, tmp_settings)
+    assert list(face_ids) == sorted([live, unsynced])
+
 def test_graph_cache_roundtrip(tmp_path):
     rng = np.random.default_rng(2)
     face_ids = np.arange(10, dtype=np.int64)

@@ -18,11 +18,14 @@ without model/runtime deps must still render the Maintenance page).
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from ..db import Connection, errors as db_errors
 
 from ..config import Settings
+
+if TYPE_CHECKING:
+    from ..review.lookups import VoidedCache
 
 #: How long a crops disk-usage figure stays fresh (seconds).
 _CROPS_TTL = 60.0
@@ -62,6 +65,8 @@ def register_ops_routes(
     app,
     settings: Settings,
     conn: Callable[[], Connection],
+    *,
+    voided: VoidedCache | None = None,
 ) -> None:
     """Attach the ops (pipeline/apply/maintenance) read-only API to ``app``.
 
@@ -110,7 +115,9 @@ def register_ops_routes(
     def api_maintenance_counts():
         c = conn()
         try:
-            counts = queries.queue_counts(c)
+            counts = queries.queue_counts(
+                c, voided=voided.get(c) if voided is not None else None
+            )
             pending = sum((counts.get("pending") or {}).values())
             approved = dict(counts.get("approved") or {})
             failed = dict(counts.get("failed") or {})

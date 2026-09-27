@@ -261,8 +261,13 @@ def _merge_side_crops(
 # --------------------------------------------------------------------------- #
 # Read queries
 # --------------------------------------------------------------------------- #
-def _where(kind: str, status: str) -> tuple[str, list[Any]]:
+def _where(
+    kind: str, status: str, voided: Iterable[int] = ()
+) -> tuple[str, list[Any]]:
     clauses, args = [], []
+    exclude = _not_voided(voided)
+    if exclude:
+        clauses.append(exclude)
     if status:
         clauses.append("status = ?")
         args.append(status)
@@ -274,10 +279,19 @@ def _where(kind: str, status: str) -> tuple[str, list[Any]]:
 
 
 def count_review_items(
-    conn: Connection, kind: str = "", status: str = "pending"
+    conn: Connection,
+    kind: str = "",
+    status: str = "pending",
+    *,
+    voided: frozenset[int] | None = None,
 ) -> int:
-    """Total ``review_queue`` rows matching ``kind``/``status`` (no pagination)."""
-    where, args = _where(kind, status)
+    """Total ``review_queue`` rows matching ``kind``/``status`` (no pagination).
+
+    Rows in ``voided`` (default: :func:`voided_items`) are not counted.
+    """
+    if voided is None:
+        voided = voided_items(conn)
+    where, args = _where(kind, status, voided)
     row = conn.execute(
         f"SELECT COUNT(*) AS n FROM review_queue {where}", args
     ).fetchone()
@@ -295,13 +309,15 @@ def load_review_items(
     crops: dict[int, str | None] | None = None,
     hidden: set[tuple[str, int]] | None = None,
     person_face_map: dict[tuple[str, int], list[int]] | None = None,
+    voided: frozenset[int] | None = None,
 ) -> list[dict]:
     """Shape ``review_queue`` rows into UI item dicts, with real pagination.
 
-    ``crops``, ``hidden`` and ``person_face_map`` are optional precomputed
-    lookups (see :func:`face_crops`, :func:`hidden_persons`,
-    :func:`person_faces`); when omitted they are built from the DB on each call.
-    Callers that keep a per-session cache pass their cached copies in.
+    ``crops``, ``hidden``, ``person_face_map`` and ``voided`` are optional
+    precomputed lookups (see :func:`face_crops`, :func:`hidden_persons`,
+    :func:`person_faces`, :func:`voided_items`); when omitted they are built from
+    the DB on each call. Callers that keep a per-session cache pass their cached
+    copies in. Voided rows are left out.
     """
     web_base = syno_web_base(settings)
     if crops is None:
@@ -310,8 +326,10 @@ def load_review_items(
         hidden = hidden_persons(conn)
     if person_face_map is None:
         person_face_map = person_faces(conn, settings)
+    if voided is None:
+        voided = voided_items(conn)
 
-    where, args = _where(kind, status)
+    where, args = _where(kind, status, voided)
     rows = conn.execute(
         f"SELECT item_id, kind, payload_json, confidence, status "
         f"FROM review_queue {where} ORDER BY item_id LIMIT ? OFFSET ?",
@@ -447,11 +465,17 @@ def person_search(
     return out
 
 
-def queue_counts(conn: Connection) -> dict[str, dict[str, int]]:
-    """Nested ``{status: {kind: count}}`` over the whole ``review_queue``."""
+def queue_counts(
+    conn: Connection, *, voided: frozenset[int] | None = None
+) -> dict[str, dict[str, int]]:
+    """Nested ``{status: {kind: count}}`` over ``review_queue``, minus voided rows."""
+    if voided is None:
+        voided = voided_items(conn)
+    where, args = _where("", "", voided)
     out: dict[str, dict[str, int]] = {}
     for row in conn.execute(
-        "SELECT status, kind, COUNT(*) AS n FROM review_queue GROUP BY status, kind"
+        f"SELECT status, kind, COUNT(*) AS n FROM review_queue {where} GROUP BY status, kind",
+        args,
     ):
         out.setdefault(row["status"], {})[row["kind"]] = int(row["n"])
     return out
@@ -648,6 +672,79 @@ def orphan_counts(conn: Connection) -> dict[str, int]:
 
 
 # --------------------------------------------------------------------------- #
+# Rows about photos the NAS no longer has
+# --------------------------------------------------------------------------- #
+#: Kinds about two people rather than a photo. A deleted exemplar photo thins
+#: a merge's evidence but does not make the merge moot.
+_PERSON_SCOPED_KINDS = frozenset({"merge", MERGE_NAMED_KIND})
+
+
+def voided_items(conn: Connection) -> frozenset[int]:
+    """Queue rows, in any status, about photos sync has marked deleted.
+
+    A row naming a photo (``space`` + ``photo_id``) is void when that photo is.
+    A row naming only faces (``new_person``, ``restore_disagreement``) is void
+    when every one of them sits on a deleted photo. Merges never are. Nothing
+    is written: a photo that comes back on the next sync brings its rows back
+    with it, which is why this is a filter and not a prune.
+
+    The common case — no deleted photos — costs one indexed query. Otherwise
+    it is a full queue scan with a JSON parse per row, for the reason
+    :func:`orphaned_items` gives, so the web process caches the result
+    (:class:`~synopticon.review.lookups.VoidedCache`).
+    """
+    gone_photos = {
+        (str(r["space"]), int(r["id"]))
+        for r in conn.execute("SELECT space, id FROM photos WHERE deleted = 1")
+    }
+    if not gone_photos:
+        return frozenset()
+    gone_faces = {
+        int(r["face_id"])
+        for r in conn.execute(
+            "SELECT f.face_id FROM photos p "
+            "JOIN faces f ON f.space = p.space AND f.photo_id = p.id "
+            "WHERE p.deleted = 1"
+        )
+    }
+
+    out: set[int] = set()
+    for row in conn.execute("SELECT item_id, kind, payload_json FROM review_queue"):
+        if row["kind"] in _PERSON_SCOPED_KINDS:
+            continue
+        try:
+            payload = json.loads(row["payload_json"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("photo_id") is not None:
+            try:
+                key = (str(payload.get("space")), int(payload["photo_id"]))
+            except (TypeError, ValueError):
+                continue
+            if key in gone_photos:
+                out.add(int(row["item_id"]))
+            continue
+        fids = payload_face_ids(payload)
+        if fids and fids <= gone_faces:
+            out.add(int(row["item_id"]))
+    return frozenset(out)
+
+
+def _not_voided(voided: Iterable[int]) -> str:
+    """A ``WHERE`` fragment excluding ``voided``, or ``""`` when there are none.
+
+    The ids are inlined rather than bound: the set can outgrow SQLite's
+    parameter ceiling, and ``int()`` makes each one safe to inline.
+    """
+    ids = sorted({int(i) for i in voided})
+    if not ids:
+        return ""
+    return f"item_id NOT IN ({','.join(map(str, ids))})"
+
+
+# --------------------------------------------------------------------------- #
 # Mutations (review_queue only)
 # --------------------------------------------------------------------------- #
 def delete_items(conn: Connection, item_ids: Sequence[int]) -> int:
@@ -732,12 +829,15 @@ def bulk_approve(
 ) -> int:
     """Approve all pending rows of ``kind`` at/above ``min_confidence``.
 
-    Returns the number of rows approved.
+    Returns the number of rows approved. Voided rows are left pending: they are
+    not on screen, so approving them would be a decision nobody saw.
     """
+    exclude = _not_voided(voided_items(conn))
     cur = conn.execute(
         "UPDATE review_queue SET status = 'approved', decided_at = ?, "
         "decided_by = 'review-ui' WHERE kind = ? AND status = 'pending' "
-        "AND confidence IS NOT NULL AND confidence >= ?",
+        "AND confidence IS NOT NULL AND confidence >= ?"
+        + (f" AND {exclude}" if exclude else ""),
         (store.now(), kind, min_confidence),
     )
     conn.commit()

@@ -139,7 +139,9 @@ def _cluster_stats(conn: Connection) -> dict[str, Any] | None:
     }
 
 
-def gather_stats(conn: Connection, settings: Settings) -> dict[str, Any]:
+def gather_stats(
+    conn: Connection, settings: Settings, *, voided: frozenset[int] | None = None
+) -> dict[str, Any]:
     """Assemble the dashboard stats payload. DB-only; never contacts the NAS."""
     spaces = list(settings.nas.spaces) or ["personal"]
     faces = int(conn.execute("SELECT COUNT(*) AS n FROM faces").fetchone()["n"])
@@ -155,5 +157,5 @@ def gather_stats(conn: Connection, settings: Settings) -> dict[str, Any]:
         "embeddings": embeddings,
         "extract": _extract_stats(conn, settings),
         "cluster": _cluster_stats(conn),
-        "review": queries.queue_counts(conn),
+        "review": queries.queue_counts(conn, voided=voided),
     }
