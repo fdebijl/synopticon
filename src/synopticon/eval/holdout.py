@@ -51,7 +51,8 @@ def _cluster_in_memory(conn: Connection, settings: Settings, label_map):
     face_meta = crossref._load_face_meta(conn)
     person_photos = crossref._load_person_photos(conn)
     result = crossref._crossref_core(
-        face_ids, X, labels, label_map, settings, face_meta, person_photos
+        face_ids, X, labels, label_map, settings, face_meta, person_photos,
+        known_persons=crossref.load_known_persons(conn),
     )
     return face_ids, result
 
