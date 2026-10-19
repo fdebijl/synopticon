@@ -484,3 +484,121 @@ def test_migration_0005_reclassifies_pending_named_merges(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) c FROM review_queue WHERE kind = 'merge'"
     ).fetchone()["c"] == 3
+
+
+# --------------------------------------------------------------------------- #
+# Nearest person: untagged faces stranded outside every mapped cluster
+# --------------------------------------------------------------------------- #
+_A, _B = ("personal", 100), ("personal", 200)
+
+
+def _stranded_inputs(extra_specs, extra_labels):
+    """Cluster 0 is three tagged A faces, cluster 1 three tagged B faces; the
+    extra faces follow with the cluster labels given."""
+    specs = [
+        (1, [1, 0, 0, 0]),
+        (2, [1, 0.05, 0, 0]),
+        (3, [1, 0, 0.05, 0]),
+        (4, [0, 1, 0, 0]),
+        (5, [0.05, 1, 0, 0]),
+        (6, [0, 1, 0.05, 0]),
+        *extra_specs,
+    ]
+    label_map = {1: _A, 2: _A, 3: _A, 4: _B, 5: _B, 6: _B}
+    return _core_inputs(specs, [0, 0, 0, 1, 1, 1, *extra_labels], label_map)
+
+
+def _nearest(result):
+    return {
+        a["payload"]["face_id"]: a for a in result.assigns if "nearest_person" in a["payload"]
+    }
+
+
+def test_stranded_face_is_attributed_to_its_nearest_person():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.3, 0, 0])], [2])
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert result.clusters[2].mapped_person is None
+    item = _nearest(result)[7]
+    assert item["kind"] == "low_confidence"
+    assert item["person_key"] == _A
+    assert item["payload"]["person_id"] == 100
+    assert item["confidence"] > 0.9
+    assert item["payload"]["nearest_person"]["runner_up_person_id"] == 200
+    assert result.predicted_person[7] == _A
+
+
+def test_look_alike_between_two_people_is_not_attributed():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 1, 0, 0])], [2])
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert 7 not in _nearest(result)
+    assert 7 not in result.predicted_person
+
+
+def test_faces_in_a_mapped_cluster_are_left_to_the_cluster():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.3, 0, 0])], [0])
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert [a["payload"]["face_id"] for a in result.assigns] == [7]
+    assert 7 not in _nearest(result)
+
+
+def test_already_tagged_photo_is_predicted_but_not_proposed():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.3, 0, 0])], [2])
+    tagged = {("personal", 100, meta[7]["photo_id"])}
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, tagged)
+
+    assert 7 not in _nearest(result)
+    assert result.predicted_person[7] == _A
+
+
+def test_one_proposal_per_person_per_photo():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs(
+        [(7, [1, 0.3, 0, 0]), (8, [1, 0.1, 0, 0])], [2, 3]
+    )
+    meta[8]["photo_id"] = meta[7]["photo_id"]
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert list(_nearest(result)) == [8]  # the closer of the two
+    assert result.predicted_person[7] == result.predicted_person[8] == _A
+
+
+def test_stranded_face_is_never_attributed_across_spaces():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.3, 0, 0])], [2])
+    meta[7]["space"] = "shared"
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert _nearest(result) == {}
+
+
+def test_nearest_person_switched_off_at_similarity_one():
+    settings = load_settings()
+    settings.crossref.nearest_person_sim = 1.0
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.3, 0, 0])], [2])
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert _nearest(result) == {}
+    assert 7 not in result.predicted_person
+
+
+def test_unlisted_person_is_never_a_target():
+    """Synology's unlisted one-face persons label our faces but are no target:
+    their single best match would outbid every listed person."""
+    settings = load_settings()
+    unlisted = ("personal", 999)
+    face_ids, X, labels, lm, meta = _stranded_inputs(
+        [(7, [1, 0.3, 0, 0]), (8, [1, 0.3, 0, 0])], [2, 3]
+    )
+    lm[8] = unlisted
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(), known_persons={_A, _B}
+    )
+
+    assert _nearest(result)[7]["person_key"] == _A

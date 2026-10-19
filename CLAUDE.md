@@ -28,6 +28,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `16_inspect-photo-view.md` | `web/inspect_routes.py`, the Inspect page, photo links in the SPA, box geometry, the pan/zoom stage, tagging a face from Inspect |
 | `17_web-security-hardening.md` | `web/clientip.py`, `web/auth/throttle.py`, `web/auth/authlog.py`, `web/auth/twofactor.py`, `web/auth/sessions.py`, `web/totp.py`, `web/security_routes.py`, the `[security]` config section, anything keying a decision on a client address |
 | `18_deleted-photo-review-items.md` | `voided_items`, `VoidedCache`, anything that lists or counts `review_queue`, `load_fused`'s face filter, `apply_reviewed`'s skip of deleted photos |
+| `19_nearest-person-attribution.md` | `crossref._nearest_person`, `known_persons`, anything treating Synology's unlisted persons as labels |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 

@@ -207,6 +207,13 @@ against Synology's *existing* person labels, to decide what to suggest: assign a
 face to a known person, flag a low-confidence guess, propose a brand-new person, or
 propose merging people Synology split. Governed by the `[crossref]` settings.
 
+**Stranded face** — an untagged face whose cluster maps to no known person: a
+singleton, a small cluster with fewer than `min_labeled` tagged faces, or a mixed
+cluster with no majority. Cluster-majority mapping can never reach it. The
+**nearest person** step scores it against each person's closest tagged faces
+instead, and suggests the best match as `low_confidence` when it is clearly ahead
+of the runner-up (`nearest_person_sim`, `nearest_person_margin`).
+
 **Variant (`orig` vs restored)** — each face can have embeddings from the original
 crop and from a restored crop. Clustering only ever uses `orig`; restored embeddings
 are advisory (used to *detect* restoration problems, not to group faces).

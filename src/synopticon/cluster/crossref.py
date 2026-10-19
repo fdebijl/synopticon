@@ -186,7 +186,8 @@ class ClusterResult:
     assigns: list[dict]
     new_persons: list[dict]
     merges: list[dict]
-    predicted_person: dict[int, PersonKey]  # face_id -> mapped person of its cluster
+    # face_id -> mapped person of its cluster, else its nearest person
+    predicted_person: dict[int, PersonKey]
     reassigns: list[dict] = field(default_factory=list)
 
 
@@ -217,6 +218,7 @@ def _crossref_core(
     person_photos: set[tuple[str, int, int]],
     *,
     syno_face_ids: dict[int, int] | None = None,
+    known_persons: set[PersonKey] | None = None,
 ) -> ClusterResult:
     cfg = settings.crossref
     labels = _relabel_contiguous(labels)
@@ -449,6 +451,14 @@ def _crossref_core(
         f"{len(merges)} merge(s), {len(new_persons)} new person(s)",
         phase="cluster.crossref",
     )
+
+    nearest_assigns, nearest_predicted = _nearest_person(
+        face_ids, X, label_map, predicted_person, settings, face_meta, person_photos,
+        known_persons,
+    )
+    assigns.extend(nearest_assigns)
+    predicted_person.update(nearest_predicted)
+
     return ClusterResult(
         face_ids=face_ids,
         labels=labels,
@@ -459,6 +469,130 @@ def _crossref_core(
         predicted_person=predicted_person,
         reassigns=reassigns,
     )
+
+
+#: Tagged faces averaged per person when scoring a stranded face: a single best
+#: match is too easily won by one look-alike photo of someone else.
+_NEAREST_TOPK = 5
+_NEAREST_CHUNK = 1024
+
+
+def _nearest_person(
+    face_ids: np.ndarray,
+    X: np.ndarray,
+    label_map: dict[int, PersonKey],
+    predicted_person: dict[int, PersonKey],
+    settings: Settings,
+    face_meta: dict[int, dict],
+    person_photos: set[tuple[str, int, int]],
+    known_persons: set[PersonKey] | None,
+) -> tuple[list[dict], dict[int, PersonKey]]:
+    """Attribute untagged faces in unmapped clusters straight to a known person.
+
+    Cluster-majority mapping can never reach a face whose cluster has too few
+    tagged members — most of all a singleton. Each such face is scored against
+    every person in its space by mean similarity to that person's
+    ``_NEAREST_TOPK`` closest tagged faces, and attributed when the best score
+    clears ``nearest_person_sim`` by ``nearest_person_margin`` over the
+    runner-up. Returns ``(low_confidence assigns, face_id -> person)``; the
+    prediction is made before the already-tagged-photo filter, as for clusters.
+
+    Only ``known_persons`` are candidates (``None``: every labelled person).
+    Synology keeps thousands of unlisted one- and two-face persons whose faces
+    still label ours; as targets they are useless, and with one face their
+    score is a single best match, which outbids every real person.
+    """
+    cfg = settings.crossref
+    if cfg.nearest_person_sim >= 1.0 or not X.shape[0]:
+        return [], {}
+
+    pos_of = {int(fid): i for i, fid in enumerate(face_ids.tolist())}
+    tagged: dict[str, dict[PersonKey, list[int]]] = {}
+    for fid, pk in label_map.items():
+        pos = pos_of.get(fid)
+        if pos is not None and (known_persons is None or pk in known_persons):
+            tagged.setdefault(pk[0], {}).setdefault(pk, []).append(pos)
+
+    probes: dict[str, list[int]] = {}
+    for pos, fid in enumerate(face_ids.tolist()):
+        if fid in label_map or fid in predicted_person:
+            continue
+        meta = face_meta.get(int(fid))
+        if meta is not None and meta["space"] in tagged:
+            probes.setdefault(meta["space"], []).append(pos)
+
+    emitter = get_emitter()
+    emitter.phase("cluster.nearest")
+    total = sum(len(p) for p in probes.values())
+    done = 0
+    predicted: dict[int, PersonKey] = {}
+    best_by_photo: dict[tuple[str, int, PersonKey], dict] = {}
+    for space, positions in sorted(probes.items()):
+        persons = sorted(tagged[space])
+        cols = np.concatenate([np.asarray(tagged[space][pk]) for pk in persons])
+        bounds = np.cumsum([0] + [len(tagged[space][pk]) for pk in persons])
+        L = X[cols]
+        for start in range(0, len(positions), _NEAREST_CHUNK):
+            emitter.progress("cluster.nearest", done, total)
+            chunk = np.asarray(positions[start : start + _NEAREST_CHUNK])
+            S = X[chunk] @ L.T
+            scores = np.empty((len(chunk), len(persons)), dtype=np.float32)
+            for j in range(len(persons)):
+                seg = S[:, bounds[j] : bounds[j + 1]]
+                k = min(_NEAREST_TOPK, seg.shape[1])
+                scores[:, j] = np.partition(seg, seg.shape[1] - k, axis=1)[:, -k:].mean(axis=1)
+            order = np.argsort(-scores, axis=1, kind="stable")
+            for row, pos in enumerate(chunk.tolist()):
+                best_j = int(order[row, 0])
+                best = float(scores[row, best_j])
+                runner_j = int(order[row, 1]) if len(persons) > 1 else None
+                margin = (
+                    best - float(scores[row, runner_j]) if runner_j is not None else float("inf")
+                )
+                if best < cfg.nearest_person_sim or margin < cfg.nearest_person_margin:
+                    continue
+                fid = int(face_ids[pos])
+                pk = persons[best_j]
+                predicted[fid] = pk
+                meta = face_meta[fid]
+                if (pk[0], pk[1], meta["photo_id"]) in person_photos:
+                    continue
+                # Two stranded faces in one photo cannot both be the same person.
+                key = (space, meta["photo_id"], pk)
+                held = best_by_photo.get(key)
+                if held is not None and held["confidence"] >= best:
+                    continue
+                best_by_photo[key] = {
+                    "kind": "low_confidence",
+                    "confidence": best,
+                    "person_key": pk,
+                    "payload": {
+                        "face_id": fid,
+                        "photo_id": meta["photo_id"],
+                        "space": space,
+                        "person_id": pk[1],
+                        "person_name": None,
+                        "bbox_normalized": meta["bbox_norm"],
+                        "confidence": best,
+                        "nearest_person": {
+                            "margin": None if runner_j is None else margin,
+                            "runner_up_person_id": (
+                                None if runner_j is None else persons[runner_j][1]
+                            ),
+                        },
+                    },
+                }
+            done += len(chunk)
+    emitter.progress("cluster.nearest", total, total)
+
+    assigns = sorted(best_by_photo.values(), key=lambda a: a["payload"]["face_id"])
+    emitter.log(
+        "info",
+        f"cluster.nearest: {len(predicted)} of {total} face(s) outside a mapped cluster "
+        f"matched a known person; {len(assigns)} proposed",
+        phase="cluster.nearest",
+    )
+    return assigns, predicted
 
 
 def _l2(v: np.ndarray) -> np.ndarray:
@@ -518,6 +652,14 @@ def _load_person_photos(conn: Connection) -> set[tuple[str, int, int]]:
         for row in conn.execute(
             "SELECT space, person_id, photo_id FROM person_photos"
         )
+    }
+
+
+def load_known_persons(conn: Connection) -> set[PersonKey]:
+    """Persons Synology still lists — the only valid targets for a suggestion."""
+    return {
+        (row["space"], int(row["id"]))
+        for row in conn.execute("SELECT space, id FROM persons WHERE deleted = 0")
     }
 
 
@@ -615,7 +757,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
     person_photos = _load_person_photos(conn)
     result = _crossref_core(
         face_ids, X, labels, label_map, settings, face_meta, person_photos,
-        syno_face_ids=syno_face_ids,
+        syno_face_ids=syno_face_ids, known_persons=load_known_persons(conn),
     )
 
     emitter.phase("cluster.persist")

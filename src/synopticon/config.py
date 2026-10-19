@@ -835,6 +835,44 @@ class CrossrefConfig(BaseModel):
             )
         },
     )
+    nearest_person_sim: float = Field(
+        default=0.55,
+        title="Nearest Person Similarity",
+        description=(
+            "How closely a face left out of every known person's group must resemble one "
+            "person's tagged faces before Synopticon suggests it as that person anyway.\n\n"
+            "Practical 0.50-0.65; default 0.55. These faces are usually small or alone in "
+            "their photo, so grouping strands them. Lower it to rescue more of them; raise "
+            "it if the suggestions turn out wrong. Set to 1.0 to switch this off."
+        ),
+        json_schema_extra={
+            "details": (
+                "Applies only to untagged faces whose cluster mapped to no person. The "
+                "score is the mean cosine similarity to the person's 5 closest "
+                "Synology-tagged faces in the same space, range [-1,1]. Suggestions are "
+                "always queued as low_confidence, with the margin and runner-up in the "
+                "payload."
+            )
+        },
+    )
+    nearest_person_margin: float = Field(
+        default=0.08,
+        title="Nearest Person Margin",
+        description=(
+            "How far ahead of the second-best person the best match must be before that "
+            "suggestion is made.\n\n"
+            "Practical 0.05-0.15; default 0.08. It keeps look-alikes, such as siblings, "
+            "out of the queue. Raise it if suggestions keep confusing two particular "
+            "people; lower it to rescue more faces."
+        ),
+        json_schema_extra={
+            "details": (
+                "The gap between the best and runner-up person's nearest-person score "
+                "(see nearest_person_sim), in cosine units. A face with only one candidate "
+                "person in its space has no runner-up and passes on similarity alone."
+            )
+        },
+    )
 
 
 class SecurityConfig(BaseModel):

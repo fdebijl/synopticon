@@ -87,3 +87,5 @@ min_labeled = 3
 assign_sim = 0.55                   # below this an assign becomes a low-confidence flag
 new_person_min_faces = 5            # a brand-new person needs at least this many faces...
 new_person_min_photos = 8           # ...spread over at least this many distinct photos
+nearest_person_sim = 0.55           # stranded face -> closest known person; 1.0 switches it off
+nearest_person_margin = 0.08        # ...only when clearly ahead of the runner-up person
