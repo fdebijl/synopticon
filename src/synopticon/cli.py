@@ -1427,6 +1427,28 @@ def eval_holdout(
     typer.echo(json.dumps(metrics, indent=2))
 
 
+@eval_app.command("corrupt")
+def eval_corrupt(
+    fraction: float = typer.Option(0.05, help="Share of correct tags to move to the wrong person."),
+    seed: int = typer.Option(42),
+    mode: str = typer.Option(
+        "both",
+        help="Who the wrong person is: random, lookalike (closest other person) or both.",
+    ),
+):
+    """Tag a sample of faces as the wrong person, group the faces again, and measure how many
+    come back as reassigns. Never touches the NAS."""
+    from synopticon.eval.corruption import MODES, run_corruption
+
+    modes = MODES if mode == "both" else (mode,)
+    if any(m not in MODES for m in modes):
+        raise typer.BadParameter(f"choose one of {', '.join(MODES)} or both", param_hint="--mode")
+    settings = _settings()
+    conn = _conn(settings)
+    metrics = run_corruption(conn, settings, fraction=fraction, seed=seed, modes=modes)
+    typer.echo(json.dumps(metrics, indent=2))
+
+
 @eval_app.command("grid")
 def eval_grid(
     grid_json: str = typer.Argument(..., help='e.g. \'{"edge_threshold": [0.45, 0.5, 0.55]}\''),

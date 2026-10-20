@@ -198,6 +198,13 @@ the resulting scores, to find good ones. `eval grid-search` automates this.
 **Holdout** — a set of known-correct labels held aside purely for scoring, so you're
 measuring against ground truth rather than the pipeline grading its own homework.
 
+**Corrupted-tag evaluation** — the holdout's counterpart for reassigns. A holdout
+hides correct labels and checks they come back; this *breaks* a sample of correct
+labels, moving each to the wrong person, and checks crossref proposes moving them
+back (`synopticon eval corrupt`). `random` picks the wrong person at random;
+`lookalike` picks the most similar other person, which is closer to the mistakes
+Synology really makes.
+
 ---
 
 ## Synopticon-specific terms
