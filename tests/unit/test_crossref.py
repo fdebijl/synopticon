@@ -602,3 +602,27 @@ def test_unlisted_person_is_never_a_target():
     )
 
     assert _nearest(result)[7]["person_key"] == _A
+
+
+def test_yolo_only_faces_are_neither_probe_nor_reference():
+    """Unconfirmed detections share one region of embedding space: a person
+    Synology filled with them would otherwise attract every stranded one."""
+    settings = load_settings()
+    junk = [0, 0, 0, 1]
+    face_ids, X, labels, lm, meta = _stranded_inputs(
+        [
+            (7, junk), (8, junk), (9, junk),  # person C's tags, all YOLO-only
+            (10, [0, 0, 0.1, 1]),  # stranded YOLO-only face
+            (11, [0, 0.05, 0.1, 1]),  # stranded face SCRFD confirmed
+        ],
+        [2, 2, 2, 3, 4],
+    )
+    for fid in (7, 8, 9, 10):
+        meta[fid]["detector"] = "yolo"
+    meta[11]["detector"] = "merged"
+    lm.update({7: ("personal", 300), 8: ("personal", 300), 9: ("personal", 300)})
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert _nearest(result) == {}
+    assert 10 not in result.predicted_person
+    assert 11 not in result.predicted_person

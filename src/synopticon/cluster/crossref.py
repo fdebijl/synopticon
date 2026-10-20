@@ -42,7 +42,7 @@ def _iou(box: tuple[float, float, float, float], other: tuple) -> float:
 
 
 def _load_face_meta(conn: Connection) -> dict[int, dict]:
-    """face_id -> {space, photo_id, bbox_norm:[x1,y1,x2,y2]} in normalized coords."""
+    """face_id -> {space, photo_id, detector, bbox_norm:[x1,y1,x2,y2]} in normalized coords."""
     dims: dict[tuple[str, int], tuple[int, int]] = {}
     for row in conn.execute("SELECT space, id, width, height FROM photos"):
         if row["width"] and row["height"]:
@@ -50,7 +50,7 @@ def _load_face_meta(conn: Connection) -> dict[int, dict]:
 
     meta: dict[int, dict] = {}
     for row in conn.execute(
-        "SELECT face_id, space, photo_id, x, y, w, h FROM faces"
+        "SELECT face_id, space, photo_id, detector, x, y, w, h FROM faces"
     ):
         space, pid = row["space"], int(row["photo_id"])
         wh = dims.get((space, pid))
@@ -67,6 +67,7 @@ def _load_face_meta(conn: Connection) -> dict[int, dict]:
         meta[int(row["face_id"])] = {
             "space": space,
             "photo_id": pid,
+            "detector": row["detector"],
             "bbox_norm": bbox,
         }
     return meta
@@ -475,6 +476,11 @@ def _crossref_core(
 #: match is too easily won by one look-alike photo of someone else.
 _NEAREST_TOPK = 5
 _NEAREST_CHUNK = 1024
+#: A detection only YOLO made, which SCRFD never confirmed. Profiles, the back
+#: of a head and outright non-faces (pets, flowers, blur) all land in one region
+#: of embedding space, so as probe or reference they match each other instead
+#: of an identity.
+_UNCONFIRMED_DETECTOR = "yolo"
 
 
 def _nearest_person(
@@ -497,7 +503,9 @@ def _nearest_person(
     runner-up. Returns ``(low_confidence assigns, face_id -> person)``; the
     prediction is made before the already-tagged-photo filter, as for clusters.
 
-    Only ``known_persons`` are candidates (``None``: every labelled person).
+    Only ``known_persons`` are candidates (``None``: every labelled person),
+    and a face only YOLO detected is neither probe nor reference: let in, the
+    person Synology has given the most such faces attracts every other one.
     Synology keeps thousands of unlisted one- and two-face persons whose faces
     still label ours; as targets they are useless, and with one face their
     score is a single best match, which outbids every real person.
@@ -510,7 +518,11 @@ def _nearest_person(
     tagged: dict[str, dict[PersonKey, list[int]]] = {}
     for fid, pk in label_map.items():
         pos = pos_of.get(fid)
-        if pos is not None and (known_persons is None or pk in known_persons):
+        if (
+            pos is not None
+            and (known_persons is None or pk in known_persons)
+            and _confirmed(face_meta.get(fid))
+        ):
             tagged.setdefault(pk[0], {}).setdefault(pk, []).append(pos)
 
     probes: dict[str, list[int]] = {}
@@ -518,7 +530,7 @@ def _nearest_person(
         if fid in label_map or fid in predicted_person:
             continue
         meta = face_meta.get(int(fid))
-        if meta is not None and meta["space"] in tagged:
+        if _confirmed(meta) and meta["space"] in tagged:
             probes.setdefault(meta["space"], []).append(pos)
 
     emitter = get_emitter()
@@ -593,6 +605,10 @@ def _nearest_person(
         phase="cluster.nearest",
     )
     return assigns, predicted
+
+
+def _confirmed(meta: dict | None) -> bool:
+    return meta is not None and meta.get("detector") != _UNCONFIRMED_DETECTOR
 
 
 def _l2(v: np.ndarray) -> np.ndarray:
