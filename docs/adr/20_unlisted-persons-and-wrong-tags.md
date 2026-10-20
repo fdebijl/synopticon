@@ -58,6 +58,20 @@ look-alikes within one family (siblings, a parent and child) that only a human c
 threshold on the gap to the current person separates those: every one of them has a gap of 0.24 or
 more.
 
+`synopticon eval corrupt` measures the reassign path directly, by moving 5% of the correct listed
+tags (1,282 of 25,641) to a wrong listed person and checking which come back:
+
+| Wrong person | Caught | via cluster / nearest | Misdirected | New false alarms | Precision |
+|---|---|---|---|---|---|
+| random | 72.3% (927) | 489 / 438 | 3 | 4 | 99.3% |
+| lookalike (closest centroid) | 67.1% (860) | 488 / 372 | 0 | 3 | 99.7% |
+
+So when the path fires it names the right person, look-alikes included; what it trades is recall,
+with a third of wrong tags left unflagged. Two caveats: a corrupted tag sits on a typical face of its
+true person, easier than the oblique or small faces Synology tends to get wrong, so real recall is
+likely lower; and reassigns out of unlisted persons have no true person to test against, and are
+supported by this only because they share the scoring.
+
 ### Rejected: splitting superclusters
 
 The two unmapped clusters over 100 faces held 9,028 faces. Re-clustering only them, stepping the
