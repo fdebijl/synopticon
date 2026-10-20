@@ -38,12 +38,21 @@ score clears `nearest_person_sim` (0.55) and leads the runner-up by `nearest_per
   thousands of persons `list_persons` never returns — 4,974 on the library above, mostly holding one
   or two faces — and their faces label ours through `syno_faces`. With one face, a person's top-5
   mean is a single best match, so before this restriction 1,070 of 1,169 suggestions went to them.
+- **A face only YOLO detected is neither scored nor used as a reference.** Unconfirmed detections —
+  strict profiles, the back of a head, pets, flowers, motion blur — share one region of embedding
+  space, so they match each other rather than an identity. The first production run gave one person,
+  whom Synology had itself given many oblique and wrong faces, a large share of the suggestions. On
+  the library above the same thing happened to an unnamed person whose 171 tags were 52% oblique:
+  it took 177 of 485 suggestions, all from YOLO-only faces, and a random sample of all suggestions
+  was about a quarter non-faces. With the gate, suggestions fall to 297 (named: 121 → 109), no person
+  takes more than 22, and a random sample of 48 is all real faces. Pose estimated from landmarks was
+  tried first and does not separate them: landmarks on a non-face are noise and read as frontal.
 - `nearest_person_sim = 1.0` switches the step off.
 
-Measured on that library, with 20% of listed-person tags hidden: the step attributes 496 more
-untagged faces to a listed person (654 → 1,150) for 485 suggestions, 121 of them to named persons.
-Faces it recovered were correct 97% of the time (101 faces). Overall recovery precision moved from
-99.83% to 99.76%.
+Measured on that library, with 20% of listed-person tags hidden, before the detector gate below: the
+step attributed 496 more untagged faces to a listed person (654 → 1,150) for 485 suggestions, 121 of
+them to named persons, and faces it recovered were correct 97% of the time (101 faces). With the
+gate it makes 297 suggestions, 109 to named persons, and recovered 82 hidden tags, all correctly.
 
 ## Consequences
 
