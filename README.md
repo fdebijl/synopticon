@@ -426,6 +426,15 @@ Mask a fraction of known labels, group the faces again, and measure recovery.
 | `--mask-fraction FLOAT` | `0.2` | Fraction of known labels to mask. |
 | `--seed INTEGER` | `42` | Random seed. |
 
+#### `eval corrupt`
+Measure how well wrong Synology tags are caught. Moves a sample of correct tags to the wrong person, groups the faces again in memory, and reports how many come back as a reassign to the right person (`recall`), how many reassigns it raised were right (`precision`), and how many untouched tags got a reassign they did not get without the corruption (`new_false_alarms`). `baseline_listed_reassigns` counts the reassigns already proposed without any corruption — some of them are Synology's own mistakes. Never writes to the database or the NAS. Worth running before approving reassigns in bulk, since the `[crossref]` defaults were tuned on a single library.
+
+| Option | Default | Description |
+|---|---|---|
+| `--fraction FLOAT` | `0.05` | Share of correct tags to move to the wrong person. |
+| `--seed INTEGER` | `42` | Random seed. |
+| `--mode TEXT` | `both` | Who the wrong person is: `random`, `lookalike` (the most similar other person), or `both`. |
+
 #### `eval grid`
 Grid-search tunables; writes `eval_grid.csv` under `storage.data_dir`.
 
