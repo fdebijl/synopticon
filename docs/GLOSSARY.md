@@ -214,6 +214,12 @@ cluster with no majority. Cluster-majority mapping can never reach it. The
 instead, and suggests the best match as `low_confidence` when it is clearly ahead
 of the runner-up (`nearest_person_sim`, `nearest_person_margin`).
 
+**Unlisted person** — a person Synology keeps but its person list never returns,
+usually holding one or two faces: Synology's own leftover groups. Their faces still
+tag ours, so they count as tagged — but an unlisted person is never a target. It
+does not vote when a cluster is mapped to a person, and it does vote for merges,
+which is how its faces join a real person in bulk.
+
 **Variant (`orig` vs restored)** — each face can have embeddings from the original
 crop and from a restored crop. Clustering only ever uses `orig`; restored embeddings
 are advisory (used to *detect* restoration problems, not to group faces).

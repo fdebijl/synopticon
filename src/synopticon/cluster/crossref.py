@@ -174,6 +174,7 @@ class ClusterInfo:
     members: list[int]  # positions into face_ids / X
     votes: dict[PersonKey, int] = field(default_factory=dict)
     labeled_total: int = 0
+    listed_total: int = 0  # votes for persons Synology lists — the only mapping targets
     mapped_person: PersonKey | None = None
     vote_fraction: float | None = None
     centroid: np.ndarray | None = None
@@ -240,10 +241,18 @@ def _crossref_core(
         info.labeled_total = sum(info.votes.values())
         if X.shape[0]:
             info.centroid = _l2(X[info.members].mean(axis=0))
-        if info.labeled_total:
-            top_pk, top_count = max(info.votes.items(), key=lambda kv: (kv[1], kv[0]))
-            info.vote_fraction = top_count / info.labeled_total
-            if info.labeled_total >= cfg.min_labeled and info.vote_fraction >= cfg.majority:
+        # Synology's unlisted persons still vote in the intra-cluster merge
+        # below — that is how their faces reach a real person in bulk — but
+        # they can never be a target, nor drag a listed person under majority.
+        listed = {
+            pk: n for pk, n in info.votes.items()
+            if known_persons is None or pk in known_persons
+        }
+        info.listed_total = sum(listed.values())
+        if info.listed_total:
+            top_pk, top_count = max(listed.items(), key=lambda kv: (kv[1], kv[0]))
+            info.vote_fraction = top_count / info.listed_total
+            if info.listed_total >= cfg.min_labeled and info.vote_fraction >= cfg.majority:
                 info.mapped_person = top_pk
                 for fid in member_fids:
                     predicted_person[fid] = top_pk
@@ -311,7 +320,7 @@ def _crossref_core(
         if (
             syno_face_ids is not None
             and info.mapped_person is not None
-            and info.labeled_total - 1 >= cfg.min_labeled
+            and info.listed_total - 1 >= cfg.min_labeled
         ):
             x_pk = info.mapped_person
             x_positions = [

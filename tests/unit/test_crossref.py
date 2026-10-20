@@ -626,3 +626,36 @@ def test_yolo_only_faces_are_neither_probe_nor_reference():
     assert _nearest(result) == {}
     assert 10 not in result.predicted_person
     assert 11 not in result.predicted_person
+
+
+# --------------------------------------------------------------------------- #
+# Unlisted persons: they vote in merges, never as a target
+# --------------------------------------------------------------------------- #
+def test_unlisted_votes_do_not_dilute_a_listed_majority():
+    settings = load_settings()
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 8)]
+    label_map = {1: _A, 2: _A, 3: _A, 4: ("personal", 901), 5: ("personal", 902),
+                 6: ("personal", 903)}
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 7, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(),
+        syno_face_ids={4: 44, 5: 55, 6: 66}, known_persons={_A},
+    )
+
+    assert result.clusters[0].mapped_person == _A
+    assert [a["payload"]["face_id"] for a in result.assigns] == [7]
+
+
+def test_unlisted_majority_maps_nothing_but_still_merges():
+    settings = load_settings()
+    hidden = ("personal", 900)
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 7)]
+    label_map = {1: hidden, 2: hidden, 3: hidden, 4: _A, 5: _A}
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 6, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(), known_persons={_A},
+    )
+
+    assert result.clusters[0].mapped_person is None
+    assert all(a["person_key"] != hidden for a in result.assigns)
+    assert {(m["person_key_a"], m["person_key_b"]) for m in result.merges} == {(_A, hidden)}

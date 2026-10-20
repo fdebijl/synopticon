@@ -714,9 +714,10 @@ class CrossrefConfig(BaseModel):
         ),
         json_schema_extra={
             "details": (
-                "The fraction is over the cluster's *labeled* faces only, and is paired "
-                "with min_labeled. This mapping gates every downstream suggestion — "
-                "assign, reassign and cluster-pair merges."
+                "The fraction is over the cluster's faces tagged to persons Synology "
+                "lists; faces in its unlisted persons do not vote here (they still do in "
+                "merge_vote_fraction). Paired with min_labeled. This mapping gates "
+                "assigns, cluster-path reassigns and cluster-pair merges."
             )
         },
     )
@@ -733,8 +734,9 @@ class CrossrefConfig(BaseModel):
         ),
         json_schema_extra={
             "details": (
-                "Below this the cluster is ignored entirely — no assign, no merge. Also "
-                "the leave-one-out support floor for reassigns."
+                "Counts tags to listed persons only. Below this the cluster maps to "
+                "nobody — no assign, no cluster-pair merge. Also the leave-one-out "
+                "support floor for reassigns."
             )
         },
     )
