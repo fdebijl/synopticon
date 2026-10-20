@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // Maintenance page: one card per destructive local-state command with live
-// "what will be removed" counts (/api/maintenance/counts). Consent (plan §6) is
+// "what will be removed" counts. Those come from four /api/maintenance/*
+// endpoints fetched in parallel, split by cost, so a slow table count or crops
+// walk only holds back its own card. Consent (plan §6) is
 // enforced by the shared confirm dialog: clear-queue / clear-applies /
 // prune-queue / delete-crops / reset take a plain confirm, reset --all takes the typed phrase
 // "reset all". Each action submits a job so the shared JobPanel streams its
@@ -20,17 +22,43 @@ interface OrphanCounts {
   prunable?: number | null
 }
 
-interface Counts {
+interface QueueCounts {
   pending_queue: number | null
   queued_applies: { approved: number | null; failed: number | null }
-  orphaned_queue: OrphanCounts | null
+}
+interface TableCounts {
   faces: number | null
   embeddings: number | null
   cluster_runs: number | null
   photos: number | null
-  crops: { files: number | null; bytes: number | null }
 }
-const counts = ref<Counts | null>(null)
+interface CropUsage {
+  files: number | null
+  bytes: number | null
+}
+
+// A section is pending until its first response; a reload after a job keeps the
+// previous figures on screen rather than flashing spinners back in.
+function section<T>(url: string) {
+  const data = ref<T | null>(null)
+  const loading = ref(true)
+  async function load(): Promise<void> {
+    loading.value = true
+    try {
+      data.value = await getJSON<T>(url)
+    } catch {
+      /* transient */
+    } finally {
+      loading.value = false
+    }
+  }
+  return { data, pending: () => loading.value && data.value == null, load }
+}
+
+const queue = section<QueueCounts>('/api/maintenance/counts')
+const tables = section<TableCounts>('/api/maintenance/tables')
+const orphans = section<OrphanCounts>('/api/maintenance/orphans')
+const crops = section<CropUsage>('/api/maintenance/crops')
 const panel = ref<InstanceType<typeof JobPanel> | null>(null)
 
 const reset = reactive({ all: false, keepCrops: false })
@@ -52,17 +80,13 @@ function show(v: number | null | undefined): string {
 }
 
 const cropsText = () => {
-  const c = counts.value?.crops
+  const c = crops.data.value
   if (!c || c.files == null) return 'n/a'
   return c.files + ' files · ' + fmtBytes(c.bytes)
 }
 
-async function loadCounts(): Promise<void> {
-  try {
-    counts.value = await getJSON<Counts>('/api/maintenance/counts')
-  } catch {
-    /* transient */
-  }
+function loadCounts(): void {
+  void Promise.all([queue.load(), tables.load(), orphans.load(), crops.load()])
 }
 
 function startJob(
@@ -89,7 +113,7 @@ async function clearQueue(): Promise<void> {
 }
 
 const queuedApplies = () => {
-  const q = counts.value?.queued_applies
+  const q = queue.data.value?.queued_applies
   return (q?.approved || 0) + (q?.failed || 0)
 }
 
@@ -108,16 +132,16 @@ async function clearApplies(): Promise<void> {
 // naming in the dialog rather than sweeping up silently.
 const pruneOpts = reactive({ includeApproved: false })
 
-const prunable = () => counts.value?.orphaned_queue?.prunable ?? null
+const prunable = () => orphans.data.value?.prunable ?? null
 const decidedOrphans = () => {
-  const by = counts.value?.orphaned_queue?.by_status
+  const by = orphans.data.value?.by_status
   if (!by) return 0
   return Object.entries(by)
     .filter(([s]) => s !== 'pending' && s !== 'rejected')
     .reduce((n, [, v]) => n + v, 0)
 }
 const orphanBreakdown = () => {
-  const by = counts.value?.orphaned_queue?.by_status
+  const by = orphans.data.value?.by_status
   if (!by || Object.keys(by).length === 0) return 'none'
   return Object.entries(by)
     .sort((a, b) => b[1] - a[1])
@@ -172,7 +196,7 @@ async function runReset(): Promise<void> {
   }
 }
 
-onMounted(() => void loadCounts())
+onMounted(loadCounts)
 </script>
 
 <template>
@@ -183,7 +207,13 @@ onMounted(() => void loadCounts())
       <section class="card maint-card">
         <h3>Clear review queue</h3>
         <p class="muted">Remove pending review items. Approved/applied decisions are unaffected.</p>
-        <p>Pending items: <span class="maint-count">{{ show(counts?.pending_queue) }}</span></p>
+        <p>
+          Pending items:
+          <span class="maint-count"
+            ><span v-if="queue.pending()" class="spinner" aria-label="Loading"></span
+            ><template v-else>{{ show(queue.data.value?.pending_queue) }}</template></span
+          >
+        </p>
         <div class="maint-actions">
           <button type="button" class="btn btn-danger" @click="clearQueue">Clear queue…</button>
         </div>
@@ -195,9 +225,13 @@ onMounted(() => void loadCounts())
           Return approved decisions that never reached the NAS, and failed ones, to the review
           queue. Applied decisions are kept.
         </p>
-        <p>
-          Waiting: <span class="maint-count">{{ show(counts?.queued_applies?.approved) }}</span> ·
-          Failed: <span class="maint-count">{{ show(counts?.queued_applies?.failed) }}</span>
+        <p v-if="queue.pending()">
+          Waiting: <span class="spinner" aria-label="Loading"></span>
+        </p>
+        <p v-else>
+          Waiting:
+          <span class="maint-count">{{ show(queue.data.value?.queued_applies?.approved) }}</span> ·
+          Failed: <span class="maint-count">{{ show(queue.data.value?.queued_applies?.failed) }}</span>
         </p>
         <div class="maint-actions">
           <button
@@ -217,7 +251,13 @@ onMounted(() => void loadCounts())
           Items whose faces were re-detected under new ids. They show no face and cannot be
           repaired by Regenerate crops; Group faces re-proposes them from the current faces.
         </p>
-        <p>Broken: <span class="maint-count">{{ orphanBreakdown() }}</span></p>
+        <p>
+          Broken:
+          <span class="maint-count"
+            ><span v-if="orphans.pending()" class="spinner" aria-label="Loading"></span
+            ><template v-else>{{ orphanBreakdown() }}</template></span
+          >
+        </p>
         <div class="maint-opts">
           <label class="opt-check"
             ><input type="checkbox" v-model="pruneOpts.includeApproved" /> also remove ones you
@@ -241,7 +281,13 @@ onMounted(() => void loadCounts())
         <p class="muted">
           Wipe cached face crops to reclaim disk. They rebuild on demand via regen-crops.
         </p>
-        <p>On disk: <span class="maint-count">{{ cropsText() }}</span></p>
+        <p>
+          On disk:
+          <span class="maint-count"
+            ><span v-if="crops.pending()" class="spinner" aria-label="Loading"></span
+            ><template v-else>{{ cropsText() }}</template></span
+          >
+        </p>
         <div class="maint-actions">
           <button type="button" class="btn btn-danger" @click="deleteCrops">Delete crops…</button>
         </div>
@@ -250,11 +296,15 @@ onMounted(() => void loadCounts())
       <section class="card maint-card danger-card">
         <h3>Reset local database</h3>
         <p class="muted">Drop pipeline data from the local DB. This does not touch the NAS.</p>
-        <p>
-          Faces: <span class="maint-count">{{ show(counts?.faces) }}</span> · Embeddings:
-          <span class="maint-count">{{ show(counts?.embeddings) }}</span> · Grouping runs:
-          <span class="maint-count">{{ show(counts?.cluster_runs) }}</span> · Photos:
-          <span class="maint-count">{{ show(counts?.photos) }}</span>
+        <p v-if="tables.pending()">
+          Faces: <span class="spinner" aria-label="Loading"></span>
+        </p>
+        <p v-else>
+          Faces: <span class="maint-count">{{ show(tables.data.value?.faces) }}</span> ·
+          Embeddings: <span class="maint-count">{{ show(tables.data.value?.embeddings) }}</span> ·
+          Grouping runs:
+          <span class="maint-count">{{ show(tables.data.value?.cluster_runs) }}</span> · Photos:
+          <span class="maint-count">{{ show(tables.data.value?.photos) }}</span>
         </p>
         <div class="maint-opts">
           <label class="opt-check"
@@ -295,6 +345,10 @@ onMounted(() => void loadCounts())
 .maint-count {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+}
+.maint-card .spinner {
+  display: inline-block;
+  vertical-align: middle;
 }
 .maint-opts {
   display: flex;

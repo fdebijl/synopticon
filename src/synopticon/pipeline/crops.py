@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 # `align` and `.runner` are imported lazily by the two functions that actually
 # regenerate images. Both pull cv2/numpy at module scope, and the web process
 # imports this module solely for `crops_disk_usage` — a directory walk. Keeping
-# the heavy imports out of module scope means /api/maintenance/counts cannot pay
+# the heavy imports out of module scope means /api/maintenance/crops cannot pay
 # an image-stack import inside a request handler.
 
 Progress = Callable[[int, int | None], None]

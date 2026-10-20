@@ -1,7 +1,7 @@
 # ADR 15 — Review items whose faces no longer exist
 
 **Status:** Accepted
-**Applies to:** `review/queries.py` (`payload_face_ids`, `face_render_state`, `orphaned_items`, `orphan_counts`, `delete_items`), `pipeline/crops.py` (`_needs_backfill`, `_backfill_paths`), the `prune-queue` command and its `JOB_SPECS` entry, `/api/maintenance/counts`, `MaintenanceView.vue`
+**Applies to:** `review/queries.py` (`payload_face_ids`, `face_render_state`, `orphaned_items`, `orphan_counts`, `delete_items`), `pipeline/crops.py` (`_needs_backfill`, `_backfill_paths`), the `prune-queue` command and its `JOB_SPECS` entry, `/api/maintenance/orphans`, `MaintenanceView.vue`
 
 ## Context
 
@@ -94,7 +94,7 @@ originals" deserve different numbers.
 
 ### The count is fingerprint-cached, and never fatal
 
-`/api/maintenance/counts` parses every `review_queue` payload and then looks up the faces they name —
+`/api/maintenance/orphans` parses every `review_queue` payload and then looks up the faces they name —
 far too much work to redo per request (ADR 07: no per-request map derived from the whole library).
 A wall-clock TTL is the wrong key, for the reason `review/lookups.py` already documents: the figure
 moves the instant a `prune-queue` job deletes rows, and the Maintenance page reloads its counts right

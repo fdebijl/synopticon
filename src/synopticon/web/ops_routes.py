@@ -7,9 +7,11 @@ big app factory stays untouched. Everything here is DB-only and NAS-free:
 * ``GET /api/review/named-merge-pairs`` — the approved named↔named merge pairs,
   used to populate the Apply page's typed-phrase confirmation dialog (the same
   warning list the CLI's ``apply-all`` prints).
-* ``GET /api/maintenance/counts`` — "what will be removed" counts for the
-  Maintenance cards (pending queue, queued applies, orphaned queue rows, crop
-  disk usage, row counts, approved corrections by kind).
+* ``GET /api/maintenance/{counts,tables,orphans,crops}`` — "what will be
+  removed" figures for the Maintenance cards: review queue by status, table row
+  counts, orphaned queue rows, crop disk usage. Split by cost so the page fetches
+  them in parallel and the cheap figures never wait on a full-table count, the
+  orphan scan or the crops walk.
 
 The heavy ``pipeline.crops`` import is done lazily and every failure degrades to
 ``null`` disk-usage figures rather than 500ing the endpoint (a fresh install
@@ -118,26 +120,44 @@ def register_ops_routes(
             counts = queries.queue_counts(
                 c, voided=voided.get(c) if voided is not None else None
             )
-            pending = sum((counts.get("pending") or {}).values())
             approved = dict(counts.get("approved") or {})
             failed = dict(counts.get("failed") or {})
-            data = {
-                "pending_queue": pending,
+            return {
+                "pending_queue": sum((counts.get("pending") or {}).values()),
                 "approved_by_kind": approved,
                 "queued_applies": {
                     "approved": sum(approved.values()),
                     "failed": sum(failed.values()),
                 },
-                "orphaned_queue": orphan_counts(c, counts),
-                "photos": _count(c, "photos"),
-                "faces": _count(c, "faces"),
-                "embeddings": _count(c, "embeddings"),
-                "cluster_runs": _count(c, "cluster_runs"),
-                "crops": crops_usage(Path(settings.storage.crops_dir)),
             }
-            return data
         finally:
             c.close()
+
+    @app.get("/api/maintenance/tables")
+    def api_maintenance_tables():
+        c = conn()
+        try:
+            return {
+                table: _count(c, table)
+                for table in ("photos", "faces", "embeddings", "cluster_runs")
+            }
+        finally:
+            c.close()
+
+    @app.get("/api/maintenance/orphans")
+    def api_maintenance_orphans():
+        c = conn()
+        try:
+            counts = queries.queue_counts(
+                c, voided=voided.get(c) if voided is not None else None
+            )
+            return orphan_counts(c, counts)
+        finally:
+            c.close()
+
+    @app.get("/api/maintenance/crops")
+    def api_maintenance_crops():
+        return crops_usage(Path(settings.storage.crops_dir))
 
 
 def _orphan_fingerprint(conn: Connection, queue: dict) -> tuple:
