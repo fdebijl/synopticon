@@ -1,7 +1,7 @@
 # ADR 10 — Two Docker runtime variants from one Dockerfile
 
 **Status:** Accepted
-**Applies to:** `docker/Dockerfile`, `.github/workflows/docker-publish.yml`, README's "Docker images" section
+**Applies to:** `docker/Dockerfile`, `.github/workflows/docker-publish.yml`, `docs/docker.md`'s "Docker images" section
 
 ## Context
 
@@ -40,7 +40,7 @@ only — NVIDIA ships no arm64 CUDA wheels.
 
 Publishing needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets.
 
-Keep the tag table in README's "Docker images" section in sync with the workflow's
+Keep the tag table in `docs/docker.md`'s "Docker images" section in sync with the workflow's
 `metadata-action` tag list.
 
 ## Deployment consequences

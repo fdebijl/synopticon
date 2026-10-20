@@ -66,7 +66,7 @@ passed it through unchanged." Any check either false-positives on a correctly co
 false-negatives on the forgery it exists to catch. The resolution is documentation at every surface
 that touches the decision instead: the `trusted_proxies` field's own help text, two start-up
 warnings (an `allow_from` set with no `trusted_proxies`, and a `trusted_proxies` entry that overlaps
-loopback), `GET /api/security/access`'s `proxy` block, `NetworkAccessCard`, and the README's
+loopback), `GET /api/security/access`'s `proxy` block, `NetworkAccessCard`, and `docs/docker.md`'s
 "Behind a reverse proxy" section. Listing a loopback address without the `proxy_set_header` line is
 called out explicitly as *worse* than listing nothing, because it arms the belief without fixing
 the proxy that would make it safe.
