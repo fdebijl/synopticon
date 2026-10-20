@@ -626,3 +626,96 @@ def test_yolo_only_faces_are_neither_probe_nor_reference():
     assert _nearest(result) == {}
     assert 10 not in result.predicted_person
     assert 11 not in result.predicted_person
+
+
+# --------------------------------------------------------------------------- #
+# Unlisted persons: they vote in merges, never as a target
+# --------------------------------------------------------------------------- #
+def test_unlisted_votes_do_not_dilute_a_listed_majority():
+    settings = load_settings()
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 8)]
+    label_map = {1: _A, 2: _A, 3: _A, 4: ("personal", 901), 5: ("personal", 902),
+                 6: ("personal", 903)}
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 7, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(),
+        syno_face_ids={4: 44, 5: 55, 6: 66}, known_persons={_A},
+    )
+
+    assert result.clusters[0].mapped_person == _A
+    assert [a["payload"]["face_id"] for a in result.assigns] == [7]
+    assert sorted(r["payload"]["face_id"] for r in result.reassigns) == [4, 5, 6]
+    assert {r["person_key"] for r in result.reassigns} == {_A}
+
+
+def test_unlisted_majority_maps_nothing_but_still_merges():
+    settings = load_settings()
+    hidden = ("personal", 900)
+    specs = [(i, [1, 0, 0, 0]) for i in range(1, 7)]
+    label_map = {1: hidden, 2: hidden, 3: hidden, 4: _A, 5: _A}
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0] * 6, label_map)
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(), known_persons={_A},
+    )
+
+    assert result.clusters[0].mapped_person is None
+    assert all(a["person_key"] != hidden for a in result.assigns)
+    assert {(m["person_key_a"], m["person_key_b"]) for m in result.merges} == {(_A, hidden)}
+
+
+def test_face_held_by_an_unlisted_person_is_reassigned_to_its_nearest_person():
+    settings = load_settings()
+    hidden = ("personal", 900)
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.3, 0, 0])], [2])
+    lm[7] = hidden
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(),
+        syno_face_ids={7: 77}, known_persons={_A, _B},
+    )
+
+    (item,) = result.reassigns
+    assert item["kind"] == "reassign"
+    assert (item["from_person_key"], item["person_key"]) == (hidden, _A)
+    assert item["payload"]["syno_face_id"] == 77
+    assert item["payload"]["from_similarity"] is None
+    assert item["payload"]["nearest_person"]["runner_up_person_id"] == 200
+    assert 7 not in _nearest(result)
+
+
+def test_plainly_wrong_listed_tag_is_reassigned():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.1, 0, 0])], [2])
+    lm[7] = _B
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(),
+        syno_face_ids={7: 77}, known_persons={_A, _B},
+    )
+
+    (item,) = result.reassigns
+    assert (item["from_person_key"], item["person_key"]) == (_B, _A)
+    assert item["payload"]["from_similarity"] < 0.2
+
+
+def test_tag_its_cluster_agrees_with_is_left_alone():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _stranded_inputs([(7, [1, 0.1, 0, 0])], [1])
+    lm[7] = _B
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, set(),
+        syno_face_ids={7: 77}, known_persons={_A, _B},
+    )
+
+    assert result.clusters[1].mapped_person == _B
+    assert result.reassigns == []
+
+
+def test_person_with_too_few_tags_is_not_a_target():
+    settings = load_settings()
+    small = ("personal", 300)
+    face_ids, X, labels, lm, meta = _stranded_inputs(
+        [(7, [0, 0, 1, 0]), (8, [0, 0, 1, 0.05]), (9, [0, 0, 1, 0.1])], [2, 2, 3]
+    )
+    lm.update({7: small, 8: small})
+    result = crossref._crossref_core(face_ids, X, labels, lm, settings, meta, set())
+
+    assert 9 not in _nearest(result)

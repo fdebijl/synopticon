@@ -61,7 +61,6 @@ gate it makes 297 suggestions, 109 to named persons, and recovered 82 hidden tag
 - Faces held by unlisted persons still count as tagged, so they are neither stranded nor suggested.
   Treating those labels as absent would let ~1,800 of their 5.6k faces reach a listed person (from 59
   today), but those faces already exist on the NAS: they must be moved with `separate` (a
-  `reassign`), never added with `add_face`, which would duplicate them. That change touches
-  `reassign` generation and its apply gate, and is not part of this decision.
+  `reassign`), never added with `add_face`, which would duplicate them. ADR 20 does that.
 - The step costs one matrix product per space against all tagged faces — about a minute on the
   library above — and runs inside `_crossref_core`, so every `eval grid` cell pays it.

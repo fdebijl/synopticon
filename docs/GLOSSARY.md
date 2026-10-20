@@ -212,7 +212,16 @@ singleton, a small cluster with fewer than `min_labeled` tagged faces, or a mixe
 cluster with no majority. Cluster-majority mapping can never reach it. The
 **nearest person** step scores it against each person's closest tagged faces
 instead, and suggests the best match as `low_confidence` when it is clearly ahead
-of the runner-up (`nearest_person_sim`, `nearest_person_margin`).
+of the runner-up (`nearest_person_sim`, `nearest_person_margin`). The same step
+scores tagged faces, and suggests a `reassign` when a face's best match is clearly
+not the person Synology gave it.
+
+**Unlisted person** — a person Synology keeps but its person list never returns,
+usually holding one or two faces: Synology's own leftover groups. Their faces still
+tag ours, so they count as tagged — but an unlisted person is never a target. It
+does not vote when a cluster is mapped to a person; it does vote for merges, which
+is how its faces join a real person in bulk; and its faces are the main source of
+nearest-person reassigns.
 
 **Variant (`orig` vs restored)** — each face can have embeddings from the original
 crop and from a restored crop. Clustering only ever uses `orig`; restored embeddings
