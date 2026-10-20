@@ -318,7 +318,7 @@ def resolve_client(
     single-entry header is what a correct overwrite produces and what a naive
     forgery looks like), so it is documented at every surface instead of
     detected: see the trusted_proxies field text, both start-up warnings,
-    GET /api/security/access, NetworkAccessCard, and the README block.
+    GET /api/security/access, NetworkAccessCard, and docs/docker.md.
 
     When `peer` is NOT inside `trusted`: `ip` is the peer, `source` is
     "socket_peer", and X-Forwarded-For is ignored entirely. It is still echoed

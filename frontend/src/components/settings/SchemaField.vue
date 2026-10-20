@@ -33,6 +33,16 @@ const boolValue = computed<boolean>({
   set: (v) => emit('update:modelValue', v),
 })
 
+// An array of enum values renders as one checkbox per option, still bound to the
+// comma-joined string model every array control uses.
+const checked = computed(() => new Set(strValue.value.split(',').map((s) => s.trim())))
+function toggle(opt: unknown, on: boolean) {
+  const next = (props.field.info.itemEnum || []).filter((o) =>
+    o === opt ? on : checked.value.has(String(o)),
+  )
+  emit('update:modelValue', next.join(', '))
+}
+
 const secretPlaceholder = computed(() => {
   const raw = props.rawValue as MaskedSecret | undefined
   return raw && raw.set ? 'set — leave blank to keep' : 'not set'
@@ -65,6 +75,17 @@ const envMessage = computed(
         </option>
       </select>
       <input v-else-if="kind === 'boolean'" class="check" type="checkbox" v-model="boolValue" />
+      <div v-else-if="kind === 'array' && field.info.itemEnum" class="checks">
+        <label v-for="opt in field.info.itemEnum" :key="String(opt)" class="check-option">
+          <input
+            class="check"
+            type="checkbox"
+            :checked="checked.has(String(opt))"
+            @change="toggle(opt, ($event.target as HTMLInputElement).checked)"
+          />
+          {{ opt }}
+        </label>
+      </div>
       <input
         v-else-if="kind === 'array'"
         class="input"
@@ -136,6 +157,20 @@ const envMessage = computed(
 }
 .field-control .check {
   margin: 4px 0 0;
+}
+.checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-4);
+}
+.check-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+.check-option .check {
+  margin: 0;
 }
 .field-desc {
   font-size: var(--fs-sm);

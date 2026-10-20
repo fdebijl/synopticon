@@ -43,7 +43,7 @@ backend = "sqlite"                  # sqlite | postgres
 [inference]
 device = "auto"                     # auto | cpu | cuda; "auto"/"cuda" use the GPU
                                     # only if onnxruntime-gpu is installed (see
-                                    # README "GPU acceleration"), else fall back to CPU
+                                    # docs/configuration.md), else fall back to CPU
 device_id = 0                       # CUDA device ordinal for multi-GPU hosts
 batch_size = 16
 
@@ -89,3 +89,5 @@ new_person_min_faces = 5            # a brand-new person needs at least this man
 new_person_min_photos = 8           # ...spread over at least this many distinct photos
 nearest_person_sim = 0.55           # stranded face -> closest known person; 1.0 switches it off
 nearest_person_margin = 0.08        # ...only when clearly ahead of the runner-up person
+# Suggestion kinds Group faces queues for review; drop any you are not interested in.
+proposal_kinds = ["assign", "low_confidence", "reassign", "merge", "merge_named", "new_person"]

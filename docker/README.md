@@ -84,7 +84,7 @@ Every setting is editable in the GUI, or via `config.toml` on `/data`, or per-ke
 | `SYNOPTICON_NAS__REQUESTS_PER_SECOND` | Default 4. The NAS also serves your family — be gentle. |
 | `SYNOPTICON_INFERENCE__DEVICE` | `auto`, `cpu`, or `cuda`. Defaults to `auto` in the CPU image and `cuda` in the GPU one; both fall back to CPU if no GPU is usable. |
 
-Full list: [Configuration in the README](https://github.com/fdebijl/synopticon#configuration).
+Full list: [Configuration](https://github.com/fdebijl/synopticon/blob/main/docs/configuration.md).
 
 ## Running jobs without the GUI
 
@@ -158,7 +158,7 @@ Only face detection benefits; everything else is unaffected. A GPU run and a CPU
   }
   ```
 
-  `$remote_addr` overwrites whatever the visitor sent; nginx forwards client headers by default, so without that line a visitor's own `X-Forwarded-For` reaches Synopticon and they can claim to be any address — switching off `[security] allow_from` and the per-address sign-in limits for whoever asks. Full explanation and the Caddy/Traefik comparison: [Behind a reverse proxy in the README](https://github.com/fdebijl/synopticon#behind-a-reverse-proxy). **`FORWARDED_ALLOW_IPS` is ignored under `synopticon web`** — uvicorn's own proxy trust is switched off explicitly, so only `[security] trusted_proxies` governs this.
+  `$remote_addr` overwrites whatever the visitor sent; nginx forwards client headers by default, so without that line a visitor's own `X-Forwarded-For` reaches Synopticon and they can claim to be any address — switching off `[security] allow_from` and the per-address sign-in limits for whoever asks. Full explanation and the Caddy/Traefik comparison: [Behind a reverse proxy](https://github.com/fdebijl/synopticon/blob/main/docs/docker.md#behind-a-reverse-proxy). **`FORWARDED_ALLOW_IPS` is ignored under `synopticon web`** — uvicorn's own proxy trust is switched off explicitly, so only `[security] trusted_proxies` governs this.
 - **Locked yourself out from a container?** The recovery commands run against the same volume, from the shell, with no login needed:
   ```bash
   docker exec -it synopticon synopticon web-access --clear    # locked out by the address list
@@ -178,7 +178,7 @@ Any NAS running Synology Photos on DSM 7.x. API versions are discovered at runti
 ## Links
 
 - **Source, docs and issues:** [github.com/fdebijl/synopticon](https://github.com/fdebijl/synopticon)
-- **Safety model** (what can write, and what gates it): [README](https://github.com/fdebijl/synopticon#safety-model)
+- **Safety model** (what can write, and what gates it): [docs/safety-model.md](https://github.com/fdebijl/synopticon/blob/main/docs/safety-model.md)
 - **License:** MIT
 
 Parts of this codebase were created by a large language model, in particular models provided by Anthropic.

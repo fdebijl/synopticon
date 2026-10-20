@@ -198,7 +198,7 @@ Other things that are easy to regress:
 - New CLI commands go in `cli.py` with lazy imports inside the command function, to keep CLI startup fast.
 - Add comments only for something arcane.
 - This project is fluid. When a solution no longer works, adapt it — if you find yourself planning an elaborate workaround, change the architecture instead.
-- **Keep the docs honest as you go.** README is the FOSS onboarding path: how to run the project first, current architecture second, never past decisions. Update it when CLI, config or Docker layout changes, and update this file when commands or the data model change. A decision worth remembering goes in a new `docs/adr/` file, not here and not in the README.
+- **Keep the docs honest as you go.** README is the FOSS onboarding pitch and quickstart; everything after it lives in flat files under `docs/` (`running-locally.md`, `docker.md`, `cli-reference.md`, `configuration.md`, `models.md`, `how-it-works.md`, `safety-model.md`, `compatibility.md`) — how to run the project first, current architecture second, never past decisions. Update them when CLI, config or Docker layout changes, and update this file when commands or the data model change. A decision worth remembering goes in a new `docs/adr/` file, not here and not in the README or the user docs.
 
 ## Tasks
 

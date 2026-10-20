@@ -448,6 +448,20 @@ def test_run_clustering_unnamed_side_stays_plain_merge(db_helpers, tmp_settings)
     assert [r["kind"] for r in rows] == ["merge"]
 
 
+def test_disabled_proposal_kinds_are_not_queued(db_helpers, tmp_settings):
+    h = db_helpers
+    _split_person_cluster(h, "Alice", "Bob")
+    tmp_settings.crossref.proposal_kinds = ["merge", "new_person"]
+    crossref.run_clustering(h.conn, tmp_settings)
+    assert h.conn.execute("SELECT COUNT(*) AS c FROM review_queue").fetchone()["c"] == 0
+
+    # Nothing was recorded for the suppressed kind, so enabling it proposes it.
+    tmp_settings.crossref.proposal_kinds = ["merge_named"]
+    crossref.run_clustering(h.conn, tmp_settings)
+    rows = h.conn.execute("SELECT kind FROM review_queue").fetchall()
+    assert [r["kind"] for r in rows] == ["merge_named"]
+
+
 def test_migration_0005_reclassifies_pending_named_merges(tmp_path):
     import json
     from pathlib import Path

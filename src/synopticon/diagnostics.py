@@ -154,7 +154,7 @@ def _onnx_section(settings: Settings) -> Section:
     elif gpus:
         # The single most common surprise: healthy GPU, but the CPU-only wheel.
         gpu_status = ("not available — GPU detected but CPU-only onnxruntime is installed; "
-                      "reinstall with the gpu extra (see README: GPU acceleration)")
+                      "reinstall with the gpu extra (see docs/configuration.md: GPU acceleration)")
     else:
         gpu_status = "not available (CPU only)"
     rows.append(("GPU acceleration", gpu_status))

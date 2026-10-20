@@ -202,8 +202,12 @@ export function toControlValue(info: FieldInfo, value: unknown): ControlValue {
       return ''
     case 'boolean':
       return !!value
-    case 'array':
-      return ((value as unknown[]) || []).join(', ')
+    case 'array': {
+      const items = (value as unknown[]) || []
+      // Enum order, so ticking a box off and on again reads as unchanged.
+      const ordered = info.itemEnum ? info.itemEnum.filter((o) => items.includes(o)) : items
+      return ordered.join(', ')
+    }
     case 'object':
       return JSON.stringify(value == null ? {} : value, null, 2)
     default:

@@ -27,6 +27,9 @@ from pydantic_settings import (
 )
 
 Space = Literal["personal", "shared"]
+ProposalKind = Literal[
+    "assign", "low_confidence", "reassign", "merge", "merge_named", "new_person"
+]
 
 
 class NasConfig(BaseModel):
@@ -879,6 +882,29 @@ class CrossrefConfig(BaseModel):
                 "The gap between the best and runner-up person's nearest-person score "
                 "(see nearest_person_sim), in cosine units. A face with only one candidate "
                 "person in its space has no runner-up and passes on similarity alone."
+            )
+        },
+    )
+    proposal_kinds: list[ProposalKind] = Field(
+        default_factory=lambda: [
+            "assign", "low_confidence", "reassign", "merge", "merge_named", "new_person"
+        ],
+        title="Suggestion Kinds",
+        description=(
+            "Which kinds of suggestion grouping faces adds to the review queue. Untick a "
+            "kind you are not interested in and it is no longer suggested.\n\n"
+            "assign: tag an untagged face as a known person. low_confidence: the same, "
+            "but less certain. reassign: move a face Synology tagged as the wrong person. "
+            "merge: join two people where at least one is unnamed. merge_named: join two "
+            "named people. new_person: create a person for a recurring unknown face. "
+            "Suggestions already in the queue stay there."
+        ),
+        json_schema_extra={
+            "details": (
+                "Filters at persistence only: the cross-reference still runs in full, so "
+                "predicted_person and the other kinds are unaffected. A suppressed "
+                "suggestion is not recorded anywhere, so re-enabling its kind proposes it "
+                "on the next Group faces run."
             )
         },
     )

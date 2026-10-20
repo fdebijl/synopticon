@@ -836,6 +836,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
         return names.get(pk)
 
     existing = _existing_identities(conn)
+    enabled = set(settings.crossref.proposal_kinds)
     ts = store.now()
 
     params = {
@@ -876,7 +877,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
     for item in sorted(result.assigns, key=lambda x: x["payload"]["face_id"]):
         pk = item["person_key"]
         fid = item["payload"]["face_id"]
-        if (fid, pk[1]) in existing["assign"]:
+        if item["kind"] not in enabled or (fid, pk[1]) in existing["assign"]:
             continue
         existing["assign"].add((fid, pk[1]))
         payload = dict(item["payload"])
@@ -890,7 +891,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
     for item in sorted(result.reassigns, key=lambda x: x["payload"]["face_id"]):
         pk = item["person_key"]
         fid = item["payload"]["face_id"]
-        if (fid, pk[1]) in existing["reassign"]:
+        if "reassign" not in enabled or (fid, pk[1]) in existing["reassign"]:
             continue
         existing["reassign"].add((fid, pk[1]))
         payload = dict(item["payload"])
@@ -904,7 +905,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
 
     for item in result.new_persons:
         key = tuple(sorted(item["payload"]["face_ids"]))
-        if key in existing["new_person"]:
+        if "new_person" not in enabled or key in existing["new_person"]:
             continue
         existing["new_person"].add(key)
         conn.execute(
@@ -916,13 +917,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
     for item in result.merges:
         a, b = item["person_key_a"], item["person_key_b"]
         key = tuple(sorted([a, b]))
-        if key in existing["merge"]:
-            continue
-        existing["merge"].add(key)
-        payload = item["payload"]
         name_a, name_b = name_of(a), name_of(b)
-        payload["person_a"]["name"] = name_a
-        payload["person_b"]["name"] = name_b
         # Joining two already-named people destroys a human label and is
         # irreversible — split it into a distinct, more strictly gated kind.
         kind = (
@@ -930,6 +925,12 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
             if (name_a or "").strip() and (name_b or "").strip()
             else "merge"
         )
+        if kind not in enabled or key in existing["merge"]:
+            continue
+        existing["merge"].add(key)
+        payload = item["payload"]
+        payload["person_a"]["name"] = name_a
+        payload["person_b"]["name"] = name_b
         conn.execute(
             "INSERT INTO review_queue (run_id, kind, payload_json, confidence, created_at) "
             "VALUES (?,?,?,?,?)",

@@ -513,7 +513,7 @@ onMounted(async () => {
           <p class="models-missing-title">Some models could not be downloaded</p>
           <p>
             AdaFace and MagFace cannot be downloaded automatically — their weights are not
-            redistributed. Export them manually (see <strong>README &rarr; Models</strong>), then
+            redistributed. Export them manually (see <strong>docs/models.md</strong>), then
             re-run the download, or continue and add them before detecting faces.
           </p>
           <p class="muted">
