@@ -462,11 +462,12 @@ def _crossref_core(
         phase="cluster.crossref",
     )
 
-    nearest_assigns, nearest_predicted = _nearest_person(
+    nearest_assigns, nearest_reassigns, nearest_predicted = _nearest_person(
         face_ids, X, label_map, predicted_person, settings, face_meta, person_photos,
-        known_persons,
+        known_persons, syno_face_ids, {r["payload"]["face_id"] for r in reassigns},
     )
     assigns.extend(nearest_assigns)
+    reassigns.extend(nearest_reassigns)
     predicted_person.update(nearest_predicted)
 
     return ClusterResult(
@@ -501,16 +502,26 @@ def _nearest_person(
     face_meta: dict[int, dict],
     person_photos: set[tuple[str, int, int]],
     known_persons: set[PersonKey] | None,
-) -> tuple[list[dict], dict[int, PersonKey]]:
-    """Attribute untagged faces in unmapped clusters straight to a known person.
+    syno_face_ids: dict[int, int] | None = None,
+    reassigned: set[int] = frozenset(),
+) -> tuple[list[dict], list[dict], dict[int, PersonKey]]:
+    """Attribute faces cluster mapping cannot reach straight to a known person.
 
-    Cluster-majority mapping can never reach a face whose cluster has too few
-    tagged members — most of all a singleton. Each such face is scored against
-    every person in its space by mean similarity to that person's
-    ``_NEAREST_TOPK`` closest tagged faces, and attributed when the best score
-    clears ``nearest_person_sim`` by ``nearest_person_margin`` over the
-    runner-up. Returns ``(low_confidence assigns, face_id -> person)``; the
-    prediction is made before the already-tagged-photo filter, as for clusters.
+    Each probe is scored against every person in its space by mean similarity
+    to that person's ``_NEAREST_TOPK`` closest tagged faces (never itself), and
+    attributed when the best score clears ``nearest_person_sim`` by
+    ``nearest_person_margin`` over the runner-up, and the winner has at least
+    ``min_labeled`` tagged faces. Two kinds of probe:
+
+    - an untagged face outside every mapped cluster — most of all a singleton —
+      becomes a ``low_confidence`` assign, and its prediction feeds
+      ``predicted_person`` (made before the already-tagged-photo filter, as for
+      clusters);
+    - a tagged face (given ``syno_face_ids``) whose best person is not the one
+      Synology gave it becomes a ``reassign``, which moves the existing face.
+      That covers faces in Synology's unlisted persons and plainly wrong tags.
+      Skipped when its cluster maps to the person Synology gave it, or when
+      the cluster pass already proposed a reassign for it (``reassigned``).
 
     Only ``known_persons`` are candidates (``None``: every labelled person),
     and a face only YOLO detected is neither probe nor reference: let in, the
@@ -521,7 +532,7 @@ def _nearest_person(
     """
     cfg = settings.crossref
     if cfg.nearest_person_sim >= 1.0 or not X.shape[0]:
-        return [], {}
+        return [], [], {}
 
     pos_of = {int(fid): i for i, fid in enumerate(face_ids.tolist())}
     tagged: dict[str, dict[PersonKey, list[int]]] = {}
@@ -536,11 +547,22 @@ def _nearest_person(
 
     probes: dict[str, list[int]] = {}
     for pos, fid in enumerate(face_ids.tolist()):
-        if fid in label_map or fid in predicted_person:
-            continue
         meta = face_meta.get(int(fid))
-        if _confirmed(meta) and meta["space"] in tagged:
-            probes.setdefault(meta["space"], []).append(pos)
+        if not _confirmed(meta) or meta["space"] not in tagged:
+            continue
+        current = label_map.get(fid)
+        if current is None:
+            if fid in predicted_person:
+                continue
+        elif (
+            syno_face_ids is None
+            or fid not in syno_face_ids
+            or fid in reassigned
+            or current[0] != meta["space"]  # cannot move a face across spaces
+            or predicted_person.get(fid) == current
+        ):
+            continue
+        probes.setdefault(meta["space"], []).append(pos)
 
     emitter = get_emitter()
     emitter.phase("cluster.nearest")
@@ -550,6 +572,7 @@ def _nearest_person(
     best_by_photo: dict[tuple[str, int, PersonKey], dict] = {}
     for space, positions in sorted(probes.items()):
         persons = sorted(tagged[space])
+        pidx = {pk: j for j, pk in enumerate(persons)}
         cols = np.concatenate([np.asarray(tagged[space][pk]) for pk in persons])
         bounds = np.cumsum([0] + [len(tagged[space][pk]) for pk in persons])
         L = X[cols]
@@ -557,11 +580,17 @@ def _nearest_person(
             emitter.progress("cluster.nearest", done, total)
             chunk = np.asarray(positions[start : start + _NEAREST_CHUNK])
             S = X[chunk] @ L.T
+            S[chunk[:, None] == cols[None, :]] = -np.inf  # a tagged probe is no evidence for itself
             scores = np.empty((len(chunk), len(persons)), dtype=np.float32)
             for j in range(len(persons)):
                 seg = S[:, bounds[j] : bounds[j + 1]]
                 k = min(_NEAREST_TOPK, seg.shape[1])
-                scores[:, j] = np.partition(seg, seg.shape[1] - k, axis=1)[:, -k:].mean(axis=1)
+                top = np.partition(seg, seg.shape[1] - k, axis=1)[:, -k:]
+                finite = np.isfinite(top)
+                n = finite.sum(axis=1)
+                scores[:, j] = np.where(
+                    n > 0, np.where(finite, top, 0.0).sum(axis=1) / np.maximum(n, 1), -1.0
+                )
             order = np.argsort(-scores, axis=1, kind="stable")
             for row, pos in enumerate(chunk.tolist()):
                 best_j = int(order[row, 0])
@@ -574,46 +603,61 @@ def _nearest_person(
                     continue
                 fid = int(face_ids[pos])
                 pk = persons[best_j]
-                predicted[fid] = pk
+                current = label_map.get(fid)
+                if current == pk or len(tagged[space][pk]) < cfg.min_labeled:
+                    continue
+                if current is None:
+                    predicted[fid] = pk
                 meta = face_meta[fid]
                 if (pk[0], pk[1], meta["photo_id"]) in person_photos:
                     continue
-                # Two stranded faces in one photo cannot both be the same person.
+                # Two faces in one photo cannot both be the same person.
                 key = (space, meta["photo_id"], pk)
                 held = best_by_photo.get(key)
                 if held is not None and held["confidence"] >= best:
                     continue
-                best_by_photo[key] = {
-                    "kind": "low_confidence",
+                payload = {
+                    "face_id": fid,
+                    "photo_id": meta["photo_id"],
+                    "space": space,
+                    "person_id": pk[1],
+                    "person_name": None,
+                    "bbox_normalized": meta["bbox_norm"],
                     "confidence": best,
-                    "person_key": pk,
-                    "payload": {
-                        "face_id": fid,
-                        "photo_id": meta["photo_id"],
-                        "space": space,
-                        "person_id": pk[1],
-                        "person_name": None,
-                        "bbox_normalized": meta["bbox_norm"],
-                        "confidence": best,
-                        "nearest_person": {
-                            "margin": None if runner_j is None else margin,
-                            "runner_up_person_id": (
-                                None if runner_j is None else persons[runner_j][1]
-                            ),
-                        },
+                    "nearest_person": {
+                        "margin": None if runner_j is None else margin,
+                        "runner_up_person_id": (
+                            None if runner_j is None else persons[runner_j][1]
+                        ),
                     },
                 }
+                item = {"confidence": best, "person_key": pk, "payload": payload}
+                if current is None:
+                    item["kind"] = "low_confidence"
+                else:
+                    from_j = pidx.get(current)
+                    item["kind"] = "reassign"
+                    item["from_person_key"] = current
+                    payload.update(
+                        syno_face_id=syno_face_ids[fid],
+                        from_person_id=current[1],
+                        from_person_name=None,
+                        from_similarity=None if from_j is None else float(scores[row, from_j]),
+                    )
+                best_by_photo[key] = item
             done += len(chunk)
     emitter.progress("cluster.nearest", total, total)
 
-    assigns = sorted(best_by_photo.values(), key=lambda a: a["payload"]["face_id"])
+    found = sorted(best_by_photo.values(), key=lambda a: a["payload"]["face_id"])
+    assigns = [a for a in found if a["kind"] == "low_confidence"]
+    reassigns = [a for a in found if a["kind"] == "reassign"]
     emitter.log(
         "info",
-        f"cluster.nearest: {len(predicted)} of {total} face(s) outside a mapped cluster "
-        f"matched a known person; {len(assigns)} proposed",
+        f"cluster.nearest: {total} face(s) scored; {len(assigns)} assign(s) and "
+        f"{len(reassigns)} reassign(s) proposed",
         phase="cluster.nearest",
     )
-    return assigns, predicted
+    return assigns, reassigns, predicted
 
 
 def _confirmed(meta: dict | None) -> bool:

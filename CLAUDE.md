@@ -29,6 +29,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `17_web-security-hardening.md` | `web/clientip.py`, `web/auth/throttle.py`, `web/auth/authlog.py`, `web/auth/twofactor.py`, `web/auth/sessions.py`, `web/totp.py`, `web/security_routes.py`, the `[security]` config section, anything keying a decision on a client address |
 | `18_deleted-photo-review-items.md` | `voided_items`, `VoidedCache`, anything that lists or counts `review_queue`, `load_fused`'s face filter, `apply_reviewed`'s skip of deleted photos |
 | `19_nearest-person-attribution.md` | `crossref._nearest_person`, `known_persons`, anything treating Synology's unlisted persons as labels |
+| `20_unlisted-persons-and-wrong-tags.md` | cluster mapping's vote, `ClusterInfo.listed_total`, the nearest-person reassign branch, splitting large clusters |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -60,6 +61,8 @@ syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writ
 ```
 
 **Hard module boundary:** `cluster/` must never import from `syno/` or `pipeline/`. `pipeline/runner.py` takes a `fetch_original(row) -> Path` callable instead of importing `sync/`. `dedupe.py` is NAS-free; `dedupe_writeback.py` is its only NAS-touching half. `cli.py` is where the layers get wired together.
+
+**Crossref never targets a person Synology doesn't list.** Synology keeps thousands of unlisted one- and two-face persons whose faces still tag ours: they vote in merges (the bulk route out of them) but never in cluster mapping, and are never an assign or reassign target. A face Synology already holds is moved with a `reassign` (`separate`), never re-added with an assign (`add_face`). (ADR 19, ADR 20)
 
 **Leaf modules stay dependency-free** so anything may import them: `cpu.py`, `progress.py`, `cron.py`, `links.py`, `pipeline/version.py`. Deep links are built in exactly one place — `links.py`. (ADR 01)
 

@@ -736,7 +736,8 @@ class CrossrefConfig(BaseModel):
             "details": (
                 "Counts tags to listed persons only. Below this the cluster maps to "
                 "nobody — no assign, no cluster-pair merge. Also the leave-one-out "
-                "support floor for reassigns."
+                "support floor for reassigns, and the fewest tagged faces a person needs "
+                "to be a nearest-person target."
             )
         },
     )
@@ -841,19 +842,25 @@ class CrossrefConfig(BaseModel):
         default=0.55,
         title="Nearest Person Similarity",
         description=(
-            "How closely a face left out of every known person's group must resemble one "
-            "person's tagged faces before Synopticon suggests it as that person anyway.\n\n"
-            "Practical 0.50-0.65; default 0.55. These faces are usually small or alone in "
-            "their photo, so grouping strands them. Lower it to rescue more of them; raise "
-            "it if the suggestions turn out wrong. Set to 1.0 to switch this off."
+            "How closely a face must resemble one person's tagged faces before "
+            "Synopticon suggests it as that person on its own evidence, without a group "
+            "behind it.\n\n"
+            "Practical 0.50-0.65; default 0.55. It rescues faces grouping strands, which "
+            "are usually small or alone in their photo, and it moves faces Synology put "
+            "with the wrong person — or in one of the unnamed people it never shows. "
+            "Lower it to catch more; raise it if the suggestions turn out wrong. Set to "
+            "1.0 to switch this off."
         ),
         json_schema_extra={
             "details": (
-                "Applies only to untagged faces whose cluster mapped to no person. The "
-                "score is the mean cosine similarity to the person's 5 closest "
-                "Synology-tagged faces in the same space, range [-1,1]. Suggestions are "
-                "always queued as low_confidence, with the margin and runner-up in the "
-                "payload."
+                "The score is the mean cosine similarity to the person's 5 closest "
+                "Synology-tagged faces in the same space, never the face itself, range "
+                "[-1,1]; only SCRFD-confirmed faces take part. An untagged face whose "
+                "cluster mapped to no one is queued as low_confidence; a tagged face whose "
+                "best person is not its Synology person is queued as a reassign (moved "
+                "with separate, gated by --apply-reassigns) unless its cluster maps to "
+                "its Synology person. Either payload carries nearest_person.margin and "
+                "runner_up_person_id."
             )
         },
     )
