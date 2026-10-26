@@ -1,7 +1,7 @@
 # ADR 07 — Web process responsiveness
 
 **Status:** Accepted — do not regress
-**Applies to:** `web/app.py`, `web/stats.py`, `web/ops_routes.py`, `review/lookups.py`, `review/queries.py`, `web/clientip.py`, `web/auth/throttle.py`, `web/auth/authlog.py`, `web/security_routes.py`, `web/configio.py`
+**Applies to:** `web/app.py`, `web/stats.py`, `web/stats_page.py`, `web/ops_routes.py`, `review/lookups.py`, `review/queries.py`, `web/clientip.py`, `web/auth/throttle.py`, `web/auth/authlog.py`, `web/security_routes.py`, `web/configio.py`
 
 **Amended by ADR 17.** The network allowlist and login throttling both had to be judged against
 this document's invariants as they landed, because both sit on the request path of *every* API call
