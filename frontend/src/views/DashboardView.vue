@@ -9,6 +9,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { getJSON } from '../api/client'
 import { useJobs } from '../stores/jobs'
 import { ago } from '../utils/time'
+import StatTile from '../components/stats/StatTile.vue'
 import type { Stats, AuditEntry } from '../api/types'
 
 const stats = ref<Stats | null>(null)
@@ -244,28 +245,27 @@ watch(
 
     <template v-else-if="stats">
       <section class="stat-tiles" aria-label="Library statistics">
-        <template v-for="tile in tiles" :key="tile.label">
-          <RouterLink v-if="tile.to" class="tile" :to="tile.to">
-            <div class="tile-label">{{ tile.label }}</div>
-            <div class="tile-value">{{ tile.value }}</div>
-            <div v-if="tile.sub" class="tile-sub">{{ tile.sub }}</div>
-          </RouterLink>
-          <div v-else class="tile">
-            <div class="tile-label">{{ tile.label }}</div>
-            <div class="tile-value">{{ tile.value }}</div>
-            <div v-if="tile.hint" class="tile-hint">
-              <RouterLink :to="tile.hint.to">{{ tile.hint.linkText }}</RouterLink
-              >{{ tile.hint.text }}
-            </div>
-            <div v-else-if="tile.sub" class="tile-sub">{{ tile.sub }}</div>
+        <StatTile
+          v-for="tile in tiles"
+          :key="tile.label"
+          :label="tile.label"
+          :value="tile.value"
+          :sub="tile.hint ? undefined : tile.sub"
+          :to="tile.to"
+        >
+          <div v-if="tile.hint" class="tile-hint">
+            <RouterLink :to="tile.hint.to">{{ tile.hint.linkText }}</RouterLink
+            >{{ tile.hint.text }}
           </div>
-        </template>
+        </StatTile>
 
         <!-- Review queue tile has a breakdown row of decided-status links. -->
-        <RouterLink class="tile" :to="{ path: '/review', query: { status: 'pending' } }">
-          <div class="tile-label">Review queue</div>
-          <div class="tile-value">{{ num(reviewPending) }}</div>
-          <div class="tile-sub">pending</div>
+        <StatTile
+          label="Review queue"
+          :value="num(reviewPending)"
+          sub="pending"
+          :to="{ path: '/review', query: { status: 'pending' } }"
+        >
           <div class="review-breakdown">
             <template v-if="reviewBreakdown.length">
               <RouterLink
@@ -277,7 +277,7 @@ watch(
             </template>
             <span v-else class="muted">no decisions yet</span>
           </div>
-        </RouterLink>
+        </StatTile>
       </section>
 
       <section class="pipeline-strip card" aria-label="Pipeline status">
@@ -332,36 +332,6 @@ watch(
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: var(--sp-3);
-}
-.tile {
-  display: block;
-  background: var(--bg-raised);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-lg);
-  padding: var(--sp-4);
-  box-shadow: var(--shadow-card);
-  color: var(--text);
-}
-a.tile:hover {
-  text-decoration: none;
-  border-color: var(--border);
-}
-.tile-label {
-  font-size: var(--fs-sm);
-  color: var(--text-2);
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-.tile-value {
-  font-size: 28px;
-  font-weight: 600;
-  margin-top: var(--sp-1);
-  line-height: 1.1;
-}
-.tile-sub {
-  font-size: var(--fs-sm);
-  color: var(--text-2);
-  margin-top: 2px;
 }
 .tile-hint {
   font-size: var(--fs-sm);

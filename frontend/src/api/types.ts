@@ -582,3 +582,153 @@ export interface InspectMeta {
   spaces: string[]
   pipeline_version: string | null
 }
+
+// GET /api/stats/lifetime and /api/stats/library (web/stats routes). Timestamps
+// are epoch seconds, shares are 0..1 fractions, and every fact object is null
+// on a fresh install.
+
+export interface RunCommandStats {
+  /** Raw CLI command name (`sync`, `extract`, `models`, …) — label via commandLabel(). */
+  command: string
+  total: number
+  ok: number
+  failed: number
+  cancelled: number
+  /** No finish recorded: still running, or interrupted. */
+  unfinished: number
+  last_run: number | null
+  seconds: number
+}
+
+export interface LifetimeStats {
+  tracking_since: number | null
+  first_nas_write: number | null
+  runs: {
+    total: number
+    ok: number
+    failed: number
+    cancelled: number
+    unfinished: number
+    by_origin: { cli: number; gui: number; schedule: number }
+    /** Sorted by total, descending. */
+    by_command: RunCommandStats[]
+    total_seconds: number
+    longest: { command: string; seconds: number; started_at: number } | null
+    /** `date` is YYYY-MM-DD in the server's local time. */
+    busiest_day: { date: string; runs: number } | null
+    active_days: number
+    streak_days: number
+  }
+  work: {
+    photos_scanned: number
+    faces_found: number
+    faces_restored: number
+    detector_counts: Record<string, number>
+    photos_synced: number
+    photos_hashed: number
+    crops_regenerated: number
+    duplicate_groups_found: number
+    queue_items_pruned: number
+  }
+  nas: {
+    writes_ok: number
+    writes_failed: number
+    dry_runs: number
+    /** Sorted by ok, descending; dry runs excluded. */
+    by_action: Array<{ action: string; ok: number; failed: number }>
+    faces_tagged: number
+    faces_moved: number
+    merges: number
+    people_named: number
+    duplicates_deleted: number
+  }
+  review: {
+    decided: number
+    approved: number
+    rejected: number
+    hidden: number
+    approval_rate: number | null
+  }
+}
+
+/** `inspect` is an SPA path (`/inspect/<space>/<id>`) or null. */
+export interface PhotoFact {
+  time: number
+  inspect: string | null
+}
+
+export interface PersonShare {
+  name: string
+  space: string
+  person_id: number
+  faces: number
+  /** Share of every Synology-tagged face. */
+  share: number
+  /** External NAS link. */
+  person_url: string | null
+}
+
+export interface LibraryStats {
+  computed_at: number
+  photos: {
+    total: number
+    deleted: number
+    by_space: Record<string, number>
+    by_type: { photo: number; video: number; live: number; other: number }
+    bytes: number
+    oldest: PhotoFact | null
+    newest: PhotoFact | null
+    /** Ascending, gaps filled with 0. */
+    per_year: Array<{ year: number; count: number }>
+    /** Length 24, the local hour the photo was taken. */
+    by_hour: number[]
+    /** Length 7, Monday first. */
+    by_weekday: number[]
+    busiest_day: { date: string; count: number } | null
+    /** `month` is YYYY-MM; `total` is cumulative. */
+    growth: Array<{ month: string; total: number }>
+    duplicate_copies: number
+  }
+  faces: {
+    synology_tagged: number
+    synology_named: number
+    detected: number
+    embeddings: number
+    restored: number
+    detector_counts: Record<string, number>
+    per_photo: Array<{ bucket: string; photos: number }>
+    photos_scanned: number
+    photos_without_faces: number
+    avg_per_photo: number | null
+    most_crowded: { faces: number; inspect: string | null } | null
+    tiniest: { width: number; height: number; inspect: string | null } | null
+    sharpest_eye: { det_score: number; inspect: string | null } | null
+  }
+  people: {
+    listed_named: number
+    hidden: number
+    unnamed_or_unlisted_faces: number
+    one_face_people: number
+    /** Top 15 listed, named persons by tagged face count. */
+    distribution: PersonShare[]
+    everyone_else: { people: number; faces: number; share: number }
+    unlisted_share: number
+    top10_share: number
+    gini: number | null
+    main_character: {
+      name: string
+      faces: number
+      share: number
+      person_url: string | null
+    } | null
+  }
+  grouping: {
+    run_id: number
+    created_at: number
+    clusters: number
+    largest: number
+    singletons: number
+    mapped: number
+    unmapped: number
+  } | null
+}

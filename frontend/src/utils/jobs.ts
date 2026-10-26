@@ -23,3 +23,24 @@ export function jobLabel(name: string | null | undefined): string {
   if (!name) return ''
   return JOB_LABELS[name] ?? name
 }
+
+// The run ledger records every CLI invocation, including commands the GUI can
+// never start, and names `models download` by its group alone.
+const COMMAND_LABELS: Record<string, string> = {
+  models: JOB_LABELS['models-download'],
+  check: 'Connection check',
+  hwinfo: 'Hardware info',
+  review: 'Review server (legacy)',
+  'apply-all': 'Apply everything',
+  eval: 'Evaluation',
+  'reset-password': 'Reset password',
+  'web-access': 'Web access',
+  'disable-2fa': 'Turn off two-step sign-in',
+  'session-pin': 'Session pinning',
+}
+
+/** Label for a raw CLI command name, as the run ledger stores it. */
+export function commandLabel(name: string | null | undefined): string {
+  if (!name) return ''
+  return COMMAND_LABELS[name] ?? jobLabel(name)
+}
