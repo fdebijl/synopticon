@@ -1986,6 +1986,10 @@ def create_app(
 
     register_backup_routes(app, settings, conn)
 
+    from .stats_routes import register_stats_routes
+
+    app.state.library_stats = register_stats_routes(app, settings, conn)
+
     # -- SPA shell (catch-all, registered LAST) ----------------------------- #
     @app.get("/{path:path}")
     def spa_catch_all(request: Request, path: str):
