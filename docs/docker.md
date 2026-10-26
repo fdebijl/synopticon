@@ -127,6 +127,15 @@ Schedules puts recurring work on a cron timer without a cron daemon in the image
 
 Running the GUI bare-metal rather than in a container? Plain `cron` calling the CLI works just as well and survives the server being stopped.
 
+## Stats
+
+Stats, below Schedules in the sidebar, has two halves:
+
+- **What Synopticon has done** — how often each command ran and how it ended, whether you started it from the terminal, the GUI or a schedule, how long it all took, how many faces it has ever found, and every correction it wrote to your NAS. Every command records itself, terminal runs included, so a host cron counts too. Jobs the GUI ran before Stats existed are imported once from their job logs; terminal runs from before then can't be recovered, so the page says when tracking started. `reset` never clears this history.
+- **Your library** — photos (by year, hour and weekday, busiest day, duplicates), faces (Synology's tags against Synopticon's own detections, how many faces a photo usually has), and how faces spread across the people you've named. Only people Synology lists by name are shown; everyone else's faces are counted together.
+
+The page refreshes itself when a job finishes while it's open.
+
 ## Backups
 
 Utilities has two download buttons, both plain reads that touch nothing:

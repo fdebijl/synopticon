@@ -281,6 +281,7 @@ class Scheduler:
                 dict(row["params"]),
                 confirm=bool(row["confirm"]),
                 confirm_phrase=None,
+                origin="schedule",
             )
         except QueueFullError as exc:
             log.warning("schedule %s (%s): %s", row["id"], row["name"], exc)

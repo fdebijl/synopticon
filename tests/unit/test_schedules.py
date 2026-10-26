@@ -46,7 +46,7 @@ class FakeJobManager:
         self.raise_with: Exception | None = None
         self._next = 1
 
-    def submit(self, name, params=None, *, confirm=False, confirm_phrase=None):
+    def submit(self, name, params=None, *, confirm=False, confirm_phrase=None, origin="gui"):
         if self.raise_with is not None:
             raise self.raise_with
         self.submitted.append((name, params, confirm, confirm_phrase))

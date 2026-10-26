@@ -104,6 +104,8 @@ class Emitter:
 
     def __init__(self, path: str | os.PathLike[str] | None):
         self._fh: TextIO | None = None
+        #: The `stats` of the most recent `result()`, kept even when the sink is a no-op.
+        self.last_result: Any | None = None
         self._last: dict[str, float] = {}
         # Per-phase heartbeat bookkeeping. `_started` is when the phase began
         # (from `phase()`, so it covers setup before the first progress event and
@@ -234,6 +236,7 @@ class Emitter:
         self._emit(obj)
 
     def result(self, stats: Any | None = None, ok: bool = True, **extra: Any) -> None:
+        self.last_result = stats
         if self._fh is None:
             return
         obj: dict[str, Any] = {"event": "result", "ok": ok}

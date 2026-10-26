@@ -49,6 +49,7 @@ TABLES: tuple[str, ...] = (
     "web_auth_log",
     "schedules",
     "schedule_runs",
+    "command_runs",
 )
 
 #: Rows read and written per round trip. Large enough to amortise the network

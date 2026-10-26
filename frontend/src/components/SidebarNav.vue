@@ -20,7 +20,8 @@ const NAV: NavItem[] = [
   { id: 'apply', to: '/apply', label: 'Apply', separator: true },
   { id: 'inspect', to: '/inspect', label: 'Inspect' },
   { id: 'utilities', to: '/utilities', label: 'Utilities' },
-  { id: 'schedules', to: '/schedules', label: 'Schedules', separator: true },
+  { id: 'schedules', to: '/schedules', label: 'Schedules' },
+  { id: 'stats', to: '/stats', label: 'Stats', separator: true },
   { id: 'maintenance', to: '/maintenance', label: 'Maintenance' },
   { id: 'settings', to: '/settings', label: 'Settings' },
 ]
