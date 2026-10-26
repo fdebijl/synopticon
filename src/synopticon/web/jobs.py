@@ -541,6 +541,7 @@ class Job:
     pid: int | None = None
     exit_code: int | None = None
     error: str | None = None
+    origin: str = "gui"
     # runtime-only (not persisted)
     proc: subprocess.Popen | None = field(default=None, repr=False)
     cancel_requested: bool = False
@@ -570,6 +571,7 @@ class Job:
             "pid": self.pid,
             "exit_code": self.exit_code,
             "error": self.error,
+            "origin": self.origin,
         }
 
 
@@ -692,6 +694,7 @@ class JobManager:
         *,
         confirm: bool = False,
         confirm_phrase: str | None = None,
+        origin: str = "gui",
     ) -> str:
         """Validate + enqueue a job, returning its id.
 
@@ -724,6 +727,7 @@ class JobManager:
                 params=params,
                 argv=argv,
                 dir=self.jobs_dir / job_id,
+                origin=origin,
             )
             job.dir.mkdir(parents=True, exist_ok=True)
             self._jobs[job_id] = job
@@ -957,6 +961,8 @@ class JobManager:
         events_path = job.dir / "events.jsonl"
         env = os.environ.copy()
         env["SYNOPTICON_PROGRESS_FILE"] = str(events_path)
+        env["SYNOPTICON_JOB_ORIGIN"] = job.origin
+        env["SYNOPTICON_JOB_ID"] = job.id
         env["PYTHONUNBUFFERED"] = "1"
         # Must be in the environment *before* exec: the numeric stacks read these
         # once, at import, and size their pools for the life of the process.
@@ -1281,6 +1287,7 @@ class JobManager:
                 created_at=meta.get("created_at") or time.time(),
                 started_at=meta.get("started_at"),
                 pid=pid,
+                origin=meta.get("origin") or "gui",
             )
             self._jobs[job.id] = job
             if isinstance(pid, int) and self._pid_alive(pid) and self._is_synopticon(pid):

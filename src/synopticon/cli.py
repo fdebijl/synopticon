@@ -32,6 +32,66 @@ def _main(ctx: typer.Context) -> None:
     """
     if install_log_bridge():
         get_emitter().log("info", f"starting: synopticon {ctx.invoked_subcommand or ''}".strip())
+    _record_run(ctx)
+
+
+#: Long-lived (`web`) or moving the database itself (`db-migrate`): no ledger row.
+_UNRECORDED_COMMANDS = {"web", "db-migrate"}
+
+
+def _run_status() -> str:
+    """Status of the command now closing, read from the exception in flight."""
+    exc = sys.exc_info()[1]
+    if exc is None:
+        return "ok"
+    if isinstance(exc, (typer.Abort, KeyboardInterrupt)):
+        return "cancelled"
+    if isinstance(exc, typer.Exit):
+        return "ok" if not exc.exit_code else "failed"
+    if isinstance(exc, SystemExit):
+        return "ok" if not exc.code else "failed"
+    return "failed"
+
+
+def _record_run(ctx: typer.Context) -> None:
+    """Write this invocation into the run ledger; never let a failure show."""
+    import logging
+
+    log = logging.getLogger(__name__)
+    command = ctx.invoked_subcommand
+    if (
+        not command
+        or command in _UNRECORDED_COMMANDS
+        or ctx.resilient_parsing
+        or {"--help", "-h"} & set(sys.argv[1:])
+    ):
+        return
+    try:
+        from synopticon import runlog
+
+        origin, job_id = runlog.origin_from_env()
+        settings = load_settings()
+        conn = store.connect(settings)
+        try:
+            run_id = runlog.start(conn, command, origin, job_id)
+        finally:
+            conn.close()
+    except Exception:
+        log.debug("run ledger: could not record start", exc_info=True)
+        return
+
+    def _finish() -> None:
+        try:
+            status = _run_status()
+            conn = store.connect(settings)
+            try:
+                runlog.finish(conn, run_id, status, get_emitter().last_result)
+            finally:
+                conn.close()
+        except Exception:
+            log.debug("run ledger: could not record finish", exc_info=True)
+
+    ctx.call_on_close(_finish)
 
 
 def _settings() -> Settings:

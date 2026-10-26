@@ -503,9 +503,24 @@ def create_app(
 
     scheduler = Scheduler(lambda: store.connect(settings), jm)
 
+    def _backfill_run_ledger() -> None:
+        from synopticon import runlog
+
+        try:
+            conn = store.connect(settings)
+            try:
+                added = runlog.backfill_from_jobs(conn, jm.jobs_dir)
+            finally:
+                conn.close()
+            if added:
+                log.info("run ledger: imported %d past job(s)", added)
+        except Exception:
+            log.warning("run ledger backfill failed; will retry next start", exc_info=True)
+
     @asynccontextmanager
     async def lifespan(app):
         watchdog = asyncio.create_task(_watchdog())
+        threading.Thread(target=_backfill_run_ledger, name="runlog-backfill", daemon=True).start()
         scheduler.start()
         try:
             yield

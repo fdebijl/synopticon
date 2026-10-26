@@ -177,6 +177,7 @@ class TestIdentityDiscovery:
             "web_auth_log": "id",
             "schedules": "id",
             "schedule_runs": "id",
+            "command_runs": "id",
         }
 
 
