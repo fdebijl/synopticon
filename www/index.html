@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Synopticon</title>
+  <meta name="description" content="Synopticon is a self-hosted toolkit to vastly improve the usability of Synology Photos through enhanced face recognition, better person grouping and much more.">
 
   <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
   <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -13,11 +14,91 @@
   <link rel="manifest" href="/site.webmanifest" />  
 
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="https://use.typekit.net/zoz7zhm.css">
 </head>
 <body>
   <main>
-    Placeholder page, but feel free to execute this install script:
-    <pre>curl -fsSL https://synopticon.nl/install.sh | bash</pre>
+    <section>
+      <h1>Synopticon</h1>
+      <p>
+        Synopticon is a toolkit to run alongside Synology Photos, consisting of a set of utilities that run over your library and take on the jobs DSM currently does poorly or not at all. 
+        
+        It currently offers enhanced face recognition, robust face grouping, automatic face reassignment, duplicate photo deletion and much more.
+
+        Run this sick install script, or keep scrolling to see what Synopticon can do for you.
+      </p>
+      <pre>curl -fsSL https://synopticon.nl/install.sh | bash</pre>
+      <i>
+        You can (and should) review the concents of the install script <a href="https://github.com/fdebijl/synopticon/blob/main/www/install.sh" target="_blank">here</a> before running it.
+      </i>
+      <p>
+        Synopticon is open source and free to use. Read the documentation and alternative installation methods <a href="https://github.com/fdebijl/synopticon" target="_blank">here</a>.
+      </p>
+    </section>
   </main>
+
+  <section>
+    <h2>Enhanced Face Recognition</h2>
+    <p>
+      Synology's built-in face detection frequently misses faces, or links photos to the wrong person. Synopticon runs a cutting-edge face detection pipeline over your library, cross-references the results against what Synology already knows, and writes corrections back through Synology Photos' API. Changes only get made after your express approval.
+    </p>
+    <a href="/img/original/review.png" target="_blank"><img class="lazyload"
+      src="/img/300w/review.png"
+      data-srcset="/img/600w/review.png 600w, /img/900w/review.png 900w, /img/original/review.png 3364w"
+      data-sizes="auto"
+      alt="Review">
+    </a>
+    <p>
+      The pipeline is split into three parts: syncing with your library, detecting faces in photos and grouping faces into groups of people. For this, it uses an ensemble pipeline consisting of SCRFD and YOLO for detection, ArcFace, AdaFace and MagFace for embedding and Chinese Whispers for clustering. Within each task, you can omit one of the models for a lighter (albeit less accurate) pipeline. 
+      Check <a href="https://github.com/fdebijl/synopticon/blob/main/docs/how-it-works.md" target="_blank" rel="noreferer">the documentation</a> for further elaboration.
+    </p>
+  </section>
+
+  <section>
+    <h2>QuickMerger & Deduplication</h2>
+    <p>
+      Originally a private userscript for Synology Photos, this tool is setup to quickly name, merge or hide unnamed faces in your library. It's a great way to catch the last few faces that the grouping in Synopticon didn't catch.
+    </p>
+    <a href="/img/original/quickmerge_dedupe.png" target="_blank"><img class="lazyload"
+      src="/img/300w/quickmerge_dedupe.png"
+      data-srcset="/img/600w/quickmerge_dedupe.png 600w, /img/900w/quickmerge_dedupe.png 900w, /img/original/quickmerge_dedupe.png 3364w"
+      data-sizes="auto"
+      alt="Quickmerger">
+    </a>
+    <p>On this same page you'll also find the deduplication tool. When syncing your library to Synopticon, you can optionally generate checksums and perceptual hashes. Synopticon can use this data to detect exact and visual duplicates in your library and subsequently remove them. This saves on storage and reduces noise in your library.</p>
+  </section>
+
+  <section>
+    <h2>Inspection Tooling</h2>
+    <p>Each photo in your library can be inspected inside Synopticon, to see what it sees in terms of metadata and detected faces. Here, you can also (re)assign faces that Synopticon didn't group or assigned to the wrong person.</p>
+    <a href="/img/original/inspect.png" target="_blank"><img class="lazyload"
+      src="/img/300w/inspect.png"
+      data-srcset="/img/600w/inspect.png 600w, /img/900w/inspect.png 900w, /img/original/inspect.png 3364w"
+      data-sizes="auto"
+      alt="Inspector">
+    </a>
+  </section>
+
+  <section>
+    <h2>Scheduling</h2>
+    <p>
+      Powerful scheduling tools lets you run Synopticon's utilities without having to log in to Synopticon every time you take a photo. This is perfect for a set-it-and-forget it grooming of your library. Set a schedule once, and Synopticon will automatically queue up face assignments for you to approve. Alternatively, you can also schedule the apply, so it's completely hands-off - with the risk that some faces are not what you want. Check the settings inside Synopticon for more info and finer controls.
+    </p>
+    <a href="/img/original/scheduler.png" target="_blank"><img class="lazyload"
+      src="/img/300w/scheduler.png"
+      data-srcset="/img/600w/scheduler.png 600w, /img/900w/scheduler.png 900w, /img/original/scheduler.png 3364w"
+      data-sizes="auto"
+      alt="Scheduler">
+    </a>
+  </section>  
+
+  <section>
+    <h2>Contributing</h2>
+    <p>
+      Synopticon is open source and free to use. Contributions are welcome! Check the <a href="https://github.com/fdebijl/synopticon" target="_blank">GitHub repository</a> for more information on how to contribute.
+    </p>
+  </section>
+
+  <script src="./lazy.js" defer></script>
 </body>
 </html>
