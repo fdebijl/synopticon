@@ -22,21 +22,57 @@ def session_device(session) -> str:
 
 
 _dlls_preloaded = False
+_dll_dir_handles: list = []  # os.add_dll_directory drops the dir when its handle is collected
+
+
+def _add_nvidia_dll_dirs(logger) -> None:
+    """Put site-packages/nvidia/*/bin on the Windows DLL search path.
+
+    `preload_dlls()` loads the top-level CUDA/cuDNN DLLs by absolute path but
+    leaves the search path alone, and cuDNN 9 resolves its engine sub-libraries
+    (`cudnn_engines_*64_9.dll`) by name at first use. Those miss, the first Conv
+    fails, and ORT quietly reruns the session on CPU -- after session creation
+    already reported CUDA. cuDNN loads them with the legacy search order, so the
+    dirs go on PATH as well as through `add_dll_directory`.
+    """
+    import importlib.util
+    import os
+
+    try:
+        spec = importlib.util.find_spec("nvidia")
+    except (ImportError, ValueError):
+        return
+    if spec is None:
+        return
+    for root in spec.submodule_search_locations or ():
+        for bin_dir in sorted(Path(root).glob("*/bin")):
+            try:
+                _dll_dir_handles.append(os.add_dll_directory(str(bin_dir)))
+            except OSError as exc:
+                logger.warning("could not add %s to the DLL search path (%s)", bin_dir, exc)
+                continue
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
 
 
 def _preload_cuda_dlls(ort, logger) -> None:
     """Make onnxruntime-gpu's pip-installed CUDA/cuDNN wheels loadable.
 
     The `onnxruntime-gpu[cuda,cudnn]` wheels drop the NVIDIA libs under
-    site-packages/nvidia/*/lib, which the loader does not search by default --
-    without this the CUDA provider fails with `libcublasLt.so.12: cannot open
-    shared object file` and silently falls back to CPU. `preload_dlls()` (ORT
-    >= 1.21) adds those dirs. Best-effort and run once per process.
+    site-packages/nvidia/*/lib (*/bin on Windows), which the loader does not
+    search by default -- without this the CUDA provider fails with
+    `libcublasLt.so.12: cannot open shared object file` and silently falls back
+    to CPU. `preload_dlls()` (ORT >= 1.21) loads them; on Windows the bin dirs
+    must also be searchable (see `_add_nvidia_dll_dirs`). Best-effort and run
+    once per process.
     """
+    import sys
+
     global _dlls_preloaded
     if _dlls_preloaded:
         return
     _dlls_preloaded = True
+    if sys.platform == "win32":
+        _add_nvidia_dll_dirs(logger)
     preload = getattr(ort, "preload_dlls", None)
     if preload is None:  # older onnxruntime; rely on the system loader / LD_LIBRARY_PATH
         return
