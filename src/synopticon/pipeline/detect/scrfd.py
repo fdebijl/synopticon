@@ -103,11 +103,12 @@ class ScrfdDetector:
 
     def _centers(self, height: int, width: int, stride: int) -> np.ndarray:
         key = (height, width, stride)
-        if key not in self._center_cache:
-            self._center_cache[key] = anchor_centers(height, width, stride)
-            if len(self._center_cache) > 100:
+        centers = self._center_cache.get(key)
+        if centers is None:
+            if len(self._center_cache) >= 100:
                 self._center_cache.clear()
-        return self._center_cache[key]
+            centers = self._center_cache[key] = anchor_centers(height, width, stride)
+        return centers
 
     def _forward(self, img_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Run one scale. Returns (boxes_xyxy, scores, kps) in img coordinates."""

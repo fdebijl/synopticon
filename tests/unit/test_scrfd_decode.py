@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 
 from synopticon.pipeline.detect.scrfd import (
+    _NUM_ANCHORS,
+    ScrfdDetector,
     anchor_centers,
     distance2bbox,
     distance2kps,
@@ -52,3 +54,11 @@ def test_distance2bbox_batch():
     boxes = distance2bbox(points, distance)
     assert np.allclose(boxes[0], [-1, -1, 1, 1])
     assert np.allclose(boxes[1], [90, 90, 110, 110])
+
+
+def test_centers_cache_eviction_keeps_the_key_it_just_stored():
+    detector = ScrfdDetector.__new__(ScrfdDetector)
+    detector._center_cache = {}
+    for i in range(1, 130):
+        assert detector._centers(i, i + 1, 16).shape == (i * (i + 1) * _NUM_ANCHORS, 2)
+    assert len(detector._center_cache) <= 101
