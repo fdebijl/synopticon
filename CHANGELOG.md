@@ -10,6 +10,14 @@ Dependency bumps are left out unless they change behaviour.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-14
+
+### Added
+
+- Experimental native Windows support (10 and 11), with the unit suite running on a Windows CI
+  runner. Cancelling a job stops it at once, and a job still running when the web GUI restarts is
+  marked *interrupted* instead of re-adopted. See `docs/running-locally.md`. (#146)
+
 ### Fixed
 
 - **Detect faces** keeps the originals cache within `originals_cache_gb` *during* a run. Before
@@ -330,7 +338,8 @@ First tagged release.
 - Writeback no longer mixed up the two people in a merge.
 - Running out of video memory in the CUDA pipeline.
 
-[Unreleased]: https://github.com/fdebijl/synopticon/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/fdebijl/synopticon/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/fdebijl/synopticon/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/fdebijl/synopticon/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/fdebijl/synopticon/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/fdebijl/synopticon/compare/v0.21.1...v0.22.0
