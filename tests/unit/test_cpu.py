@@ -8,6 +8,10 @@ resulting run queue is what makes a co-resident web server time out.
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
 import synopticon.cpu as cpu
 
 
@@ -53,19 +57,19 @@ def test_cgroup_v1_unlimited_quota(monkeypatch):
 
 
 def test_available_cores_capped_by_quota(monkeypatch):
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(32)))
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(32)), raising=False)
     monkeypatch.setattr(cpu, "cgroup_cpu_limit", lambda: 2.0)
     assert cpu.available_cores() == 2
 
 
 def test_available_cores_uses_affinity_when_unquotaed(monkeypatch):
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3}, raising=False)
     monkeypatch.setattr(cpu, "cgroup_cpu_limit", lambda: None)
     assert cpu.available_cores() == 4
 
 
 def test_available_cores_never_zero(monkeypatch):
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(8)))
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False)
     monkeypatch.setattr(cpu, "cgroup_cpu_limit", lambda: 0.5)
     assert cpu.available_cores() == 1
 
@@ -90,3 +94,9 @@ def test_job_thread_cap_defaults_to_available_cores(monkeypatch, tmp_path):
         assert jm._thread_cap == 3
     finally:
         jm.shutdown()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows has no /proc/cpuinfo to read instead")
+def test_windows_physical_cores_come_from_the_os_not_the_logical_count():
+    physical = cpu._windows_physical_cores()
+    assert physical is not None and 1 <= physical <= (os.cpu_count() or 1)

@@ -1640,6 +1640,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tqdm" },
     { name = "typer" },
+    { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 
 [package.optional-dependencies]
@@ -1706,6 +1707,7 @@ requires-dist = [
     { name = "torchvision", marker = "extra == 'restore'", specifier = "==0.16.2" },
     { name = "tqdm", specifier = ">=4.70.0" },
     { name = "typer", specifier = ">=0.27.1" },
+    { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
     { name = "uvicorn", marker = "extra == 'review'", specifier = ">=0.52.3" },
 ]
 provides-extras = ["cpu", "gpu", "restore", "review", "faiss", "postgres", "export"]

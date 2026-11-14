@@ -6,6 +6,7 @@ can drive provider availability and force a CUDA init failure deterministically.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 
@@ -99,3 +100,43 @@ def test_no_preload_on_cpu_device(monkeypatch):
     mod.preload_dlls = lambda: calls.append(True)
     onnx_session.create_session("m.onnx", device="cpu")
     assert calls == []
+
+
+def _fake_nvidia_tree(monkeypatch, tmp_path):
+    for lib in ("cudnn", "cublas"):
+        (tmp_path / "nvidia" / lib / "bin").mkdir(parents=True)
+    (tmp_path / "nvidia" / "cuda_runtime" / "include").mkdir(parents=True)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    added = []
+    monkeypatch.setattr(os, "add_dll_directory", lambda p: added.append(p) or object(), raising=False)
+    monkeypatch.setenv("PATH", "orig")
+    monkeypatch.setattr(onnx_session, "_dll_dir_handles", [])
+    return added
+
+
+def test_windows_puts_nvidia_bin_dirs_on_the_dll_search_path(monkeypatch, tmp_path):
+    # cuDNN 9 loads its engine sub-libraries by name at the first Conv; if the
+    # bin dirs aren't searchable the session silently reruns on CPU.
+    added = _fake_nvidia_tree(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(onnx_session, "_dlls_preloaded", False)
+    mod = _install_fake_ort(monkeypatch, CUDA_AND_CPU)
+    order = []
+    mod.preload_dlls = lambda: order.append(list(added))
+    onnx_session.create_session("m.onnx", device="auto")
+
+    bins = [str(tmp_path / "nvidia" / lib / "bin") for lib in ("cublas", "cudnn")]
+    assert added == bins
+    assert order == [bins]  # searchable before preload_dlls runs
+    assert os.environ["PATH"].split(os.pathsep)[:2] == bins[::-1]
+
+
+def test_other_platforms_leave_the_dll_search_path_alone(monkeypatch, tmp_path):
+    added = _fake_nvidia_tree(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(onnx_session, "_dlls_preloaded", False)
+    mod = _install_fake_ort(monkeypatch, CUDA_AND_CPU)
+    mod.preload_dlls = lambda: None
+    onnx_session.create_session("m.onnx", device="auto")
+    assert added == []
+    assert os.environ["PATH"] == "orig"
