@@ -57,8 +57,9 @@ Scan synced photos, record every face found, and compute ensemble embeddings (re
 | Option | Default | Description |
 |---|---|---|
 | `--limit INTEGER` | none | Process at most N photos. |
-| `--photo-id INTEGER` | none | Process a single photo id. |
+| `--photo-id INTEGER` | none | Process a single photo id, even one an earlier run could not read. |
 | `--space TEXT` | all configured | Limit to one space. |
+| `--retry-skipped` | off | Also retry photos an earlier run could not read. Normally a photo whose file isn't a decodable image (a camera RAW, for instance) is left out until its file or the pipeline changes, so it isn't downloaded and rejected on every run. A NAS or disk failure is always retried. |
 
 ### `cluster` (*Group faces*)
 Group all detected faces by person and cross-reference them against Synology persons. Writes a new grouping run. No options.

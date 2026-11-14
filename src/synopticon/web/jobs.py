@@ -226,6 +226,8 @@ def _build_extract(params: dict) -> list[str]:
     space = _str(params, "space")
     if space:
         argv += ["--space", space]
+    if _bool(params, "retry_skipped"):
+        argv.append("--retry-skipped")
     return argv
 
 

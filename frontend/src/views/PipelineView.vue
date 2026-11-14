@@ -60,6 +60,11 @@ const CARDS: CardDef[] = [
       { kind: 'space', param: 'space' },
       { kind: 'number', param: 'limit', label: 'Limit', placeholder: 'all', min: 1 },
       { kind: 'number', param: 'photo_id', label: 'Photo id', placeholder: '—', min: 1 },
+      {
+        kind: 'check',
+        param: 'retry_skipped',
+        label: 'retry photos that could not be read (--retry-skipped)',
+      },
     ],
   },
   {

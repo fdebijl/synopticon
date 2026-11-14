@@ -31,6 +31,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `19_nearest-person-attribution.md` | `crossref._nearest_person`, `known_persons`, anything treating Synology's unlisted persons as labels |
 | `20_unlisted-persons-and-wrong-tags.md` | cluster mapping's vote, `ClusterInfo.listed_total`, the nearest-person reassign branch, splitting large clusters |
 | `21_lifetime-run-ledger.md` | `command_runs`, `runlog.py`, `cli.py::_main`, a command's `emitter.result(stats=…)` shape, the Stats page (`web/stats_page.py`) |
+| `22_unreadable-photo-ledger.md` | `extract_skips`, `runner.UNREADABLE_REASONS`, `_fetch_work`, `extract --retry-skipped` |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -97,6 +98,7 @@ SQLite (`data/synopticon.db`) is the default and needs no configuration; Postgre
 - Clustering always uses `variant='orig'`; restored-face embeddings are advisory.
 - **A crop is two artifacts: the images and the `faces` row pointing at them.** Only the row is read downstream — the review UI maps `crop_path` to a URL and never stats the disk — so a skip check that asks only the filesystem leaves crop-less faces unrepairable. `regen_crops` treats a NULL column as work and repairs it with a bare UPDATE, no fetch. (ADR 15)
 - **A skipped photo must say why**: classify through `runner.skip_reason(exc, filename)` so the reason is plain language and lands in the run-level tally.
+- **Only a failure the file itself causes is remembered.** A reason in `runner.UNREADABLE_REASONS` writes an `extract_skips` row (migration `0013_extract_skips.sql`) that keeps the photo out of later runs until its `cache_key` or `pipeline_version` changes, or `extract --retry-skipped`. Never add a reason a retry could fix — the NAS, the disk, memory, a missing plugin, an unexpected error — or the photo is lost to detection silently. (ADR 22)
 - Pin model weights by sha256 to versioned release URLs, never `releases/latest`. Weights are never committed. (ADR 03)
 
 ### Content hashes and dedupe

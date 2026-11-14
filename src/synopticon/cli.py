@@ -333,6 +333,9 @@ def extract(
     limit: int = typer.Option(None, help="Process at most N photos."),
     photo_id: int = typer.Option(None, help="Process a single photo id."),
     space: str = typer.Option(None, help="Limit to one space (default: all configured)."),
+    retry_skipped: bool = typer.Option(
+        False, help="Also retry photos an earlier run could not read (left out by default)."
+    ),
 ):
     """Detect faces: scan synced photos and record every face found (resumable)."""
     from dataclasses import asdict
@@ -349,7 +352,10 @@ def extract(
         fetch = downloads.BudgetedFetch(conn, client, settings)
         for sp in _spaces(settings, space):
             emitter.phase("extract", space=sp)
-            stats = run_extract(conn, settings, fetch, limit=limit, photo_id=photo_id, space=sp)
+            stats = run_extract(
+                conn, settings, fetch, limit=limit, photo_id=photo_id, space=sp,
+                retry_skipped=retry_skipped,
+            )
             typer.echo(f"[{sp}] {stats}")
             result_stats[sp] = asdict(stats)
     if not settings.storage.keep_originals:
@@ -430,6 +436,7 @@ _DERIVED_TABLES = (
     "embeddings",
     "faces",
     "extract_log",
+    "extract_skips",
 )
 # Metadata mirrored from the NAS; only cleared with --all (forces a re-sync).
 _SYNCED_TABLES = ("syno_faces", "person_photos", "persons", "photos", "sync_state")
