@@ -199,7 +199,7 @@ def _pressure_report() -> str:
             parts.append(f"{resource} stall {value:.0f}%")
     try:
         parts.append(f"load {os.getloadavg()[0]:.1f}/{os.cpu_count() or '?'}")
-    except OSError:
+    except (OSError, AttributeError):  # AttributeError: no load average on Windows
         pass
     return ", ".join(parts) if parts else "pressure unavailable"
 
