@@ -451,6 +451,7 @@ def test_safe_commands_need_no_consent():
         "sync", "--space", "personal", "--hash",
     ]
     assert resolve_argv("extract", {"limit": 5}) == ["extract", "--limit", "5"]
+    assert resolve_argv("extract", {"retry_skipped": True}) == ["extract", "--retry-skipped"]
     assert resolve_argv("regen-crops", {"only_missing": False}) == ["regen-crops", "--all"]
     assert resolve_argv("models-download", {"only": ["scrfd", "arcface"]}) == [
         "models", "download", "--only", "scrfd", "arcface",

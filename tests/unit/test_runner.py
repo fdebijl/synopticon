@@ -293,3 +293,98 @@ def test_skip_reason_points_at_pillow_heif_for_heic(monkeypatch):
 
     monkeypatch.setattr(runner, "_HEIF_AVAILABLE", True)
     assert skip_reason(UnidentifiedImageError("nope"), "IMG.HEIC") == "the file is not a decodable image"
+
+
+# --- unreadable photos ----------------------------------------------------
+
+
+def _undecodable(tmp_path):
+    """A fetch whose original is a file Pillow cannot identify (a RAW, a clip)."""
+    path = tmp_path / "IMG_0001.CR3"
+    path.write_bytes(b"not an image")
+    calls: list[int] = []
+
+    def fetch(row):
+        calls.append(int(row["id"]))
+        return path
+
+    return fetch, calls
+
+
+def _run_with(env, fetch, **kw):
+    conn, settings, _ = env
+    return run_extract(
+        conn, settings, fetch,
+        detector_factory=lambda: FakeDetector(),
+        ensemble_factory=lambda: FakeEnsemble(),
+        **kw,
+    )
+
+
+def test_an_undecodable_photo_is_not_fetched_again(env, tmp_path):
+    conn, _, _ = env
+    fetch, calls = _undecodable(tmp_path)
+
+    first = _run_with(env, fetch)
+    assert first.skip_reasons == {runner.UNDECODABLE_REASON: 1}
+    assert conn.execute("SELECT reason FROM extract_skips").fetchone()[0] == runner.UNDECODABLE_REASON
+
+    second = _run_with(env, fetch)
+    assert calls == [1]
+    assert second.skipped == 0
+    assert second.unreadable == 1
+
+
+def test_a_failure_that_may_not_recur_is_retried(env):
+    conn, _, _ = env
+    calls: list[int] = []
+
+    def missing(row):
+        from pathlib import Path
+
+        calls.append(int(row["id"]))
+        return Path("/nonexistent/does_not_exist.png")
+
+    _run_with(env, missing)
+    _run_with(env, missing)
+    assert calls == [1, 1]
+    assert conn.execute("SELECT COUNT(*) FROM extract_skips").fetchone()[0] == 0
+
+
+def test_a_changed_file_is_tried_again(env, tmp_path):
+    conn, _, good_fetch = env
+    fetch, _ = _undecodable(tmp_path)
+    _run_with(env, fetch)
+
+    conn.execute("UPDATE photos SET cache_key = 'ck2' WHERE id = 1")
+    conn.commit()
+    stats = _run_with(env, good_fetch)
+    assert stats.photos_processed == 1
+    assert stats.unreadable == 0
+
+
+def test_a_pipeline_change_tries_it_again(env, tmp_path):
+    _, settings, good_fetch = env
+    fetch, _ = _undecodable(tmp_path)
+    _run_with(env, fetch)
+
+    settings.detection.scrfd_score = 0.5
+    assert _run_with(env, good_fetch).photos_processed == 1
+
+
+def test_retry_skipped_tries_again_and_success_clears_the_record(env, tmp_path):
+    conn, _, good_fetch = env
+    fetch, _ = _undecodable(tmp_path)
+    _run_with(env, fetch)
+
+    assert _run_with(env, good_fetch).photos_processed == 0
+    stats = _run_with(env, good_fetch, retry_skipped=True)
+    assert stats.photos_processed == 1
+    assert conn.execute("SELECT COUNT(*) FROM extract_skips").fetchone()[0] == 0
+
+
+def test_photo_id_tries_an_unreadable_photo_anyway(env, tmp_path):
+    _, _, good_fetch = env
+    fetch, _ = _undecodable(tmp_path)
+    _run_with(env, fetch)
+    assert _run_with(env, good_fetch, photo_id=1).photos_processed == 1

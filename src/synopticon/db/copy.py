@@ -40,6 +40,7 @@ TABLES: tuple[str, ...] = (
     "audit_log",
     "sync_state",
     "extract_log",
+    "extract_skips",
     "web_users",
     "web_sessions",
     "web_api_keys",

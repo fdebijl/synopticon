@@ -5,7 +5,7 @@ Everything lives in `config.toml` (see [`config.example.toml`](../config.example
 - `nas.spaces` — `["personal"]` and/or `["shared"]` (Personal vs Shared Space libraries).
 - `nas.requests_per_second` — default 4; the NAS also serves your family, be gentle. Writes are throttled separately (1/s).
 - `database.backend` — `sqlite` (default, a file under `data_dir`) or `postgres`; see [Database backend](#database-backend).
-- `storage.keep_originals` / `storage.originals_cache_gb` — by default originals are evicted after processing under a 50 GB LRU budget; only ~10–30 KB of crops per face are kept. Set `keep_originals = true` (needs roughly your library's size in free disk) to make future detector re-runs NAS-traffic-free.
+- `storage.keep_originals` / `storage.originals_cache_gb` — by default originals are evicted least-recently-used under a 50 GB budget, enforced while `sync --hash`, `extract` and `regen-crops` run (overshooting by at most a tenth of it); only ~10–30 KB of crops per face are kept. Set `keep_originals = true` (needs roughly your library's size in free disk) to make future detector re-runs NAS-traffic-free.
 - `inference.device` — `auto` (default), `cpu`, or `cuda`; see [GPU acceleration](#gpu-acceleration). `inference.device_id` selects the CUDA GPU on multi-GPU hosts.
 - `inference.job_threads` / `inference.job_nice` — how much of the machine a job launched from the web GUI may take. By default a job gets `nproc - 1` BLAS/OpenMP threads and runs at niceness 10, which keeps the GUI responsive while it works; see [Jobs and the GUI's responsiveness](adr/06_job-subprocess-execution.md).
 - `[clustering]` / `[crossref]` — the face-grouping tuning surface; change and re-run `synopticon recluster --set clustering.edge_threshold=0.47` cheaply.

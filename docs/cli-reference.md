@@ -47,18 +47,19 @@ The faces pass is checkpointed per-photo, so it resumes cleanly after an interru
 
 `sync` also records Synology's "similar photo" (stacking) grouping, so review and dedupe deep links point at the group's visible cover photo instead of a non-top-pick member the grouped timeline hides. A failure here (e.g. the feature being unavailable on a space) is logged as a warning and never aborts the rest of `sync`.
 
-`--hash` downloads every image original (videos are skipped), so the first pass is slow on a large library; it commits per photo and skips already-hashed photos on re-runs, re-hashing only photos whose Synology `cache_key` changed (i.e. edited/replaced). Cached originals are evicted afterward unless `storage.keep_originals` is set. Compare `phash` values by hamming distance, not equality — byte-identical duplicates are the `sha256` column's job.
+`--hash` downloads every image original (videos are skipped), so the first pass is slow on a large library; it commits per photo and skips already-hashed photos on re-runs, re-hashing only photos whose Synology `cache_key` changed (i.e. edited/replaced). Cached originals are held to `storage.originals_cache_gb` throughout the run unless `storage.keep_originals` is set. Compare `phash` values by hamming distance, not equality — byte-identical duplicates are the `sha256` column's job.
 
 ## Face recognition
 
 ### `extract` (*Detect faces*)
-Scan synced photos, record every face found, and compute ensemble embeddings (resumable; interrupt any time). Evicts cached originals afterward unless `storage.keep_originals` is set.
+Scan synced photos, record every face found, and compute ensemble embeddings (resumable; interrupt any time). Cached originals are held to `storage.originals_cache_gb` throughout the run unless `storage.keep_originals` is set.
 
 | Option | Default | Description |
 |---|---|---|
 | `--limit INTEGER` | none | Process at most N photos. |
-| `--photo-id INTEGER` | none | Process a single photo id. |
+| `--photo-id INTEGER` | none | Process a single photo id, even one an earlier run could not read. |
 | `--space TEXT` | all configured | Limit to one space. |
+| `--retry-skipped` | off | Also retry photos an earlier run could not read. Normally a photo whose file isn't a decodable image (a camera RAW, for instance) is left out until its file or the pipeline changes, so it isn't downloaded and rejected on every run. A NAS or disk failure is always retried. |
 
 ### `cluster` (*Group faces*)
 Group all detected faces by person and cross-reference them against Synology persons. Writes a new grouping run. No options.
@@ -262,7 +263,7 @@ Crop images can accumulate to many gigabytes over a large library. If you run th
 | `--yes` / `-y` | off | Skip the confirmation prompt. |
 
 ### `regen-crops`
-Rebuild face crop images from the stored bboxes/landmarks and the originals (re-fetched from the NAS), without re-running detection or embedding. Use it to recover from a `delete-crops` (or an accidental wipe), or to repair a partial one. Resumable — it commits per photo. Originals are evicted afterward unless `storage.keep_originals` is set. Reads the NAS but never writes to it.
+Rebuild face crop images from the stored bboxes/landmarks and the originals (re-fetched from the NAS), without re-running detection or embedding. Use it to recover from a `delete-crops` (or an accidental wipe), or to repair a partial one. Resumable — it commits per photo. Cached originals are held to `storage.originals_cache_gb` throughout the run unless `storage.keep_originals` is set. Reads the NAS but never writes to it.
 
 A crop is two things: the images on disk and the `faces` row pointing at them. Only the row is read downstream — the review UI never looks at the filesystem — so a face whose files exist while its columns are unset shows no crop. Those are repaired with a bare database update, no original fetched (reported as `backfilled`). Faces on a photo that is deleted or missing are out of reach either way; `prune-queue` clears the review items left pointing at them.
 

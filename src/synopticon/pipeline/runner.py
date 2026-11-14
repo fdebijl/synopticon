@@ -56,6 +56,8 @@ class ExtractStats:
     skipped: int = 0
     errors: int = 0
     skip_reasons: dict[str, int] = field(default_factory=dict)
+    #: Photos left out of the queue because an earlier run could not read them.
+    unreadable: int = 0
 
     def _bump(self, detector: str) -> None:
         self.detector_counts[detector] = self.detector_counts.get(detector, 0) + 1
@@ -137,6 +139,7 @@ def _fetch_work(
     version: str,
     limit: int | None,
     photo_id: int | None,
+    retry_skipped: bool = False,
 ) -> list[Row]:
     if photo_id is not None:
         # Explicit reprocess: bypass the extract_log skip filter.
@@ -150,16 +153,42 @@ def _fetch_work(
         "WHERE p.deleted = 0 AND p.type IN ('photo', 'live') AND p.space = ? "
         "AND (e.pipeline_version IS NULL OR e.pipeline_version != ? "
         "     OR e.cache_key IS NOT p.cache_key) "
-        "ORDER BY p.id"
     )
     params: list = [space, version]
+    if not retry_skipped:
+        sql += f"AND NOT EXISTS ({_UNREADABLE_MATCH}) "
+        params.append(version)
+    sql += "ORDER BY p.id"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
     return conn.execute(sql, params).fetchall()
 
 
+#: An `extract_skips` row that still describes photo `p`: same file, same pipeline.
+_UNREADABLE_MATCH = (
+    "SELECT 1 FROM extract_skips s WHERE s.space = p.space AND s.photo_id = p.id "
+    "AND s.pipeline_version = ? AND s.cache_key IS p.cache_key"
+)
+
+
+def _count_unreadable(conn: Connection, space: str, version: str) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM photos p "
+        "WHERE p.deleted = 0 AND p.type IN ('photo', 'live') AND p.space = ? "
+        f"AND EXISTS ({_UNREADABLE_MATCH})",
+        (space, version),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 UNKNOWN_SKIP_REASON = "unexpected error"
+UNDECODABLE_REASON = "the file is not a decodable image"
+
+#: Skip reasons that come from the file itself, so retrying the same file under
+#: the same pipeline fails the same way. Everything else (the NAS, the disk, a
+#: missing HEIC plugin, memory, a bug) can change between runs and is retried.
+UNREADABLE_REASONS = frozenset({UNDECODABLE_REASON})
 
 
 def skip_reason(exc: BaseException, filename: str | None = None) -> str:
@@ -187,7 +216,7 @@ def skip_reason(exc: BaseException, filename: str | None = None) -> str:
     if name == "UnidentifiedImageError":
         if suffix in _HEIF_SUFFIXES and not _HEIF_AVAILABLE:
             return f"{suffix} files need HEIC support (install the pillow-heif package)"
-        return "the file is not a decodable image"
+        return UNDECODABLE_REASON
     if name in {"DecompressionBombError", "DecompressionBombWarning"} or isinstance(exc, MemoryError):
         return "the image is too large to decode safely"
     if module == "cv2":
@@ -243,8 +272,12 @@ def run_extract(
     detector_factory: DetectorFactory | None = None,
     ensemble_factory: EnsembleFactory | None = None,
     restore_fn: RestoreFn | None = None,
+    retry_skipped: bool = False,
 ) -> ExtractStats:
     """Run detection + embedding over the work queue. Returns :class:`ExtractStats`.
+
+    A photo an earlier run found unreadable (see ``UNREADABLE_REASONS``) is left
+    out until its file or the pipeline changes; ``retry_skipped`` includes it.
 
     ``fetch_original(row) -> Path`` yields the on-disk original for a photo row.
     ``detector_factory`` / ``ensemble_factory`` (zero-arg) override the default
@@ -277,7 +310,15 @@ def run_extract(
 
     crops_dir = settings.storage.crops_dir
     stats = ExtractStats()
-    rows = _fetch_work(conn, space, version, limit, photo_id)
+    rows = _fetch_work(conn, space, version, limit, photo_id, retry_skipped)
+    if photo_id is None and not retry_skipped:
+        stats.unreadable = _count_unreadable(conn, space, version)
+        if stats.unreadable:
+            log.info(
+                "extract: leaving out %d photo(s) in space=%s that an earlier run could "
+                "not read; --retry-skipped tries them again",
+                stats.unreadable, space,
+            )
     emitter = get_emitter()
     log.info(
         "extract: %d photo(s) queued (space=%s, pipeline_version=%s, restoration=%s)",
@@ -301,6 +342,8 @@ def run_extract(
             filename = row["filename"] if "filename" in row.keys() else None
             reason = skip_reason(exc, filename)
             stats._bump_skip(reason)
+            if reason in UNREADABLE_REASONS:
+                _record_unreadable(conn, space, row, version, reason)
             message = _skip_message(conn, settings, space, row, reason, exc)
             log.warning("%s", message)
             log.debug("extract: traceback for photo %s", row["id"], exc_info=exc)
@@ -318,6 +361,23 @@ def run_extract(
         )
     emitter.result(ok=True, stats=asdict(stats))
     return stats
+
+
+def _record_unreadable(conn: Connection, space: str, row: Row, version: str, reason: str) -> None:
+    cache_key = row["cache_key"] if "cache_key" in row.keys() else None
+    try:
+        conn.execute(
+            "INSERT INTO extract_skips (space, photo_id, cache_key, pipeline_version, "
+            "reason, skipped_at) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(space, photo_id) DO UPDATE SET "
+            "cache_key=excluded.cache_key, pipeline_version=excluded.pipeline_version, "
+            "reason=excluded.reason, skipped_at=excluded.skipped_at",
+            (space, int(row["id"]), cache_key, version, reason, store.now()),
+        )
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001 - the ledger is an optimisation, never a failure
+        conn.rollback()
+        log.warning("extract: could not record photo %s as unreadable: %s", row["id"], exc)
 
 
 def _process_photo(
@@ -404,6 +464,7 @@ def _process_photo(
             except Exception as exc:  # noqa: BLE001 - restoration is advisory
                 log.warning("Restoration pass failed for photo %s: %s", pid, exc)
 
+    conn.execute("DELETE FROM extract_skips WHERE space = ? AND photo_id = ?", (space, pid))
     conn.execute(
         "INSERT INTO extract_log (space, photo_id, cache_key, pipeline_version, "
         "face_count, processed_at) VALUES (?,?,?,?,?,?) "

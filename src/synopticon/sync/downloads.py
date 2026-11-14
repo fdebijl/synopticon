@@ -65,8 +65,13 @@ def ensure_original(
     return final_path
 
 
-def evict_originals(settings: Settings, keep_bytes: int | None = None) -> dict:
-    """LRU-by-atime eviction under `originals_cache_gb`; no-op when `keep_originals`."""
+def evict_originals(
+    settings: Settings, keep_bytes: int | None = None, keep: Path | None = None
+) -> dict:
+    """LRU-by-atime eviction under `originals_cache_gb`; no-op when `keep_originals`.
+
+    ``keep`` is never deleted, though it still counts toward the budget.
+    """
     if settings.storage.keep_originals:
         return {"evicted_files": 0, "freed_bytes": 0}
 
@@ -92,6 +97,8 @@ def evict_originals(settings: Settings, keep_bytes: int | None = None) -> dict:
     for _atime, size, path in entries:
         if total <= limit:
             break
+        if path == keep:
+            continue
         try:
             path.unlink()
         except OSError:
@@ -101,3 +108,53 @@ def evict_originals(settings: Settings, keep_bytes: int | None = None) -> dict:
         evicted_files += 1
 
     return {"evicted_files": evicted_files, "freed_bytes": freed_bytes}
+
+
+#: Bytes downloaded between eviction passes, as a fraction of the budget. Eviction
+#: walks the whole cache, so it runs per slice rather than per photo; the cache
+#: overshoots `originals_cache_gb` by at most one slice plus one original.
+_EVICT_SLICE = 0.1
+
+
+class BudgetedFetch:
+    """`ensure_original` that holds the cache to `originals_cache_gb` during a run.
+
+    The original just fetched is exempt from eviction, since the caller has yet
+    to read it. Call :meth:`finish` once the run is over to trim to the budget
+    and get the run's eviction totals.
+    """
+
+    def __init__(self, conn: Connection, client: SynoClient, settings: Settings):
+        self._conn = conn
+        self._client = client
+        self._settings = settings
+        budget = int(settings.storage.originals_cache_gb * 1e9)
+        self._slice = max(1, int(budget * _EVICT_SLICE))
+        self._pending = 0
+        self.evicted = {"evicted_files": 0, "freed_bytes": 0}
+
+    def __call__(self, photo_row) -> Path:
+        cached = original_path(self._settings, photo_row).exists()
+        path = ensure_original(self._conn, self._client, self._settings, photo_row)
+        if cached or self._settings.storage.keep_originals:
+            return path
+        self._pending += path.stat().st_size
+        if self._pending >= self._slice:
+            self._pending = 0
+            freed = self._evict(keep=path)
+            if freed["evicted_files"]:
+                log.info(
+                    "originals cache over budget: evicted %d file(s), %.2f GB",
+                    freed["evicted_files"], freed["freed_bytes"] / 1e9,
+                )
+        return path
+
+    def finish(self) -> dict:
+        self._evict(keep=None)
+        return dict(self.evicted)
+
+    def _evict(self, keep: Path | None) -> dict:
+        freed = evict_originals(self._settings, keep=keep)
+        for k, v in freed.items():
+            self.evicted[k] += v
+        return freed
