@@ -281,6 +281,7 @@ def sync(
     emitter = get_emitter()
     result_stats: dict[str, dict] = {}
     with SynoClient(settings, conn) as client:
+        fetch = downloads.BudgetedFetch(conn, client, settings)
         for sp in _spaces(settings, space):
             emitter.phase("sync.items", space=sp)
             stats = items.sync_items(conn, client, sp, progress=_progress(sp, "items"))
@@ -317,16 +318,12 @@ def sync(
                 result_stats[f"{sp}.faces"] = dict(stats)
             if hash_:
                 emitter.phase("sync.hashes", space=sp)
-
-                def fetch(row: Row) -> Path:
-                    return downloads.ensure_original(conn, client, settings, row)
-
                 stats = hashes.sync_hashes(conn, fetch, sp, progress=_progress(sp, "hashes"))
                 _finish_line()
                 typer.echo(f"[{sp}] hashes: {stats}")
                 result_stats[f"{sp}.hashes"] = dict(stats)
     if hash_ and not settings.storage.keep_originals:
-        evicted = downloads.evict_originals(settings)
+        evicted = fetch.finish()
         typer.echo(f"evicted: {evicted}")
     emitter.result(stats=result_stats)
 
@@ -349,17 +346,14 @@ def extract(
     emitter = get_emitter()
     result_stats: dict[str, dict] = {}
     with SynoClient(settings, conn) as client:
+        fetch = downloads.BudgetedFetch(conn, client, settings)
         for sp in _spaces(settings, space):
             emitter.phase("extract", space=sp)
-
-            def fetch(row: Row) -> Path:
-                return downloads.ensure_original(conn, client, settings, row)
-
             stats = run_extract(conn, settings, fetch, limit=limit, photo_id=photo_id, space=sp)
             typer.echo(f"[{sp}] {stats}")
             result_stats[sp] = asdict(stats)
     if not settings.storage.keep_originals:
-        evicted = downloads.evict_originals(settings)
+        evicted = fetch.finish()
         typer.echo(f"evicted: {evicted}")
     emitter.result(stats=result_stats)
 
@@ -684,12 +678,9 @@ def regen_crops_cmd(
     emitter = get_emitter()
     result_stats: dict[str, dict] = {}
     with SynoClient(settings, conn) as client:
+        fetch = downloads.BudgetedFetch(conn, client, settings)
         for sp in _spaces(settings, space):
             emitter.phase("crops.regen", space=sp)
-
-            def fetch(row: Row) -> Path:
-                return downloads.ensure_original(conn, client, settings, row)
-
             stats = regen_crops(
                 conn, settings, fetch, space=sp, only_missing=only_missing,
                 limit=limit, progress=_progress(sp, "regen", phase="crops.regen"),
@@ -698,7 +689,7 @@ def regen_crops_cmd(
             typer.echo(f"[{sp}] {stats}")
             result_stats[sp] = dict(stats)
     if not settings.storage.keep_originals:
-        evicted = downloads.evict_originals(settings)
+        evicted = fetch.finish()
         typer.echo(f"evicted: {evicted}")
     emitter.result(stats=result_stats)
 
