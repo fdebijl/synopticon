@@ -57,19 +57,19 @@ def test_cgroup_v1_unlimited_quota(monkeypatch):
 
 
 def test_available_cores_capped_by_quota(monkeypatch):
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(32)))
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(32)), raising=False)
     monkeypatch.setattr(cpu, "cgroup_cpu_limit", lambda: 2.0)
     assert cpu.available_cores() == 2
 
 
 def test_available_cores_uses_affinity_when_unquotaed(monkeypatch):
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3})
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3}, raising=False)
     monkeypatch.setattr(cpu, "cgroup_cpu_limit", lambda: None)
     assert cpu.available_cores() == 4
 
 
 def test_available_cores_never_zero(monkeypatch):
-    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(8)))
+    monkeypatch.setattr(cpu.os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False)
     monkeypatch.setattr(cpu, "cgroup_cpu_limit", lambda: 0.5)
     assert cpu.available_cores() == 1
 

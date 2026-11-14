@@ -10,6 +10,7 @@ a ``TestClient`` with a stubbed JobManager — the same fixture style as
 from __future__ import annotations
 
 import json
+import os
 import stat
 import sys
 
@@ -199,6 +200,7 @@ def test_write_creates_fresh_file_at_default_path(tmp_path, monkeypatch):
     assert "knn_k = 99" in target.read_text()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows file modes carry only a read-only bit")
 def test_password_write_tightens_permissions(cfg_path):
     settings = load_settings()
     write_config(settings, {"nas": {"url": "https://x", "password": "secret"}})

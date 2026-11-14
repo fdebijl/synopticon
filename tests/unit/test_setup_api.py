@@ -161,12 +161,14 @@ def test_check_storage_writable(client, tmp_path):
 
 
 def test_check_storage_not_writable(client, tmp_path):
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
     r = client.post(
         "/api/setup/check-storage",
         json={
             "data_dir": str(tmp_path / "ok"),
-            # A subdir of /proc cannot be created (read-only pseudo-filesystem).
-            "models_dir": "/proc/synopticon_setup_no_write",
+            # A directory cannot be created under a regular file, on any OS.
+            "models_dir": str(blocker / "models"),
         },
     )
     assert r.status_code == 200
