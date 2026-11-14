@@ -1202,7 +1202,20 @@ class JobManager:
     # -- cancellation escalation ------------------------------------------- #
 
     def _escalate(self, proc: subprocess.Popen) -> None:
-        """SIGINT → 10 s → SIGTERM → 5 s → SIGKILL over the child's group."""
+        """SIGINT → 10 s → SIGTERM → 5 s → SIGKILL over the child's group.
+
+        Windows has neither process groups nor POSIX signals (``send_signal``
+        accepts only SIGTERM, which is ``TerminateProcess`` anyway), so it gets
+        the one rung there is. A job commits per item, so a hard stop costs at
+        most the item in flight.
+        """
+        if os.name == "nt":
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            self._wait_dead(proc, 10.0)
+            return
         try:
             pgid = os.getpgid(proc.pid)
         except OSError:
