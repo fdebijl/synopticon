@@ -70,11 +70,40 @@ def _usable_cores_row() -> str:
     return f"{available_cores()} (cgroup quota {limit:g} cores)"
 
 
+def _windows_cpu() -> tuple[str | None, set[str]]:
+    """(model name, SIMD flags) on Windows, in /proc/cpuinfo's vocabulary."""
+    if os.name != "nt":
+        return None, set()
+    model = None
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+        ) as key:
+            model = str(winreg.QueryValueEx(key, "ProcessorNameString")[0]).strip() or None
+    except OSError:
+        pass
+    flags: set[str] = set()
+    try:
+        import ctypes
+
+        present = ctypes.windll.kernel32.IsProcessorFeaturePresent
+        # PF_* constants from winnt.h; there is none for FMA.
+        for flag, feature in (("sse4_2", 38), ("avx", 39), ("avx2", 40), ("avx512f", 41)):
+            if present(feature):
+                flags.add(flag)
+    except (OSError, AttributeError):
+        pass
+    return model, flags
+
+
 def _cpu_section() -> Section:
     info = _proc_cpuinfo()
-    model = info.get("model name") or platform.processor() or "unknown"
+    win_model, win_flags = _windows_cpu()
+    model = info.get("model name") or win_model or platform.processor() or "unknown"
     logical = os.cpu_count() or 0
-    flags = set(info.get("flags", "").split())
+    flags = set(info.get("flags", "").split()) | win_flags
     simd = [f for f in ("avx512f", "avx2", "avx", "fma", "sse4_2") if f in flags]
     rows = [
         ("Model", model),
@@ -102,11 +131,39 @@ def _meminfo() -> tuple[int | None, int | None]:
         return vals.get("MemTotal"), vals.get("MemAvailable")
     except OSError:
         pass
+    if os.name == "nt":
+        return _windows_meminfo()
     try:
         total = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
         return total, None
     except (ValueError, OSError, AttributeError):
         return None, None
+
+
+def _windows_meminfo() -> tuple[int | None, int | None]:
+    import ctypes
+    from ctypes import wintypes
+
+    class MemoryStatusEx(ctypes.Structure):
+        _fields_ = [
+            ("dwLength", wintypes.DWORD),
+            ("dwMemoryLoad", wintypes.DWORD),
+            ("ullTotalPhys", ctypes.c_ulonglong),
+            ("ullAvailPhys", ctypes.c_ulonglong),
+            ("ullTotalPageFile", ctypes.c_ulonglong),
+            ("ullAvailPageFile", ctypes.c_ulonglong),
+            ("ullTotalVirtual", ctypes.c_ulonglong),
+            ("ullAvailVirtual", ctypes.c_ulonglong),
+            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+        ]
+
+    status = MemoryStatusEx(dwLength=ctypes.sizeof(MemoryStatusEx))
+    try:
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+            return status.ullTotalPhys, status.ullAvailPhys
+    except (OSError, AttributeError):
+        pass
+    return None, None
 
 
 def _memory_section() -> Section:
