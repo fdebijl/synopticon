@@ -42,7 +42,7 @@ The script checks your system, installs uv if it's missing, clones the repo into
 ### Manual
 
 Install the requirements:
-- Python v3.11-3.12
+- Python v3.11-3.12 (Linux, macOS or [Windows](docs/running-locally.md#windows))
 - Node v22+
 
 1. Clone the repo and setup directory structure
