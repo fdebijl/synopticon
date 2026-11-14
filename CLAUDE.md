@@ -207,4 +207,5 @@ Other things that are easy to regress:
 
 ## Tasks
 
-- **Version bump:** adjust the version in `./pyproject.toml` and `./frontend/package.json` per the given strategy (major/minor/patch), then run `uv sync` and `cd frontend && npm install` to sync the lockfiles.
+- **Version bump:** adjust the version in `./pyproject.toml` and `./frontend/package.json` per the given strategy (major/minor/patch), then run `uv sync` and `cd frontend && npm install` to sync the lockfiles. Also update CHANGELOG.md following the conventions in that file.
+
