@@ -1336,6 +1336,8 @@ class JobManager:
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
+        if os.name == "nt":
+            return _win_pid_alive(pid)
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
@@ -1354,3 +1356,29 @@ class JobManager:
         except OSError:
             return False
         return b"synopticon" in raw
+
+
+def _win_pid_alive(pid: int) -> bool:
+    """Non-destructive liveness probe for Windows.
+
+    ``os.kill(pid, 0)`` is no probe there: signal 0 is ``CTRL_C_EVENT``, so it
+    broadcasts a Ctrl+C to a console process group, and it returns normally
+    for a pid that has already exited.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    synchronize, wait_timeout, error_access_denied = 0x00100000, 0x102, 5
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(synchronize, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == error_access_denied  # exists but not ours
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+    finally:
+        kernel32.CloseHandle(handle)

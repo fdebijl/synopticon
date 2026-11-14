@@ -680,3 +680,14 @@ def test_thread_cap_zero_leaves_the_environment_alone(manager_factory, monkeypat
 
     assert res["omp"] is None
     assert res["blas"] is None
+
+
+def test_pid_alive_tells_a_live_child_from_a_dead_one():
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert JobManager._pid_alive(child.pid) is True
+        assert child.poll() is None  # the probe must not have touched it
+    finally:
+        child.kill()
+        child.wait()
+    assert JobManager._pid_alive(child.pid) is False
