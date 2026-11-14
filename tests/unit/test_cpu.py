@@ -8,6 +8,10 @@ resulting run queue is what makes a co-resident web server time out.
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
 import synopticon.cpu as cpu
 
 
@@ -90,3 +94,9 @@ def test_job_thread_cap_defaults_to_available_cores(monkeypatch, tmp_path):
         assert jm._thread_cap == 3
     finally:
         jm.shutdown()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows has no /proc/cpuinfo to read instead")
+def test_windows_physical_cores_come_from_the_os_not_the_logical_count():
+    physical = cpu._windows_physical_cores()
+    assert physical is not None and 1 <= physical <= (os.cpu_count() or 1)

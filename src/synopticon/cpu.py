@@ -92,5 +92,42 @@ def physical_cores() -> int:
     except OSError:
         pass
 
-    count = len(cores) if cores else (os.cpu_count() or 1)
+    count = len(cores) or _windows_physical_cores() or os.cpu_count() or 1
     return max(1, min(count, available_cores()))
+
+
+def _windows_physical_cores() -> int | None:
+    """Physical cores from ``GetLogicalProcessorInformationEx``; None off Windows."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    relation_processor_core, error_insufficient_buffer = 0, 122
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        query = kernel32.GetLogicalProcessorInformationEx
+        query.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD))
+        query.restype = wintypes.BOOL
+        length = wintypes.DWORD(0)
+        if query(relation_processor_core, None, ctypes.byref(length)) or (
+            ctypes.get_last_error() != error_insufficient_buffer
+        ):
+            return None
+        buf = ctypes.create_string_buffer(length.value)
+        if not query(relation_processor_core, buf, ctypes.byref(length)):
+            return None
+    except (OSError, AttributeError):
+        return None
+
+    # Variable-size records, each headed by DWORD Relationship, DWORD Size.
+    count = offset = 0
+    while offset + 8 <= length.value:
+        relationship, size = (
+            int.from_bytes(buf.raw[offset + i : offset + i + 4], "little") for i in (0, 4)
+        )
+        if size == 0:
+            break
+        count += relationship == relation_processor_core
+        offset += size
+    return count or None
