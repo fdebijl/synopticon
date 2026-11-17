@@ -1,3 +1,13 @@
+:root {
+  font-size: 16px;
+}
+
+@media (max-width: 800px) {
+  :root {
+    font-size: 14px;
+  }
+}
+
 body {
   width: 100dvw;
   display: flex;
@@ -5,9 +15,6 @@ body {
   align-items: center;
   flex-flow: column nowrap;
   overflow-x: hidden;
-  font-family: muli, sans-serif;
-  font-weight: 400;
-  font-style: normal;
   margin: 0;
   padding: 0;
 }
@@ -46,6 +53,20 @@ h1 {
   font-size: 8rem;
   margin-bottom: 0rem;
   text-align: center;
+  max-width: 100dvw;
+}
+
+@media (max-width: 800px) {
+  h1 {
+    font-size: 6rem;
+  }
+}
+
+@media (max-width: 400px) {
+  h1 {
+    font-size: 3rem;
+    margin: 0;
+  }
 }
 
 h2 {
@@ -55,6 +76,26 @@ h2 {
   font-size: 3rem;
   margin-bottom: 0rem;
   text-align: center;
+}
+
+@media (max-width: 800px) {
+  h2 {
+    font-size: 2rem;
+  }
+}
+
+@media (max-width: 400px) {
+  h2 {
+    font-size: 1.5rem;
+    margin: 0;
+  }
+}
+
+p, i {
+  font-family: muli, sans-serif;
+  font-weight: 400;
+  font-style: normal;
+  font-size: 1rem;
 }
 
 main a {
@@ -70,6 +111,20 @@ pre {
   font-size: 1.5rem;
   border-radius: 0.5rem;
   margin: 0.5rem 0;
+  max-width: 100dvw;
+}
+
+@media (max-width: 800px) {
+  pre {
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 400px) {
+  pre {
+    font-size: 0.8rem;
+    padding: 0.5rem;
+  }
 }
 
 section img {
