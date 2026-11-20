@@ -10,6 +10,15 @@ Dependency bumps are left out unless they change behaviour.
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-11-20
+
+### Fixed
+
+- A huge catch-all group of blurry or half-hidden faces is no longer named after the few tagged
+  faces that happen to sit in it, which could queue thousands of unlikely suggestions for one
+  person. A group must now also be alike enough to be one person; the new `[crossref] min_cohesion`
+  setting (default 0.38) controls how alike. (#159)
+
 ## [0.26.0] - 2026-11-20
 
 ### Added
@@ -348,7 +357,8 @@ First tagged release.
 - Writeback no longer mixed up the two people in a merge.
 - Running out of video memory in the CUDA pipeline.
 
-[Unreleased]: https://github.com/fdebijl/synopticon/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/fdebijl/synopticon/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/fdebijl/synopticon/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/fdebijl/synopticon/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/fdebijl/synopticon/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/fdebijl/synopticon/compare/v0.23.0...v0.24.0
