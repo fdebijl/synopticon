@@ -10,13 +10,15 @@ Dependency bumps are left out unless they change behaviour.
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-11-20
+
 ### Added
 
 - An optional MCP server at `/mcp`, so an AI agent such as Claude Code can tune settings, debug
   Detect faces and Group faces, run pipeline steps and, if you allow it, decide review items and
   apply. Off by default (`[mcp] enabled`); access is by scoped tokens created under Settings →
   Access → MCP tokens, and anything behind a typed confirmation phrase stays human-only. See
-  `docs/mcp.md`.
+  `docs/mcp.md`. (#158)
 
 ## [0.25.0] - 2026-11-14
 
@@ -346,7 +348,8 @@ First tagged release.
 - Writeback no longer mixed up the two people in a merge.
 - Running out of video memory in the CUDA pipeline.
 
-[Unreleased]: https://github.com/fdebijl/synopticon/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/fdebijl/synopticon/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/fdebijl/synopticon/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/fdebijl/synopticon/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/fdebijl/synopticon/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/fdebijl/synopticon/compare/v0.22.0...v0.23.0
