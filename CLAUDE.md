@@ -33,6 +33,7 @@ This file carries the **rules**. `docs/adr/` carries the **decisions behind them
 | `21_lifetime-run-ledger.md` | `command_runs`, `runlog.py`, `cli.py::_main`, a command's `emitter.result(stats=…)` shape, the Stats page (`web/stats_page.py`) |
 | `22_unreadable-photo-ledger.md` | `extract_skips`, `runner.UNREADABLE_REASONS`, `_fetch_work`, `extract --retry-skipped` |
 | `23_mcp-server.md` | `web/mcp/`, `web/auth/mcp_tokens.py`, the `[mcp]` config section, the `/mcp` branch in `_AuthMiddleware`, adding an agent tool or scope |
+| `24_cluster-cohesion-floor.md` | cluster mapping's cohesion check, `ClusterInfo.cohesion`, `clusters.cohesion`, `[crossref] min_cohesion` |
 
 Also read: `docs/GLOSSARY.md` before naming a new domain concept (it explains the ML vocabulary for engineers new to face recognition); `docs/agents/issue-tracker.md` before filing or picking up an issue or spec; `docs/agents/triage-labels.md` before setting a `Status:`; `docs/agents/domain.md` before writing a `CONTEXT.md` or a new ADR.
 
@@ -66,6 +67,8 @@ syno/ + sync/  ->  pipeline/   ->  cluster/      ->  review/       ->  syno/writ
 **Hard module boundary:** `cluster/` must never import from `syno/` or `pipeline/`. `pipeline/runner.py` takes a `fetch_original(row) -> Path` callable instead of importing `sync/`. `dedupe.py` is NAS-free; `dedupe_writeback.py` is its only NAS-touching half. `cli.py` is where the layers get wired together.
 
 **Crossref never targets a person Synology doesn't list.** Synology keeps thousands of unlisted one- and two-face persons whose faces still tag ours: they vote in merges (the bulk route out of them) but never in cluster mapping, and are never an assign or reassign target. A face Synology already holds is moved with a `reassign` (`separate`), never re-added with an assign (`add_face`). (ADR 19, ADR 20)
+
+**A cluster maps to a person only if it is plausibly one person.** Agreement among its tagged faces (`majority`, `min_labeled`) is not enough: it must also clear `[crossref] min_cohesion`, or a catch-all cluster of junk detections gets named after the handful of tagged faces inside it and proposes thousands of faces for them. The measured value is stored as `clusters.cohesion` (migration `0015_cluster_cohesion.sql`). Never fix a bad mapping by excluding the person. (ADR 24)
 
 **Leaf modules stay dependency-free** so anything may import them: `cpu.py`, `progress.py`, `cron.py`, `links.py`, `pipeline/version.py`. Deep links are built in exactly one place — `links.py`. (ADR 01)
 

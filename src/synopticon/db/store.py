@@ -60,6 +60,7 @@ _MIGRATIONS = [
     _SCHEMA_DIR / "migrations" / "0012_command_runs.sql",  # version 12
     _SCHEMA_DIR / "migrations" / "0013_extract_skips.sql",  # version 13
     _SCHEMA_DIR / "migrations" / "0014_mcp_tokens.sql",  # version 14
+    _SCHEMA_DIR / "migrations" / "0015_cluster_cohesion.sql",  # version 15
     # Future migrations: append db/migrations/000N_*.sql paths here.
 ]
 

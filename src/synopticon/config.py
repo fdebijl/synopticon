@@ -744,6 +744,32 @@ class CrossrefConfig(BaseModel):
             )
         },
     )
+    min_cohesion: float = Field(
+        default=0.38,
+        ge=-1.0,
+        le=1.0,
+        title="Minimum Group Cohesion",
+        description=(
+            "How alike the faces in a group must be, on average, before Synopticon "
+            "accepts that the group is one person at all.\n\n"
+            "Practical 0.30-0.42; default 0.38. It stops a huge catch-all group of blurry "
+            "or half-hidden faces from being named after the few tagged faces that "
+            "happen to sit in it. Raise it if one person suddenly gets thousands of "
+            "unlikely suggestions; lower it if a heavily photographed person's group "
+            "stops producing suggestions. Set to -1 to switch this off."
+        ),
+        json_schema_extra={
+            "details": (
+                "The mean pairwise cosine similarity of the cluster's fused embeddings, "
+                "range [-1,1], stored as clusters.cohesion. Checked on top of majority "
+                "and min_labeled; a cluster under it maps to nobody, and its untagged "
+                "faces fall through to the nearest-person step. It lives in the same "
+                "embedding space as edge_threshold, so revisit it after changing "
+                "fusion_weights. Large real clusters sit lowest: about 0.41 for a person "
+                "with several hundred faces."
+            )
+        },
+    )
     assign_sim: float = Field(
         default=0.55,
         title="Assign Similarity Cutoff",

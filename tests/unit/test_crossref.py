@@ -82,6 +82,49 @@ def test_no_mapping_below_min_labeled():
     assert result.assigns == []
 
 
+def _loose_cluster():
+    # Six mutually orthogonal faces, three of them tagged as one person.
+    specs = [(i + 1, np.eye(6)[i]) for i in range(6)]
+    label_map = {1: ("personal", 100), 2: ("personal", 100), 3: ("personal", 100)}
+    return _core_inputs(specs, [0] * 6, label_map)
+
+
+def test_incoherent_cluster_maps_to_nobody():
+    settings = load_settings()
+    face_ids, X, labels, lm, meta = _loose_cluster()
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set()
+    )
+    info = result.clusters[0]
+    assert info.vote_fraction == 1.0
+    assert abs(info.cohesion) < 1e-6
+    assert info.mapped_person is None
+    assert result.assigns == []
+    assert result.predicted_person == {}
+
+
+def test_min_cohesion_switched_off_at_minus_one():
+    settings = load_settings()
+    settings.crossref.min_cohesion = -1.0
+    face_ids, X, labels, lm, meta = _loose_cluster()
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set()
+    )
+    assert result.clusters[0].mapped_person == ("personal", 100)
+    assert {a["payload"]["face_id"] for a in result.assigns} == {4, 5, 6}
+
+
+def test_cohesion_is_the_mean_pairwise_similarity():
+    settings = load_settings()
+    specs = [(1, [1, 0, 0]), (2, [0.8, 0.6, 0]), (3, [0.6, 0, 0.8])]
+    face_ids, X, labels, lm, meta = _core_inputs(specs, [0, 0, 1], {})
+    result = crossref._crossref_core(
+        face_ids, X, labels, lm, settings, meta, person_photos=set()
+    )
+    assert abs(result.clusters[0].cohesion - 0.8) < 1e-6
+    assert result.clusters[1].cohesion is None
+
+
 def test_merge_from_split_person():
     settings = load_settings()
     # 3 person A + 2 person B in one cluster: both >= merge_vote_fraction 0.3.
