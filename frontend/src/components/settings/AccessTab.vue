@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import PasswordCard from './cards/PasswordCard.vue'
 import ApiKeysCard from './cards/ApiKeysCard.vue'
+import McpTokensCard from './cards/McpTokensCard.vue'
 import TwoStepCard from './cards/TwoStepCard.vue'
 import NetworkAccessCard from './cards/NetworkAccessCard.vue'
 import SignInLogCard from './cards/SignInLogCard.vue'
@@ -12,6 +13,7 @@ import ThrottleCard from './cards/ThrottleCard.vue'
   <div class="settings-panel access-section">
     <PasswordCard />
     <ApiKeysCard />
+    <McpTokensCard />
     <TwoStepCard />
     <NetworkAccessCard />
     <SignInLogCard />

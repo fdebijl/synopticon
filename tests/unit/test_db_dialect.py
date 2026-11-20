@@ -178,6 +178,7 @@ class TestIdentityDiscovery:
             "schedules": "id",
             "schedule_runs": "id",
             "command_runs": "id",
+            "web_mcp_tokens": "id",
         }
 
 

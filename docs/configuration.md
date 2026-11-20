@@ -65,3 +65,12 @@ docker compose --profile gpu run synopticon-gpu extract
 ## Two-factor authentication
 
 If the account has 2FA, set `nas.otp_code` (or `SYNOPTICON_NAS__OTP_CODE`) for the first login; Synopticon stores the returned device token in its database so later logins skip the OTP.
+
+## MCP
+
+```toml
+[mcp]
+enabled = false   # SYNOPTICON_MCP__ENABLED
+```
+
+Turns on the `/mcp` endpoint for AI agents. Off by default; read once at start-up, so a change needs a restart. Tokens are created under Settings → Access → MCP tokens. See [MCP server](mcp.md).

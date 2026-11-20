@@ -315,7 +315,7 @@ def test_lifetime_on_an_empty_database(client):
     assert data["first_nas_write"] is None
     runs = data["runs"]
     assert runs["total"] == runs["ok"] == runs["unfinished"] == 0
-    assert runs["by_origin"] == {"cli": 0, "gui": 0, "schedule": 0}
+    assert runs["by_origin"] == {"cli": 0, "gui": 0, "schedule": 0, "mcp": 0}
     assert runs["by_command"] == []
     assert runs["longest"] is None and runs["busiest_day"] is None
     assert runs["active_days"] == runs["streak_days"] == runs["total_seconds"] == 0
@@ -531,7 +531,7 @@ def test_lifetime_runs(db):
     runs = stats_page.lifetime(db, today=today)["runs"]
     assert runs["total"] == 9
     assert (runs["ok"], runs["failed"], runs["cancelled"], runs["unfinished"]) == (6, 1, 1, 1)
-    assert runs["by_origin"] == {"cli": 6, "gui": 2, "schedule": 1}
+    assert runs["by_origin"] == {"cli": 6, "gui": 2, "schedule": 1, "mcp": 0}
     assert [c["command"] for c in runs["by_command"]][:2] == ["extract", "sync"]
     extract = runs["by_command"][0]
     d3 = today

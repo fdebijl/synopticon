@@ -91,3 +91,8 @@ nearest_person_sim = 0.55           # stranded face -> closest known person; 1.0
 nearest_person_margin = 0.08        # ...only when clearly ahead of the runner-up person
 # Suggestion kinds Group faces queues for review; drop any you are not interested in.
 proposal_kinds = ["assign", "low_confidence", "reassign", "merge", "merge_named", "new_person"]
+
+# [mcp]
+# enabled = false                   # let an AI agent connect at /mcp (needs a token minted under
+#                                   # Settings -> Access, and a restart). Typed-phrase operations
+#                                   # are never available to an agent.

@@ -44,6 +44,7 @@ TABLES: tuple[str, ...] = (
     "web_users",
     "web_sessions",
     "web_api_keys",
+    "web_mcp_tokens",
     "web_totp",
     "web_recovery_codes",
     "web_login_challenges",

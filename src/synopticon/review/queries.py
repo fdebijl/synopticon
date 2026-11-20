@@ -774,7 +774,7 @@ def delete_items(conn: Connection, item_ids: Sequence[int]) -> int:
 
 
 def decide_item(
-    conn: Connection, item_id: int, decision: str
+    conn: Connection, item_id: int, decision: str, decided_by: str = "review-ui"
 ) -> str | None:
     """Approve/reject a queue item. Returns the new status, or ``None`` if the
     decision is not ``approve``/``reject`` (DB untouched)."""
@@ -784,7 +784,7 @@ def decide_item(
     conn.execute(
         "UPDATE review_queue SET status = ?, decided_at = ?, decided_by = ? "
         "WHERE item_id = ?",
-        (status, store.now(), "review-ui", item_id),
+        (status, store.now(), decided_by, item_id),
     )
     conn.commit()
     return status

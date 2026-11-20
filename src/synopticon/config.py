@@ -1217,6 +1217,33 @@ class SecurityConfig(BaseModel):
         return [e.strip() for e in v]
 
 
+class McpConfig(BaseModel):
+    """An endpoint that lets an AI agent help tune and debug Synopticon."""
+
+    enabled: bool = Field(
+        default=False,
+        title="Allow AI agents to connect",
+        description=(
+            "Turns on the /mcp endpoint, which lets an AI assistant (Claude Code or "
+            "any MCP client) inspect your setup, tune settings, run steps and "
+            "diagnose missed or mis-grouped faces. Off by default.\n\n"
+            "Nothing can connect without an access token you mint yourself under "
+            "Settings -> Access, and each token carries only the permissions you "
+            "give it. Applying to the NAS is a separate, opt-in permission, and "
+            "the actions that need a typed confirmation phrase are never open to "
+            "an agent. Needs a restart to take effect."
+        ),
+        json_schema_extra={"details": (
+            "Streamable HTTP, stateless JSON-RPC over POST at /mcp on the web "
+            "process. When false every method answers 404 before any "
+            "authentication. MCP tokens live in web_mcp_tokens, work only on "
+            "/mcp, and are refused on /api/*; REST API keys and session cookies "
+            "are refused on /mcp. The network allowlist applies. Read once at "
+            "start-up, and never writable through the MCP itself."
+        )},
+    )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="SYNOPTICON_",
@@ -1234,6 +1261,7 @@ class Settings(BaseSettings):
     clustering: ClusteringConfig = Field(default_factory=ClusteringConfig)
     crossref: CrossrefConfig = Field(default_factory=CrossrefConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
     @classmethod
     def settings_customise_sources(

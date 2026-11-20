@@ -263,6 +263,7 @@ const originItems = computed<BarItem[]>(() => {
     { key: 'cli', label: 'Command line', value: o.cli },
     { key: 'gui', label: 'This web GUI', value: o.gui },
     { key: 'schedule', label: 'A schedule', value: o.schedule },
+    { key: 'mcp', label: 'An agent (MCP)', value: o.mcp ?? 0 },
   ]
 })
 

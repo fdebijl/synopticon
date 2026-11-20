@@ -10,6 +10,14 @@ Dependency bumps are left out unless they change behaviour.
 
 ## [Unreleased]
 
+### Added
+
+- An optional MCP server at `/mcp`, so an AI agent such as Claude Code can tune settings, debug
+  Detect faces and Group faces, run pipeline steps and, if you allow it, decide review items and
+  apply. Off by default (`[mcp] enabled`); access is by scoped tokens created under Settings →
+  Access → MCP tokens, and anything behind a typed confirmation phrase stays human-only. See
+  `docs/mcp.md`.
+
 ## [0.25.0] - 2026-11-14
 
 ### Added

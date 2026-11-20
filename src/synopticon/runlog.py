@@ -33,7 +33,7 @@ _COMMAND_FROM_JOB_NAME = {"models-download": "models"}
 
 def origin_from_env() -> tuple[str, str | None]:
     origin = os.environ.get(ENV_ORIGIN, "")
-    return (origin if origin in ("gui", "schedule") else "cli"), os.environ.get(ENV_JOB_ID) or None
+    return (origin if origin in ("gui", "schedule", "mcp") else "cli"), os.environ.get(ENV_JOB_ID) or None
 
 
 def start(

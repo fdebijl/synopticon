@@ -12,6 +12,7 @@ const EVENT_LABELS: Record<string, string> = {
   password_change: 'Password change',
   security_change: 'Security setting changed',
   api_key: 'API key',
+  mcp_token: 'MCP token',
 }
 
 const OUTCOME_LABELS: Record<string, string> = {
@@ -36,6 +37,8 @@ const REASON_LABELS: Record<string, string> = {
   session_pin_changed: 'Session pinning changed',
   reauth_failed: 'Password or code not accepted',
   unknown_or_revoked_key: 'Unknown or revoked API key',
+  unknown_or_revoked_token: 'Unknown or revoked MCP token',
+  missing_token: 'No MCP token sent',
 }
 
 export function eventLabel(event: string | null | undefined): string {
