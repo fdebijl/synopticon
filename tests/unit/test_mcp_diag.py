@@ -450,6 +450,24 @@ def test_mixed_clusters_flags_unlisted(lib, ctx):
     assert listed["items"][0]["distinct_persons"] == 2
 
 
+def test_why_unmapped_names_low_cohesion():
+    from collections import Counter
+    from types import SimpleNamespace
+
+    run = tools_diag._Run(
+        1, 0, {"crossref": {"majority": 0.6, "min_labeled": 3, "min_cohesion": 0.38}},
+        True, {}, {}, {},
+    )
+    known = SimpleNamespace(known={("personal", ALICE)})
+    votes = Counter({("personal", ALICE): 5})
+    loose = tools_diag._Cluster(7000, None, 1.0, 5, 0.337)
+    assert "cohesion 0.337, below min_cohesion=0.38" in tools_diag._why_unmapped(
+        run, known, votes, loose
+    )
+    tight = tools_diag._Cluster(40, None, 1.0, 5, 0.5)
+    assert "labels changed since the run" in tools_diag._why_unmapped(run, known, votes, tight)
+
+
 def test_large_unmapped_and_low_vote(lib, ctx):
     big = call(tools_diag.find_grouping_issues, ctx, kind="large_unmapped", min_faces=3)
     assert [i["cluster_id"] for i in big["items"]] == [4]

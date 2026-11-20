@@ -84,6 +84,7 @@ seed = 42
 [crossref]
 majority = 0.60                     # vote fraction to map a cluster to a person
 min_labeled = 3
+min_cohesion = 0.38                 # a group looser than this is nobody, whatever its tags say
 assign_sim = 0.55                   # below this an assign becomes a low-confidence flag
 new_person_min_faces = 5            # a brand-new person needs at least this many faces...
 new_person_min_photos = 8           # ...spread over at least this many distinct photos

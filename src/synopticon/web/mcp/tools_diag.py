@@ -613,6 +613,7 @@ class _Cluster:
     mapped: PersonKey | None
     vote_fraction: float | None
     labeled_count: int | None
+    cohesion: float | None = None
 
 
 @dataclass
@@ -656,7 +657,7 @@ def _run(conn: Connection, fp: tuple | None, run_id: int | None) -> _Run:
         clusters: dict[int, _Cluster] = {}
         for c in conn.execute(
             "SELECT cluster_id, size, mapped_person_id, map_space, vote_fraction, "
-            "labeled_count FROM clusters WHERE run_id = ?",
+            "labeled_count, cohesion FROM clusters WHERE run_id = ?",
             (wanted,),
         ):
             mapped = (
@@ -669,6 +670,7 @@ def _run(conn: Connection, fp: tuple | None, run_id: int | None) -> _Run:
                 mapped,
                 None if c["vote_fraction"] is None else float(c["vote_fraction"]),
                 None if c["labeled_count"] is None else int(c["labeled_count"]),
+                None if c["cohesion"] is None else float(c["cohesion"]),
             )
         member_of: dict[int, int] = {}
         members: dict[int, list[int]] = defaultdict(list)
@@ -839,6 +841,7 @@ def _cluster_brief(lib: _Library, run: _Run, cid: int) -> dict:
         "size": c.size,
         "mapped_person": lib.person(c.mapped),
         "vote_fraction": _r(c.vote_fraction, 3),
+        "cohesion": _r(c.cohesion, 4),
     }
 
 
@@ -1583,9 +1586,10 @@ def _run_labels(lib: _Library, run: _Run, labels: dict[int, PersonKey]) -> _RunL
     return _RunLabels(live, votes, by_person, not_in_run, samples)
 
 
-def _why_unmapped(run: _Run, lib: _Library, votes: Counter) -> str:
+def _why_unmapped(run: _Run, lib: _Library, votes: Counter, c: _Cluster | None = None) -> str:
     min_labeled = int(run.crossref("min_labeled", 3))
     majority = float(run.crossref("majority", 0.6))
+    min_cohesion = run.crossref("min_cohesion")
     if not votes:
         return "no face in it carries a Synology label"
     listed = {pk: n for pk, n in votes.items() if pk in lib.known}
@@ -1597,6 +1601,16 @@ def _why_unmapped(run: _Run, lib: _Library, votes: Counter) -> str:
     top = max(listed.values())
     if top / total < majority:
         return f"top listed person holds {top}/{total} = {top / total:.2f}, below majority={majority}"
+    if (
+        c is not None
+        and c.cohesion is not None
+        and min_cohesion is not None
+        and c.cohesion < float(min_cohesion)
+    ):
+        return (
+            f"has a majority, but its faces are too unlike each other to be one person: "
+            f"cohesion {c.cohesion:.3f}, below min_cohesion={min_cohesion}"
+        )
     return "would map under the run's settings; the labels changed since the run"
 
 
@@ -1612,7 +1626,8 @@ def _breakdown(lib: _Library, votes: Counter, rl: _RunLabels, cid: int, limit: i
     "The shape of a Group faces run (the latest unless run_id is given): the "
     "settings it ran with and which have changed since, cluster size distribution, "
     "one-face groups, how many groups map to a Synology person and how firmly "
-    "(vote_fraction), label-based quality (label_purity: share of labelled faces "
+    "(vote_fraction) and how alike their faces are (cohesion, judged against "
+    "min_cohesion), label-based quality (label_purity: share of labelled faces "
     "agreeing with their group's majority; label_completeness: share of a "
     "person's labelled faces in their largest group), faces detected since the "
     "run, review items it produced, and the [clustering]/[crossref] settings in "
@@ -1700,6 +1715,7 @@ def grouping_summary(ctx: ToolContext, args: dict) -> dict:
             "mapped_to_unlisted_person": sum(1 for c in mapped if c.mapped not in lib.known),
             "unmapped_clusters_at_least_new_person_min_faces": len(unmapped_big),
             "vote_fraction": {"quantiles": _quantiles(vfs), "histogram": _hist(vfs, _VOTE_EDGES)},
+            "cohesion": _quantiles([c.cohesion for c in mapped if c.cohesion is not None], 4),
         },
         "labels": {
             "labelled_faces_in_run": labelled,
@@ -1859,7 +1875,7 @@ def find_grouping_issues(ctx: ToolContext, args: dict) -> dict:
                         "distinct_photos": len(photos),
                         "yolo_only_share": _r(yolo / len(live), 3) if live else None,
                         "labelled_faces": sum(votes.values()),
-                        "why_unmapped": _why_unmapped(run, lib, votes),
+                        "why_unmapped": _why_unmapped(run, lib, votes, c),
                         "breakdown": _breakdown(lib, votes, rl, cid, limit=4),
                         "sample_face_ids": live[:8],
                     },
@@ -1958,7 +1974,7 @@ def get_cluster(ctx: ToolContext, args: dict) -> dict:
         "detectors": dict(detectors.most_common()),
         "labelled_faces": sum(votes.values()),
         "breakdown": _breakdown(lib, votes, rl, cid, limit=10),
-        "why_unmapped": None if c.mapped is not None else _why_unmapped(run, lib, votes),
+        "why_unmapped": None if c.mapped is not None else _why_unmapped(run, lib, votes, c),
         "members": [_face_brief(lib, f, labels) for f in ordered[:limit]],
         "members_total": len(live),
     }

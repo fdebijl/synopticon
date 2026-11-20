@@ -212,6 +212,7 @@ class ClusterInfo:
     listed_total: int = 0  # votes for persons Synology lists — the only mapping targets
     mapped_person: PersonKey | None = None
     vote_fraction: float | None = None
+    cohesion: float | None = None  # mean pairwise similarity; None for a singleton
     centroid: np.ndarray | None = None
 
 
@@ -266,6 +267,7 @@ def _crossref_core(
         clusters.setdefault(cid, ClusterInfo(cluster_id=cid, members=[])).members.append(pos)
 
     predicted_person: dict[int, PersonKey] = {}
+    incoherent: list[ClusterInfo] = []
 
     for cid, info in clusters.items():
         member_fids = [int(face_ids[p]) for p in info.members]
@@ -275,7 +277,12 @@ def _crossref_core(
                 info.votes[pk] = info.votes.get(pk, 0) + 1
         info.labeled_total = sum(info.votes.values())
         if X.shape[0]:
-            info.centroid = _l2(X[info.members].mean(axis=0))
+            total = X[info.members].sum(axis=0, dtype=np.float64)
+            info.centroid = _l2(total).astype(X.dtype)
+            n = len(info.members)
+            if n > 1:
+                # Rows are unit vectors, so |sum|^2 = n + the sum over ordered pairs.
+                info.cohesion = float((total @ total - n) / (n * (n - 1)))
         # Synology's unlisted persons still vote in the intra-cluster merge
         # below — that is how their faces reach a real person in bulk — but
         # they can never be a target, nor drag a listed person under majority.
@@ -288,6 +295,9 @@ def _crossref_core(
             top_pk, top_count = max(listed.items(), key=lambda kv: (kv[1], kv[0]))
             info.vote_fraction = top_count / info.listed_total
             if info.listed_total >= cfg.min_labeled and info.vote_fraction >= cfg.majority:
+                if info.cohesion is not None and info.cohesion < cfg.min_cohesion:
+                    incoherent.append(info)
+                    continue
                 info.mapped_person = top_pk
                 for fid in member_fids:
                     predicted_person[fid] = top_pk
@@ -315,6 +325,14 @@ def _crossref_core(
         f"{len(label_map)} ground-truth labelled face(s)",
         phase="cluster.crossref",
     )
+    if incoherent:
+        emitter.log(
+            "warning",
+            f"cluster.crossref: {len(incoherent)} cluster(s) holding "
+            f"{sum(len(i.members) for i in incoherent)} face(s) have a majority but are "
+            f"too loose to be one person (cohesion below {cfg.min_cohesion}); left unmapped",
+            phase="cluster.crossref",
+        )
     for done, (cid, info) in enumerate(clusters.items()):
         emitter.progress("cluster.crossref", done, len(clusters))
         labeled_positions = [p for p in info.members if int(face_ids[p]) in label_map]
@@ -891,7 +909,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
         mapped = info.mapped_person
         conn.execute(
             "INSERT INTO clusters (run_id, cluster_id, size, mapped_person_id, "
-            "map_space, vote_fraction, labeled_count) VALUES (?,?,?,?,?,?,?)",
+            "map_space, vote_fraction, labeled_count, cohesion) VALUES (?,?,?,?,?,?,?,?)",
             (
                 run_id,
                 cid,
@@ -900,6 +918,7 @@ def run_clustering(conn: Connection, settings: Settings) -> int:
                 mapped[0] if mapped else None,
                 info.vote_fraction,
                 info.labeled_total,
+                info.cohesion,
             ),
         )
         for pos in info.members:
