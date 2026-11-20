@@ -763,6 +763,9 @@ def create_app(
                     auth_cache.pop(oldest, None)
         return ident, not have_users, reason
 
+    # Built after the routes below; the auth middleware hands /mcp to it.
+    mcp_app = None
+
     # -- middleware --------------------------------------------------------- #
     # All three layers below are *pure ASGI*, not Starlette's BaseHTTPMiddleware
     # (`@app.middleware("http")`), and must stay that way. BaseHTTPMiddleware
@@ -866,6 +869,14 @@ def create_app(
                     )
                 denial.headers["Cache-Control"] = "no-store"
                 await forward(denial)
+                return
+
+            # The MCP endpoint authenticates itself with its own token table and
+            # refuses cookies and REST API keys, so it takes none of the
+            # session logic below (no lookup, no 302, no /api CSRF gate). It
+            # sits after the allowlist so a refused address never reaches it.
+            if (path == "/mcp" or path.startswith("/mcp/")) and mcp_app is not None:
+                await mcp_app(scope, receive, send)
                 return
 
             # Hashed SPA bundle: public so /login and /setup can load before a
@@ -1012,7 +1023,11 @@ def create_app(
             self.app = app
 
         async def __call__(self, scope, receive, send):
-            if scope["type"] == "http" and scope["path"].startswith("/api/"):
+            if scope["type"] == "http" and (
+                scope["path"].startswith("/api/")
+                or scope["path"] == "/mcp"
+                or scope["path"].startswith("/mcp/")
+            ):
                 send = _defaulting_send(send, [(b"cache-control", b"no-store")])
             await self.app(scope, receive, send)
 
@@ -1985,6 +2000,18 @@ def create_app(
     from .backup_routes import register_backup_routes
 
     register_backup_routes(app, settings, conn)
+
+    from .mcp.protocol import make_mcp_app
+    from .mcp.routes import register_mcp_routes
+
+    register_mcp_routes(app, settings, conn)
+    mcp_app = make_mcp_app(
+        settings,
+        job_manager=jm,
+        voided=voided,
+        nas_session=lambda: getattr(app.state, "nas_session", None),
+        server_version=app_version,
+    )
 
     from .stats_routes import register_stats_routes
 

@@ -70,6 +70,7 @@ This spins up the web GUI, which will walk you through the initial setup for Syn
 - [Running with Docker](docs/docker.md) — images, compose, schedules, backups, authentication, reverse proxies
 - [CLI reference](docs/cli-reference.md) — every `synopticon` command
 - [Configuration](docs/configuration.md) — `config.toml`, the database backend, GPU acceleration, NAS two-factor
+- [MCP server](docs/mcp.md) — let an AI agent tune settings and debug detection and grouping
 - [Models](docs/models.md) — which weights the pipeline needs and how to export AdaFace/MagFace
 - [How it works](docs/how-it-works.md) — the face-recognition pipeline and deduplication
 - [Safety model](docs/safety-model.md) — what can write to your NAS, and what gates it

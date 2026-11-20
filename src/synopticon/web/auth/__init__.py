@@ -29,6 +29,7 @@ from .authlog import (
 )
 from .hashing import _scrypt, _sha256_hex
 from .keys import create_api_key, list_api_keys, revoke_api_key, validate_api_key
+from .mcp_tokens import create_mcp_token, list_mcp_tokens, revoke_mcp_token, validate_mcp_token
 from .sessions import (
     PIN_DEVICE,
     PIN_DEVICE_NETWORK,
@@ -119,6 +120,11 @@ __all__ = [
     "validate_api_key",
     "revoke_api_key",
     "list_api_keys",
+    # MCP tokens
+    "create_mcp_token",
+    "validate_mcp_token",
+    "revoke_mcp_token",
+    "list_mcp_tokens",
     # two-step sign-in
     "TotpAlreadyEnrolledError",
     "NoPendingEnrolmentError",

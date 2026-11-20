@@ -41,6 +41,7 @@ AUTH_EVENTS = (
     "password_change",
     "security_change",
     "api_key",
+    "mcp_token",
 )
 AUTH_OUTCOMES = ("success", "failure", "blocked", "pending")
 

@@ -250,6 +250,30 @@ export interface ApiKey {
   revoked: boolean
 }
 
+// GET /api/mcp/status (web/mcp/routes.py).
+export interface McpScope {
+  id: string
+  label: string
+  description: string
+  danger: 'safe' | 'local' | 'nas'
+  requires: string[]
+}
+export interface McpStatus {
+  enabled: boolean
+  endpoint: string
+  scopes: McpScope[]
+}
+// GET /api/mcp/tokens
+export interface McpToken {
+  id: number
+  name: string
+  token_prefix: string
+  scopes: string[]
+  created_at: number | null
+  last_used_at: number | null
+  revoked: boolean
+}
+
 // GET /api/setup/status (web/setup_routes.py::_status). Drives the wizard's
 // resume logic and prefills the NAS + storage steps (no secrets).
 export interface SetupStatus {
@@ -609,7 +633,7 @@ export interface LifetimeStats {
     failed: number
     cancelled: number
     unfinished: number
-    by_origin: { cli: number; gui: number; schedule: number }
+    by_origin: { cli: number; gui: number; schedule: number; mcp?: number }
     /** Sorted by total, descending. */
     by_command: RunCommandStats[]
     total_seconds: number

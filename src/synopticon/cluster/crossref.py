@@ -41,6 +41,41 @@ def _iou(box: tuple[float, float, float, float], other: tuple) -> float:
     return inter / union if union > 0 else 0.0
 
 
+#: IoU at which one of our boxes and one of Synology's are the same face.
+MATCH_IOU = 0.3
+
+
+def match_boxes(
+    ours: list[tuple[int, tuple[float, float, float, float]]],
+    theirs: list[tuple[int, tuple[float, float, float, float]]],
+    min_iou: float = MATCH_IOU,
+) -> list[tuple[int, int, float]]:
+    """Greedy one-to-one pairing of two box lists, best pair first.
+
+    ``ours`` and ``theirs`` are ``(key, (x1, y1, x2, y2))`` in one coordinate
+    space. The rule :func:`label_faces_with_ids` labels with, exposed so that
+    diagnostics report the pairs clustering sees. Returns
+    ``[(our_key, their_key, iou)]``; a key absent from it went unmatched.
+    """
+    pairs = []
+    for okey, obox in ours:
+        for ti, (_, tbox) in enumerate(theirs):
+            iou = _iou(tuple(obox), tuple(tbox))
+            if iou >= min_iou:
+                pairs.append((iou, okey, ti))
+    pairs.sort(reverse=True)
+    used_ours: set = set()
+    used_theirs: set[int] = set()
+    out: list[tuple[int, int, float]] = []
+    for iou, okey, ti in pairs:
+        if okey in used_ours or ti in used_theirs:
+            continue
+        used_ours.add(okey)
+        used_theirs.add(ti)
+        out.append((okey, theirs[ti][0], iou))
+    return out
+
+
 def _load_face_meta(conn: Connection) -> dict[int, dict]:
     """face_id -> {space, photo_id, detector, bbox_norm:[x1,y1,x2,y2]} in normalized coords."""
     dims: dict[tuple[str, int], tuple[int, int]] = {}
